@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Grok Bot dark palette (pixel-sampled from the real app) */
+/* XinyunOpen Bot surface tokens. Themes override these variables below. */
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   --animate-pop-in: pop-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
@@ -31,6 +31,87 @@
   --radius-xl: 10px;
 }
 
+:root,
+:root[data-app-theme="midnight"] {
+  --color-app: #071426;
+  --color-panel: #0d1b31;
+  --color-raised: #1b2b45;
+  --color-raised-hover: #263a59;
+  --color-card: #12223b;
+  --color-inset: #0a172a;
+  --color-hairline: #29405f;
+  --color-ink: #f7faff;
+  --color-ink-secondary: #d4e2f4a6;
+  --color-accent: #69aef8;
+  --color-accent-border: #98c8ff;
+  --color-bubble-user: #34547d;
+}
+
+:root[data-app-theme="black"] {
+  --color-app: #070707;
+  --color-panel: #111111;
+  --color-raised: #2f2f2f;
+  --color-raised-hover: #3d3d3d;
+  --color-card: #262626;
+  --color-inset: #191919;
+  --color-hairline: #333333;
+  --color-ink: #fcfcfc;
+  --color-ink-secondary: #fcfcfc99;
+  --color-accent: #1084fe;
+  --color-accent-border: #459ffe;
+  --color-bubble-user: #5a5a5a;
+}
+
+:root[data-app-theme="slate"] {
+  --color-app: #10151d;
+  --color-panel: #171d27;
+  --color-raised: #2b3441;
+  --color-raised-hover: #394554;
+  --color-card: #222a35;
+  --color-inset: #181f29;
+  --color-hairline: #3a4655;
+  --color-ink: #f7f9fc;
+  --color-ink-secondary: #d9e0e999;
+  --color-accent: #78aef5;
+  --color-accent-border: #a7c9f7;
+  --color-bubble-user: #4b5b70;
+}
+
+:root[data-app-theme="violet"] {
+  --color-app: #161126;
+  --color-panel: #1f1833;
+  --color-raised: #382d50;
+  --color-raised-hover: #4a3b67;
+  --color-card: #2a2141;
+  --color-inset: #1b1530;
+  --color-hairline: #4a3c65;
+  --color-ink: #fbf8ff;
+  --color-ink-secondary: #e5d9f5a3;
+  --color-accent: #a98cf8;
+  --color-accent-border: #cbb9ff;
+  --color-bubble-user: #5c4b78;
+}
+
+:root[data-app-theme="forest"] {
+  --color-app: #0c1815;
+  --color-panel: #12231e;
+  --color-raised: #254039;
+  --color-raised-hover: #31534a;
+  --color-card: #1a302a;
+  --color-inset: #10221d;
+  --color-hairline: #31534a;
+  --color-ink: #f5fbf8;
+  --color-ink-secondary: #d4ebe0a3;
+  --color-accent: #62cba3;
+  --color-accent-border: #93dfc1;
+  --color-bubble-user: #3b675a;
+}
+
+:root[data-app-theme="custom"] {
+  --color-ink: #f7faff;
+  --color-ink-secondary: #d4e2f4a6;
+}
+
 html,
 body,
 #root {
@@ -49,7 +130,7 @@ body {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3d3d3d;
+  background: var(--color-raised-hover);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-track {

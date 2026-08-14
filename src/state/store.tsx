@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
+import type { MausShape } from "@/components/Avatar";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -93,6 +94,7 @@ export interface Bot {
   description: string;
   notifications: boolean;
   color: MausColor;
+  mascotShape?: MausShape | string | null;
   mascotExpression?: string | null;
   unread: boolean;
   busy?: boolean;
@@ -244,7 +246,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "pinned" | "hidden"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden"
         >
       >;
     }
@@ -486,6 +488,7 @@ function reducer(state: AppState, action: Action): AppState {
     case "updateBot": {
       const mascotChanged =
         Object.prototype.hasOwnProperty.call(action.patch, "color") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "mascotShape") ||
         Object.prototype.hasOwnProperty.call(action.patch, "mascotExpression");
       const next = mascotChanged
         ? withMascotMotion(state, action.botId, "customize")

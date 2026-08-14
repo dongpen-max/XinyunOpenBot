@@ -30,6 +30,7 @@ function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: st
     <div className="mt-1 flex items-center gap-1.5 pl-0.5">
       <MausAvatar
         color={(bot?.color ?? color) as Bot["color"]}
+        shape={bot?.mascotShape}
         state={normalizeState(bot?.mascotExpression) ?? "happy"}
         size={16}
         motion="none"
@@ -177,6 +178,7 @@ export function GroupView({ group }: { group: Group }) {
             <span key={b.id} title={`${b.name}${group.busyBotId === b.id ? " — working…" : ""}`}>
               <MausAvatar
                 color={b.color}
+                shape={b.mascotShape}
                 state={normalizeState(b.mascotExpression) ?? "happy"}
                 size={24}
                 motion={group.busyBotId === b.id ? "working" : "none"}
@@ -250,7 +252,7 @@ export function GroupView({ group }: { group: Group }) {
             <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
               <div className="flex -space-x-2">
                 {members.slice(0, 3).map((b) => (
-                  <MausAvatar key={b.id} color={b.color} state="happy" size={44} motion="none" motionKey={0} />
+                  <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={44} motion="none" motionKey={0} />
                 ))}
               </div>
               <div className="text-[17px] font-semibold text-ink">{group.name}</div>

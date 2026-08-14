@@ -5,6 +5,7 @@ declare global {
   interface Window {
     ogb?: {
       platform: string;
+      setTitleBarColor?(color: string): Promise<void>;
       screenFrame(): Promise<string | null>;
       speechStart(): Promise<void>;
       speechStop(): Promise<void>;

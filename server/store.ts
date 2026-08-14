@@ -123,6 +123,7 @@ export interface BotRecord {
   description: string;
   notifications: boolean;
   color: MausColor;
+  mascotShape?: string | null;
   mascotExpression?: MausExpression | null;
   unread: boolean;
   modelSelection: ModelSelection;

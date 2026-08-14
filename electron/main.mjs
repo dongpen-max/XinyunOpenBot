@@ -123,7 +123,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     icon: APP_ICON,
-    backgroundColor: "#070707",
+    backgroundColor: "#071426",
     // frameless on both platforms: inset traffic lights on macOS; on
     // Windows the overlay (min/max/close, top-right — the renderer's
     // header leaves it room, see ChatView)
@@ -135,7 +135,7 @@ function createWindow() {
           // around a 36px control row = 60). Windows draws the caption buttons
           // to fill the overlay, so anything shorter leaves a dead band under
           // them and anything taller overhangs the header.
-          titleBarOverlay: { color: "#070707", symbolColor: "#b5b5b5", height: 60 },
+          titleBarOverlay: { color: "#071426", symbolColor: "#d4e2f4", height: 60 },
         }),
     webPreferences: {
       contextIsolation: true,
@@ -155,6 +155,15 @@ function createWindow() {
   }
   return win;
 }
+
+ipcMain.handle("appearance:title-bar-color", (event, color) => {
+  if (process.platform !== "win32" || !/^#[0-9a-f]{6}$/i.test(color)) return;
+  BrowserWindow.fromWebContents(event.sender)?.setTitleBarOverlay({
+    color,
+    symbolColor: "#d4e2f4",
+    height: 60,
+  });
+});
 
 // "This Mac" screen preview — served from the main process so the Screen
 // Recording permission prompt attributes to the app, never the server

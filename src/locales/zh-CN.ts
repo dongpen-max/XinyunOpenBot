@@ -115,6 +115,8 @@ export const zhCN = {
     title: "设置",
     bot: "机器人",
     reset: "重置",
+    shape: "形状",
+    shapeDesc: "选择机器人的轮廓",
     expression: "表情",
     color: "颜色",
     motionPreview: "动画预览",
@@ -141,6 +143,11 @@ export const zhCN = {
   // App settings
   appSettings: {
     title: "应用设置",
+    appearance: "外观与背景",
+    appearanceDesc: "切换整个应用的背景色与配套界面色，选择会自动保存。",
+    backgroundTheme: "应用背景主题",
+    customTone: "自定义色调",
+    customToneDesc: "自动生成保持文字清晰的深色背景",
     profile: "个人资料",
     profileDesc: "显示在侧边栏中，自动保存。",
     namePlaceholder: "您的名字",

@@ -47,7 +47,7 @@ function Shell() {
   }, [state.bots, state.selectedId, dispatch]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-app">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
       <div className="relative flex min-h-0 flex-1">

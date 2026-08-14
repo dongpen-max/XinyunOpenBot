@@ -1,6 +1,6 @@
 import { ChevronLeft, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
-import { MausAvatar } from "./Avatar";
+import { MASCOT_SHAPES, MausAvatar, type MausShape } from "./Avatar";
 import {
   PICKABLE_STATES,
   stateForBot,
@@ -42,6 +42,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "notifications"
         | "computer"
         | "color"
+        | "mascotShape"
         | "mascotExpression"
         | "autoApprove"
       >
@@ -73,6 +74,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         <div className="flex justify-center py-5">
           <MausAvatar
             color={bot.color}
+            shape={bot.mascotShape}
             state={activeState}
             size={112}
             motion={mascotMotion?.kind ?? "none"}
@@ -87,7 +89,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 {zhCN.settings.bot}
               </span>
               <button
-                onClick={() => patch({ color: "green", mascotExpression: null })}
+                onClick={() => patch({ color: "green", mascotShape: "cursor", mascotExpression: null })}
                 className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
               >
                 {zhCN.settings.reset}
@@ -95,6 +97,27 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
 
             <div className="p-3">
+              <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+                {zhCN.settings.shape}
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {MASCOT_SHAPES.map(({ id, label }) => (
+                  <button
+                    key={id}
+                    onClick={() => patch({ mascotShape: id as MausShape })}
+                    className={cn(
+                      "flex h-[58px] flex-col items-center justify-center gap-0.5 rounded-xl bg-inset transition-colors hover:bg-raised",
+                      (bot.mascotShape ?? "cursor") === id && "ring-2 ring-accent-border",
+                    )}
+                    title={label}
+                    aria-label={`使用${label}形状`}
+                  >
+                    <MausAvatar color={bot.color} shape={id} state={activeState} size={36} animated={false} />
+                    <span className="text-[10px] text-ink-secondary">{label}</span>
+                  </button>
+                ))}
+              </div>
+
               <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
                 {zhCN.settings.expression}
               </div>
