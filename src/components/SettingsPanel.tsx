@@ -103,7 +103,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <div className="grid grid-cols-5 gap-2">
                 {MASCOT_SHAPES.map(({ id, label }) => (
                   <button
-                    key={id}
+                    key={`${id}-${activeState}`}
                     onClick={() => patch({ mascotShape: id as MausShape })}
                     className={cn(
                       "flex h-[58px] flex-col items-center justify-center gap-0.5 rounded-xl bg-inset transition-colors hover:bg-raised",
@@ -124,7 +124,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <div className="grid grid-cols-5 gap-2">
                 {PICKABLE_STATES.map((expression) => (
                   <button
-                    key={expression}
+                    key={`${bot.mascotShape ?? "cursor"}-${expression}`}
                     onClick={() => patch({ mascotExpression: expression })}
                     className={cn(
                       "flex h-[58px] items-center justify-center rounded-xl bg-inset transition-colors hover:bg-raised",
@@ -133,7 +133,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     title={expression}
                     aria-label={`Use ${expression} expression`}
                   >
-                    <MausAvatar color={bot.color} state={expression} size={42} animated={false} />
+                    <MausAvatar
+                      color={bot.color}
+                      shape={bot.mascotShape}
+                      state={expression}
+                      size={42}
+                      animated={false}
+                    />
                   </button>
                 ))}
               </div>

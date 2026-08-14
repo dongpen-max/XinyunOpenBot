@@ -1527,12 +1527,18 @@ export const CursorAvatar = React.forwardRef<CursorAvatarHandle, CursorAvatarPro
       }
 
       const step = (now: number) => {
-        frame = requestAnimationFrame(step)
         const e = engine.current
         const p = e.props
         const dt = Math.min((now - e.last) / 1000, 0.1)
         e.last = now
-        if (p.paused) return
+        // A paused avatar is a static preview, not an empty one. Snap to the
+        // requested face, paint it once, then stop the frame loop.
+        if (p.paused) {
+          e.morph = 1
+          e.velocity = 0
+          draw(e, now, 0)
+          return
+        }
 
         const f = p.spring ?? 7
         e.velocity += (-2 * f * e.velocity - f * f * (e.morph - 1)) * dt
@@ -1550,11 +1556,12 @@ export const CursorAvatar = React.forwardRef<CursorAvatarHandle, CursorAvatarPro
         }
 
         draw(e, now, spinTurn)
+        frame = requestAnimationFrame(step)
       }
 
       frame = requestAnimationFrame(step)
       return () => cancelAnimationFrame(frame)
-    }, [])
+    }, [paused, state, expression])
 
     const paint = `url(#${uid}-grad)`
     const paintRef = useRef(paint)
