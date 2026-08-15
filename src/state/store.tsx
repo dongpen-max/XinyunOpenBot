@@ -155,6 +155,23 @@ export interface ConfigStatus {
   openai?: { configured: boolean };
   composio: { configured: boolean; apiKeyConfigured?: boolean };
   box: { configured: boolean };
+  voice?: {
+    stt: {
+      configured: boolean;
+      keyConfigured: boolean;
+      url: string;
+      model: string;
+      language: string;
+    };
+    tts: {
+      configured: boolean;
+      keyConfigured: boolean;
+      url: string;
+      model: string;
+      voice: string;
+    };
+    autoSpeak: boolean;
+  };
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
 }
@@ -1073,7 +1090,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "config":
           rawDispatch({
             type: "configStatus",
-            config: { xai: frame.xai, composio: frame.composio, box: frame.box, profile: frame.profile },
+            config: {
+              xai: frame.xai,
+              anthropic: frame.anthropic,
+              openai: frame.openai,
+              composio: frame.composio,
+              box: frame.box,
+              voice: frame.voice,
+              profile: frame.profile,
+            },
           });
           api("/api/instances")
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))

@@ -29,6 +29,8 @@ import { ReactionBar, ReactionChips } from "./Reactions";
 import { cn } from "@/lib/cn";
 import { actionableRuntimeError, deriveWorkStatus } from "@/lib/work-status";
 import { zhCN } from "@/locales/zh-CN";
+import { CallButton, CallOverlay, SpeakButton } from "./VoiceControls";
+import { voiceSpeaker } from "@/lib/voice/speaker";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
@@ -314,6 +316,7 @@ function Bubble({
         </div>
         {!user && (
           <div className="flex flex-col gap-0.5 self-end pb-0.5">
+            {message.kind === "text" && <SpeakButton botId={bot.id} messageId={message.id} text={text} />}
             <CopyButton text={text} />
             {isLastBotText && !bot.busy && onRegenerate && (
               <button
@@ -564,6 +567,20 @@ export function ChatView({ bot }: { bot: Bot }) {
     () => [...messages].reverse().find((m) => m.role === "bot" && m.kind === "text")?.id,
     [messages],
   );
+  const [callOpen, setCallOpen] = useState(false);
+  const autoSpokenRef = useRef<string | undefined>(lastBotTextId);
+  useEffect(() => {
+    setCallOpen(false);
+    voiceSpeaker.stop();
+    autoSpokenRef.current = lastBotTextId;
+  }, [bot.id]);
+  useEffect(() => {
+    if (!lastBotTextId || autoSpokenRef.current === lastBotTextId) return;
+    autoSpokenRef.current = lastBotTextId;
+    if (!state.config?.voice?.autoSpeak || callOpen) return;
+    const reply = messages.find((message) => message.id === lastBotTextId);
+    if (reply?.text) void voiceSpeaker.speak(reply.text, { botId: bot.id, messageId: reply.id });
+  }, [bot.id, callOpen, lastBotTextId, messages, state.config?.voice?.autoSpeak]);
 
   // one message at a time may be in edit mode
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -679,6 +696,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           )}
           <TaskPicker bot={bot} />
           <ModelPicker bot={bot} />
+          <CallButton bot={bot} active={callOpen} onToggle={() => setCallOpen((open) => !open)} />
           <button
             onClick={() => dispatch({ type: "toggleComputer" })}
             className={cn(
@@ -777,6 +795,8 @@ export function ChatView({ bot }: { bot: Bot }) {
           <ArrowDown size={13} /> 跳到最新消息
         </button>
       )}
+
+      {callOpen && <CallOverlay bot={bot} onHangup={() => setCallOpen(false)} />}
 
       {/* keyed by bot: a draft belongs to the conversation it was typed in,
           so switching bots starts from an empty composer instead of carrying

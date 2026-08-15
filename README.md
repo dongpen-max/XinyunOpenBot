@@ -42,6 +42,7 @@ XinyunOpen Bot 保留多机器人聊天体验，并强化国内中转站、多�
 - **本机电脑控制**：在支持的平台上可通过 CUA integration 操作本机桌面。
 - **聊天房间**：多个机器人可以加入同一个房间，通过 @mention 协作。
 - **对话分支**：编辑历史消息后生成新的对话分支。
+- **语音聊天**：Windows、macOS 和 Linux 桌面端支持麦克风转写、回复朗读及一对一半双工连续通话。
 - **应用内更新**：从公开 Releases 仓库读取更新元数据并下载安装。
 - **本地数据**：配置、聊天记录和事件日志默认保存在 `~/.openmausbot/`。
 
@@ -100,6 +101,16 @@ pnpm package:win
 - 模型列表，或点击“获取模型”自动发现
 
 当前支持 Anthropic、OpenAI、xAI 三类配置入口。OpenAI-compatible driver 可供 GPT、Grok、Claude、Qwen、DeepSeek 等兼容模型使用；对于支持 Anthropic 原生 `/messages` 的 Claude 中转站，也可以使用 Claude Agent driver。
+
+## 语音聊天配置
+
+在“应用设置 → 语音聊天”中分别配置兼容 OpenAI Audio API 的 STT 与 TTS 服务：
+
+- STT Base URL、API Key、模型（默认 `whisper-1`）和语言（默认 `zh`）；
+- TTS Base URL、API Key、模型（默认 `tts-1`）和声音（默认 `alloy`）；
+- 可选“自动朗读新回复”。
+
+应用会调用 `${Base URL}/audio/transcriptions` 识别录音，并调用 `${Base URL}/audio/speech` 合成回复。API Key 仅由本机 Harness 读取，不会回传到前端。配置完成后，可使用输入框麦克风按钮、机器人回复旁的朗读按钮，或聊天标题栏的电话按钮。
 
 详细说明：
 

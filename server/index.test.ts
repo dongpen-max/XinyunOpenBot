@@ -20,6 +20,8 @@ let child: ChildProcess;
 /** stands in for the box provider so config saving never touches the network */
 let boxStub: Server;
 let boxStubPort = 0;
+let voiceStub: Server;
+let voiceStubPort = 0;
 let home: string;
 let stderr = "";
 
@@ -62,6 +64,27 @@ beforeAll(async () => {
   await new Promise<void>((r) => boxStub.listen(0, "127.0.0.1", r));
   boxStubPort = (boxStub.address() as { port: number }).port;
 
+  voiceStub = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => {
+      if (req.url === "/v1/audio/transcriptions") {
+        const ok = req.headers.authorization === "Bearer stt_secret";
+        res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
+        return res.end(JSON.stringify(ok ? { text: "你好，星云" } : { error: { message: "bad stt key" } }));
+      }
+      if (req.url === "/v1/audio/speech") {
+        const ok = req.headers.authorization === "Bearer tts_secret";
+        res.writeHead(ok ? 200 : 401, { "content-type": ok ? "audio/mpeg" : "application/json" });
+        return res.end(ok ? Buffer.from([0x49, 0x44, 0x33, 0x04]) : JSON.stringify({ error: { message: "bad tts key" } }));
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+    });
+  });
+  await new Promise<void>((r) => voiceStub.listen(0, "127.0.0.1", r));
+  voiceStubPort = (voiceStub.address() as { port: number }).port;
+
   child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
     cwd: ROOT,
     env: {
@@ -92,6 +115,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   boxStub?.close();
+  voiceStub?.close();
   child?.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     if (!child || child.exitCode !== null) return resolve();
@@ -244,6 +268,46 @@ describe("harness HTTP API", () => {
 
     const after = await api("GET", "/api/config");
     expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+  });
+
+  it("saves voice config write-only and serves STT, preparation, and TTS", async () => {
+    const url = `http://127.0.0.1:${voiceStubPort}/v1`;
+    const put = await api("PUT", "/api/config", {
+      voice: {
+        stt: { url, key: "stt_secret", model: "whisper-test", language: "zh" },
+        tts: { url, key: "tts_secret", model: "tts-test", voice: "nova" },
+        autoSpeak: true,
+      },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.voice).toMatchObject({
+      stt: { configured: true, keyConfigured: true, url, model: "whisper-test", language: "zh" },
+      tts: { configured: true, keyConfigured: true, url, model: "tts-test", voice: "nova" },
+      autoSpeak: true,
+    });
+    expect(JSON.stringify(put.body)).not.toContain("stt_secret");
+    expect(JSON.stringify(put.body)).not.toContain("tts_secret");
+
+    const transcript = await fetch(`${BASE}/api/voice/transcribe`, {
+      method: "POST",
+      headers: { "content-type": "audio/webm", "x-audio-mime": "audio/webm" },
+      body: Buffer.from([1, 2, 3, 4]),
+    });
+    expect(transcript.status).toBe(200);
+    expect(await transcript.json()).toEqual({ text: "你好，星云" });
+
+    const prepared = await api("POST", "/api/voice/prepare", { text: "第一句。第二句。" });
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.utterances.join("")).toBe("第一句。第二句。");
+
+    const spoken = await fetch(`${BASE}/api/voice/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "你好" }),
+    });
+    expect(spoken.status).toBe(200);
+    expect(spoken.headers.get("content-type")).toBe("audio/mpeg");
+    expect(new Uint8Array(await spoken.arrayBuffer())).toEqual(new Uint8Array([0x49, 0x44, 0x33, 0x04]));
   });
 
   it("404s unknown routes with the route in the error", async () => {

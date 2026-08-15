@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Clock, Mic, Square, Users, X } from "lucide-react";
+import { ArrowUp, Clock, Loader2, Mic, Square, Users, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
@@ -8,6 +8,7 @@ import { normalizeState } from "@/lib/mascot";
 import { groupComposerHint } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { zhCN } from "@/locales/zh-CN";
+import { transcribeVoice, VoiceRecorder } from "@/lib/voice/recorder";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -54,13 +55,14 @@ export function Composer({
     : (bot?.name ?? "The bot");
   const [text, setText] = useState("");
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
+  const recorderRef = useRef<VoiceRecorder | null>(null);
 
   // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
   const mention = mentionQueryAt(text, caret);
@@ -136,45 +138,49 @@ export function Composer({
     }
   }, [busy, queued, bot, group, dispatch]);
 
-  // native dictation: partials stream into the input while the Swift
-  // helper runs; the final transcript stays in the box, ready to edit/send
   useEffect(() => {
-    if (!recording) return;
-    const bridge = window.ogb;
-    if (!bridge) {
-      setRecording(false);
-      return;
-    }
-    setSpeechError(null);
-    const offTranscript = bridge.onSpeechTranscript((line) => {
-      if (typeof line.text === "string") {
-        const base = baseText.current;
-        setText(base ? `${base} ${line.text}` : line.text);
-      }
-    });
-    const offEnd = bridge.onSpeechEnd(({ code }) => {
-      setRecording(false);
-      if (code === 2) {
-        setSpeechError(zhCN.composer.speechErrorDesktop);
-      } else if (code === 1) {
-        setSpeechError(zhCN.composer.speechErrorMic);
-      }
-    });
-    void bridge.speechStart();
     return () => {
-      offTranscript();
-      offEnd();
-      void bridge.speechStop();
+      recorderRef.current?.cancel();
+      recorderRef.current = null;
     };
-  }, [recording]);
+  }, []);
 
-  const toggleMic = () => {
-    if (!window.ogb) {
-      setSpeechError(zhCN.composer.speechErrorDesktop);
-      return;
+  const stopAndTranscribe = async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    recorderRef.current = null;
+    setRecording(false);
+    setTranscribing(true);
+    setSpeechError(null);
+    try {
+      const recording = await recorder.stop();
+      if (!recording || recording.blob.size < 256) throw new Error("录音内容为空，请再试一次");
+      const transcript = await transcribeVoice(recording);
+      const base = baseText.current;
+      setText(base ? `${base} ${transcript}` : transcript);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTranscribing(false);
     }
+  };
+
+  const toggleMic = async () => {
+    if (recording) return void stopAndTranscribe();
+    if (transcribing) return;
     baseText.current = text.trim();
-    setRecording((r) => !r);
+    setSpeechError(null);
+    const recorder = new VoiceRecorder();
+    recorderRef.current = recorder;
+    try {
+      await recorder.start({ maxDurationMs: 120_000 });
+      setRecording(true);
+    } catch (error) {
+      recorderRef.current = null;
+      setRecording(false);
+      setSpeechError(error instanceof Error ? error.message : zhCN.composer.speechErrorMic);
+    }
   };
 
   return (
@@ -294,12 +300,19 @@ export function Composer({
               e.preventDefault();
               send();
             }
-            if (e.key === "Escape" && recording) setRecording(false);
+            if (e.key === "Escape" && recording) {
+              e.preventDefault();
+              recorderRef.current?.cancel();
+              recorderRef.current = null;
+              setRecording(false);
+            }
           }}
           disabled={Boolean(approval)}
           placeholder={
             approval
               ? "回答上方的批准请求以继续"
+              : transcribing
+                ? "正在识别语音…"
               : recording
               ? zhCN.composer.listening
               : busy
@@ -326,7 +339,8 @@ export function Composer({
         )}
         {!busy && !text.trim() && (
           <button
-            onClick={toggleMic}
+            onClick={() => void toggleMic()}
+            disabled={transcribing}
             aria-label={recording ? "停止语音输入" : "开始语音输入"}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full",
@@ -334,9 +348,9 @@ export function Composer({
                 ? "animate-pulse bg-danger/20 text-danger"
                 : "text-ink-secondary hover:bg-raised hover:text-ink",
             )}
-            title={recording ? "Stop dictation (Esc)" : "Dictate"}
+            title={recording ? "停止录音并识别（Esc 取消）" : "语音输入"}
           >
-            <Mic size={18} />
+            {transcribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
           </button>
         )}
         {text.trim() && (

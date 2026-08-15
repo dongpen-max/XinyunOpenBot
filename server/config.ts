@@ -20,6 +20,13 @@ export interface AppConfig {
   /** The person using the app (collected in onboarding, shown in the
    * sidebar). Not a secret — echoed back by GET /api/config. */
   profile?: { name?: string; email?: string };
+  /** Cross-platform speech I/O. Keys stay server-side; URLs may point at
+   * any OpenAI-compatible audio gateway or a local service. */
+  voice?: {
+    stt?: { key?: string; url?: string; model?: string; language?: string };
+    tts?: { key?: string; url?: string; model?: string; voice?: string };
+    autoSpeak?: boolean;
+  };
   instances?: InstanceConfigMap;
 }
 
@@ -56,6 +63,23 @@ export function loadConfig(): AppConfig {
   cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
+  cfg.voice = {
+    ...cfg.voice,
+    stt: {
+      key: process.env.OMB_STT_API_KEY,
+      url: process.env.OMB_STT_BASE_URL,
+      model: process.env.OMB_STT_MODEL,
+      language: process.env.OMB_STT_LANGUAGE,
+      ...cfg.voice?.stt,
+    },
+    tts: {
+      key: process.env.OMB_TTS_API_KEY,
+      url: process.env.OMB_TTS_BASE_URL,
+      model: process.env.OMB_TTS_MODEL,
+      voice: process.env.OMB_TTS_VOICE,
+      ...cfg.voice?.tts,
+    },
+  };
   return cfg;
 }
 
@@ -73,6 +97,15 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
+  }
+  if (patch.voice && typeof patch.voice === "object") {
+    const previous = (disk.voice ?? {}) as NonNullable<AppConfig["voice"]>;
+    disk.voice = {
+      ...previous,
+      ...patch.voice,
+      ...(patch.voice.stt ? { stt: { ...previous.stt, ...patch.voice.stt } } : {}),
+      ...(patch.voice.tts ? { tts: { ...previous.tts, ...patch.voice.tts } } : {}),
+    };
   }
   mkdirSync(DATA_DIR, { recursive: true });
   writeFileAtomic(p, JSON.stringify(disk, null, 2));

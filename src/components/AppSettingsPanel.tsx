@@ -8,6 +8,7 @@ import { ApiKeyRow, ProxyRow } from "./ApiKeys";
 import { EngineHealthRow, EngineRefreshButton } from "./EngineHealth";
 import { useUpdaterState } from "@/lib/updater";
 import { zhCN } from "@/locales/zh-CN";
+import { VoiceSettings } from "./VoiceSettings";
 import {
   APP_THEME_OPTIONS,
   applyAppTheme,
@@ -244,6 +245,8 @@ export function AppSettingsPanel() {
         <AppearanceSettings />
 
         <EngineHealthSection />
+
+        <VoiceSettings />
 
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">{zhCN.appSettings.profile}</div>

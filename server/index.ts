@@ -23,6 +23,8 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { mentionedBots, roomResponders, Store, type GroupDefaultResponder, type Message } from "./store.ts";
+import { describeVoice, synthesize, transcribe } from "./voice/index.ts";
+import { toUtterances } from "./voice/speech-text.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
@@ -787,6 +789,7 @@ function configStatus() {
     openai: { configured: Boolean(cfg.openai?.key) },
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     box: { configured: Boolean(cfg.box?.token) },
+    voice: describeVoice(cfg),
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
   };
 }
@@ -840,6 +843,41 @@ function readBody(req: IncomingMessage): Promise<any> {
       }
     });
     req.on("error", reject);
+  });
+}
+
+function readBytes(req: IncomingMessage, maxBytes = 25_000_000): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const fail = (message: string, status: number) => {
+      if (settled) return;
+      settled = true;
+      const error = new Error(message);
+      (error as Error & { status?: number }).status = status;
+      reject(error);
+    };
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        fail("录音文件过大", 413);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(new Uint8Array(Buffer.concat(chunks)));
+    });
+    req.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 
@@ -1324,7 +1362,7 @@ const server = createServer(async (req, res) => {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "anthropic", "openai", "composio", "box", "profile"] as const) {
+      for (const key of ["xai", "anthropic", "openai", "composio", "box", "profile", "voice"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
@@ -1340,10 +1378,34 @@ const server = createServer(async (req, res) => {
       Object.assign(cfg, loadConfig());
       // provider keys change the fleet; a profile edit must not kill
       // in-flight turns with a pointless reload
-      if (Object.keys(patch).some((k) => k !== "profile")) await reloadProviders();
+      if (Object.keys(patch).some((k) => !["profile", "voice"].includes(k))) await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
+    }
+
+    // ── cross-platform voice I/O ─────────────────────────────────────
+    if (method === "POST" && path === "/api/voice/transcribe") {
+      const audio = await readBytes(req);
+      const mime = String(req.headers["x-audio-mime"] ?? req.headers["content-type"] ?? "audio/webm")
+        .split(";", 1)[0]
+        .trim();
+      return json(res, 200, { text: await transcribe(cfg, audio, mime) });
+    }
+    if (method === "POST" && path === "/api/voice/prepare") {
+      const body = await readBody(req);
+      const text = String(body.text ?? "");
+      return json(res, 200, { utterances: toUtterances(text) });
+    }
+    if (method === "POST" && path === "/api/voice/speak") {
+      const body = await readBody(req);
+      const audio = await synthesize(cfg, String(body.text ?? ""));
+      res.writeHead(200, {
+        "content-type": audio.mime,
+        "content-length": String(audio.bytes.byteLength),
+        "cache-control": "no-store",
+      });
+      return res.end(audio.bytes);
     }
 
     // ── discover relay models ──
