@@ -58,6 +58,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentTools === true;
+  const canWorkInCloud = engine?.capabilities?.computerTools === true;
   const currentChief = state.bots.find((candidate) => candidate.chiefOfStaff);
 
   return (
@@ -288,6 +289,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div className="text-[15px] font-medium text-ink">{zhCN.settings.computer}</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {zhCN.settings.computerDesc}{bot.computer ? "" : zhCN.settings.computerAuto}
+            </div>
+            <div className="mt-2 text-[11.5px] leading-relaxed text-ink-secondary/80">
+              {canWorkInCloud ? zhCN.settings.computerShared : zhCN.settings.computerUnsupported}
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {(["cloud", "local", "off"] as const).map((mode, i) => (

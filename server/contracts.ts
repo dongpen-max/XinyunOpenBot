@@ -121,6 +121,10 @@ export interface ProviderAdapter {
   readonly provider: DriverKind;
   readonly capabilities: {
     sessionModelSwitch: "in-session" | "unsupported";
+    /** How this driver uses the workspace cloud computer. `mcp` mounts the
+     * provider-neutral computer proxy; `native` executes the whole turn on
+     * the Box substrate. Absence means chat/code only. */
+    computerMode?: "mcp" | "native";
     /** True when the driver mounts turn.integrations.agents as MCP tools —
      * the harness only offers agents tooling (and prompts about it) to
      * drivers that can actually hand it to the agent. */

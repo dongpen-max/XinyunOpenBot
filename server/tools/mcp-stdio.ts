@@ -173,3 +173,46 @@ export async function connectMcpStdio(config: McpStdioConfig, signal: AbortSigna
     throw error;
   }
 }
+
+export async function connectMcpStdioMany(
+  configs: McpStdioConfig[],
+  signal: AbortSignal,
+): Promise<ToolProvider | null> {
+  if (!configs.length) return null;
+  const providers: ToolProvider[] = [];
+  try {
+    for (const config of configs) providers.push(await connectMcpStdio(config, signal));
+  } catch (error) {
+    await Promise.allSettled(providers.map((provider) => provider.close()));
+    throw error;
+  }
+
+  let routes: Map<string, ToolProvider> | null = null;
+  const listTools = async () => {
+    const nextRoutes = new Map<string, ToolProvider>();
+    const definitions = [];
+    for (const provider of providers) {
+      for (const definition of await provider.listTools()) {
+        if (nextRoutes.has(definition.name)) {
+          throw new Error(`duplicate MCP tool name: ${definition.name}`);
+        }
+        nextRoutes.set(definition.name, provider);
+        definitions.push(definition);
+      }
+    }
+    routes = nextRoutes;
+    return definitions;
+  };
+  return {
+    listTools,
+    async callTool(name, args) {
+      if (!routes) await listTools();
+      const provider = routes?.get(name);
+      if (!provider) throw new Error(`unknown MCP tool: ${name}`);
+      return provider.callTool(name, args);
+    },
+    async close() {
+      await Promise.allSettled(providers.map((provider) => provider.close()));
+    },
+  };
+}

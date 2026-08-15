@@ -1,6 +1,8 @@
+import { cloudComputerLeases } from "./cloud-computer-pool.js";
 // overridable so tests can point at a stub instead of the live provider
 const BOX_API = process.env.OMB_BOX_API || "https://ascii.dev/api/box/v1";
 const READY = new Set(["idle", "ready", "running"]);
+export const WORKSPACE_BOX_NAME = "xinyun-workspace-primary";
 function boxFetch(cfg, path, opts = {}) {
     return fetch(`${BOX_API}${path}`, {
         ...opts,
@@ -16,14 +18,26 @@ async function boxJson(cfg, path, opts = {}) {
     const body = await res.json().catch(() => null);
     return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
-// deterministic per-bot name; the hash kills truncated-uuid collisions
-async function boxNameFor(botId) {
+// Legacy deterministic per-bot name. Kept to discover and migrate an
+// existing installation's healthiest ogb-* machine into the shared primary.
+async function legacyBoxNameFor(botId) {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
     const hash = [...new Uint8Array(digest)]
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("")
         .slice(0, 6);
     return `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
+}
+/** Select only machines managed by this app. The canonical primary remains
+ * stable across bots; during migration, a ready legacy Box wins over sleep. */
+export function selectWorkspaceBox(boxes, legacyName) {
+    const usable = boxes.filter((candidate) => candidate?.id && candidate.state !== "error");
+    const primary = usable.find((candidate) => candidate.name === WORKSPACE_BOX_NAME);
+    if (primary)
+        return primary;
+    const managed = usable.filter((candidate) => candidate.name === legacyName || candidate.name?.startsWith("ogb-"));
+    const rank = (candidate) => (READY.has(candidate.state ?? "") ? 0 : 1);
+    return [...managed].sort((a, b) => rank(a) - rank(b) || String(a.id).localeCompare(String(b.id)))[0] ?? null;
 }
 export async function runCommand(cfg, boxId, command, { timeoutMs = 120_000 } = {}) {
     const res = await boxFetch(cfg, `/boxes/${boxId}/commands`, {
@@ -74,26 +88,35 @@ async function waitReady(cfg, boxId, budgetMs = 90_000) {
     }
     return null;
 }
-// Resolving a bot's box means LISTing every box in the account, so it is
+// Resolving the workspace Box means LISTing every box in the account, so it is
 // the most expensive thing on any hot path. The name is deterministic, so
 // once we know the id we can go straight at it — the cache is refreshed
 // whenever the direct read fails (deleted/renamed box) and always carries
 // the live state so callers can still see "archived".
-const boxIdCache = new Map();
+let workspaceBoxIdCache = null;
 export async function findBox(cfg, botId) {
-    const cachedId = boxIdCache.get(botId);
+    const cachedId = workspaceBoxIdCache;
     if (cachedId) {
         const { ok, body } = await boxJson(cfg, `/boxes/${cachedId}`);
         const box = body?.box;
         if (ok && box?.id && box.state !== "error")
             return box;
-        boxIdCache.delete(botId); // gone or broken — fall back to the listing
+        workspaceBoxIdCache = null; // gone or broken — fall back to the listing
     }
-    const name = await boxNameFor(botId);
+    const legacyName = await legacyBoxNameFor(botId);
     const { body } = await boxJson(cfg, "/boxes");
-    const found = (body?.boxes ?? []).find((b) => b.name === name && b.state !== "error") ?? null;
-    if (found?.id)
-        boxIdCache.set(botId, found.id);
+    let found = selectWorkspaceBox(body?.boxes ?? [], legacyName);
+    if (found?.id) {
+        workspaceBoxIdCache = found.id;
+        if (found.name !== WORKSPACE_BOX_NAME) {
+            const adopted = await boxJson(cfg, `/boxes/${found.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ name: WORKSPACE_BOX_NAME }),
+            }).catch(() => null);
+            if (adopted?.ok)
+                found = { ...found, name: WORKSPACE_BOX_NAME };
+        }
+    }
     return found;
 }
 /** Ready-or-null without the LIST when we already know the box. */
@@ -165,7 +188,7 @@ export async function boxStatus(cfg, botId) {
     };
 }
 /**
- * Find-or-create the bot's persistent box, wait for ready, run the
+ * Find-or-create the workspace's persistent primary Box, wait for ready, run the
  * idempotent bootstrap (screenshot tooling for the computer-use bridge +
  * a tmux welcome), and mint a fresh desktop URL.
  */
@@ -174,7 +197,7 @@ export async function provisionBox(cfg, botId, botName, report) {
         throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.openmausbot/config.json');
     }
     report?.("checking");
-    const vmName = await boxNameFor(botId);
+    const vmName = WORKSPACE_BOX_NAME;
     let box = await findBox(cfg, botId);
     let created = false;
     if (!box) {
@@ -190,10 +213,15 @@ export async function provisionBox(cfg, botId, botName, report) {
         }
         box = createRes.body.box;
         created = true;
+        workspaceBoxIdCache = box.id;
         await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
     }
     else {
         report?.("reusing");
+        if (box.name !== vmName) {
+            await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
+            box = { ...box, name: vmName };
+        }
     }
     if (!created && !READY.has(box.state))
         report?.("waking");
@@ -256,6 +284,9 @@ export async function sleepBox(cfg, botId) {
     const box = await findBox(cfg, botId);
     if (!box)
         throw new Error("no computer for this bot");
+    if (cloudComputerLeases.isBusy(box.id)) {
+        throw new Error("工作区主云端电脑正在执行任务，请等待机器人完成后再休眠");
+    }
     await boxJson(cfg, `/boxes/${box.id}/stop`, { method: "POST" }).catch(() => { });
     return { ok: true };
 }

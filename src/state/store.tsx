@@ -190,6 +190,7 @@ export type ComputerActivityState =
   | "reusing"
   | "creating"
   | "waking"
+  | "waiting"
   | "initializing"
   | "ready";
 

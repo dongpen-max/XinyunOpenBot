@@ -84,7 +84,7 @@ export class ProviderRegistry {
                 models: inst.models,
                 install: this.driversByKind.get(inst.driverKind)?.install,
                 capabilities: {
-                    computerTools: inst.driverKind === "boxAgent" || inst.adapter.capabilities.computerMcp === true,
+                    computerTools: inst.adapter.capabilities.computerMode !== undefined,
                     agentTools: inst.adapter.capabilities.agentsMcp === true,
                 },
             };

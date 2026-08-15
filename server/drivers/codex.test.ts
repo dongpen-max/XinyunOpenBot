@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import { CodexDriver } from "./codex.ts";
+import { CodexDriver, codexAppServerArgs } from "./codex.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-codex-app-server.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
@@ -28,6 +28,34 @@ describe("CodexDriver.decodeConfig", () => {
     expect(CodexDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
     // anything non-true is off — a truthy string must not enable full auto
     expect(CodexDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
+  });
+});
+
+describe("Codex cloud tool configuration", () => {
+  it("mounts the provider-neutral computer MCP server through per-turn CLI overrides", () => {
+    const args = codexAppServerArgs({
+      threadId: "codex-cloud",
+      text: "work on the server",
+      integrations: { computer: { boxId: "box-primary", token: "box_secret" } },
+    });
+
+    expect(args.at(-1)).toBe("app-server");
+    expect(args.join("\n")).toContain("mcp_servers.computer.command");
+    expect(args.join("\n")).toContain("OGB_BOX_ID");
+    expect(args.join("\n")).toContain("box-primary");
+    expect(args.join("\n")).toContain("OGB_BOX_TOKEN");
+  });
+
+  it("declares cloud computer support from capabilities rather than driver names", async () => {
+    const instance = await CodexDriver.create({
+      instanceId: "codex-capabilities",
+      displayName: "Codex",
+      environment: {},
+      enabled: true,
+      config: CodexDriver.decodeConfig({}),
+    });
+    expect(instance.adapter.capabilities.computerMode).toBe("mcp");
+    await instance.dispose();
   });
 });
 

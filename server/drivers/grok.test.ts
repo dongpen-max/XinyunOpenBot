@@ -8,6 +8,7 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { computerMcpConfig, GrokDriver } from "./grok.ts";
 
 const FAKE_MCP = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-computer-mcp.ts");
+const FAKE_AGENTS_MCP = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-agents-mcp.ts");
 
 describe("OpenAI-compatible API tools", () => {
   let api: Server;
@@ -15,9 +16,11 @@ describe("OpenAI-compatible API tools", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   const requests: any[] = [];
+  let requestedTool = "screenshot";
 
   beforeEach(async () => {
     requests.length = 0;
+    requestedTool = "screenshot";
     api = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
@@ -27,10 +30,7 @@ describe("OpenAI-compatible API tools", () => {
         res.writeHead(200, { "content-type": "text/event-stream" });
         if (requests.length === 1) {
           res.write(
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"screen","arguments":""}}]}}]}\n\n',
-          );
-          res.write(
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shot","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+            `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: requestedTool, arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\n`,
           );
         } else {
           res.write('data: {"choices":[{"delta":{"content":"computer "}}]}\n\n');
@@ -59,6 +59,7 @@ describe("OpenAI-compatible API tools", () => {
         url: baseUrl,
         apiKeyEnv: "TEST_API_KEY",
         computerTools: true,
+        agentTools: true,
         models: { default: "test-model", options: [{ id: "test-model", label: "Test" }] },
       },
     });
@@ -73,6 +74,7 @@ describe("OpenAI-compatible API tools", () => {
 
   it("bridges streamed function calls to MCP and returns text plus images to the model", async () => {
     expect(instance.adapter.capabilities.computerMcp).toBe(true);
+    expect(instance.adapter.capabilities.agentsMcp).toBe(true);
     await instance.adapter.sendTurn({
       threadId: "tool-thread",
       text: "look at the computer",
@@ -110,9 +112,52 @@ describe("OpenAI-compatible API tools", () => {
     expect(instance.adapter.hasSession("tool-thread")).toBe(false);
   });
 
+  it("mounts computer and agents MCP tools together for relay-backed chiefs", async () => {
+    requestedTool = "list_bots";
+    await instance.adapter.sendTurn({
+      threadId: "chief-thread",
+      text: "coordinate the team",
+      model: "test-model",
+      integrations: {
+        localComputer: {
+          command: process.execPath,
+          args: ["--experimental-strip-types", FAKE_MCP],
+          env: {},
+        },
+        agents: {
+          command: process.execPath,
+          args: ["--experimental-strip-types", FAKE_AGENTS_MCP],
+          env: {},
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed", 15_000);
+
+    expect(requests[0].tools.map((tool: any) => tool.function.name)).toEqual(["screenshot", "list_bots"]);
+    expect(
+      requests[1].messages.some(
+        (message: any) =>
+          message.role === "tool" && message.tool_call_id === "call-1" && /helper-bot/.test(message.content),
+      ),
+    ).toBe(true);
+    expect(recorder.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "item.started", itemType: "tool", title: "list_bots" }),
+        expect.objectContaining({ type: "turn.completed", ok: true }),
+      ]),
+    );
+  });
+
   it("can be configured as chat-only for endpoints without function calling", () => {
-    expect(GrokDriver.decodeConfig({ computerTools: false }).computerTools).toBe(false);
-    expect(GrokDriver.decodeConfig({}).computerTools).toBe(true);
+    expect(GrokDriver.decodeConfig({ computerTools: false })).toMatchObject({
+      computerTools: false,
+      agentTools: false,
+    });
+    expect(GrokDriver.decodeConfig({})).toMatchObject({ computerTools: true, agentTools: true });
+    expect(GrokDriver.decodeConfig({ computerTools: false, agentTools: true })).toMatchObject({
+      computerTools: false,
+      agentTools: true,
+    });
   });
 
   it("uses relay-compatible cloud screenshots without changing local computer integrations", () => {

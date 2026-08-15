@@ -10,6 +10,9 @@
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start.
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
@@ -28,6 +31,51 @@ import { augmentedPath } from "../env-path.ts";
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
+
+const proxyPath = (basename: string) => {
+  const ts = join(dirname(fileURLToPath(import.meta.url)), "..", `${basename}.ts`);
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+};
+const COMPUTER_PROXY_PATH = proxyPath("computer-proxy");
+
+const tomlString = (value: string) => JSON.stringify(value);
+const tomlKey = (value: string) => (/^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value));
+
+function appendMcpOverrides(
+  args: string[],
+  name: string,
+  config: { command: string; args: string[]; env?: Record<string, string> },
+) {
+  const root = `mcp_servers.${name}`;
+  args.push("-c", `${root}.command=${tomlString(config.command)}`);
+  args.push("-c", `${root}.args=[${config.args.map(tomlString).join(",")}]`);
+  args.push("-c", `${root}.startup_timeout_sec=30`);
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    args.push("-c", `${root}.env.${tomlKey(key)}=${tomlString(value)}`);
+  }
+}
+
+/** Per-turn CLI configuration keeps MCP wiring provider-neutral and avoids
+ * editing the user's global ~/.codex/config.toml. */
+export function codexAppServerArgs(turn: SendTurnInput): string[] {
+  const args: string[] = [];
+  if (turn.integrations?.computer) {
+    appendMcpOverrides(args, "computer", {
+      command: process.execPath,
+      args: [COMPUTER_PROXY_PATH],
+      env: {
+        ELECTRON_RUN_AS_NODE: "1",
+        OGB_BOX_ID: turn.integrations.computer.boxId,
+        OGB_BOX_TOKEN: turn.integrations.computer.token,
+      },
+    });
+  } else if (turn.integrations?.localComputer) {
+    appendMcpOverrides(args, "computer", turn.integrations.localComputer);
+  }
+  if (turn.integrations?.agents) appendMcpOverrides(args, "agents", turn.integrations.agents);
+  args.push("app-server");
+  return args;
+}
 
 // catalog ported from upstream packages/contracts/src/model.ts
 const MODELS = {
@@ -112,7 +160,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // configured — that combination means "bring your own gateway".
       if (!env.OPENAI_BASE_URL) delete env.OPENAI_API_KEY;
 
-      const child = spawnCli(config.cli, ["app-server"], {
+      const child = spawnCli(config.cli, codexAppServerArgs(turn), {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -415,7 +463,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "unsupported" },
+        capabilities: {
+          sessionModelSwitch: "unsupported",
+          agentsMcp: true,
+          computerMcp: true,
+          computerMode: "mcp",
+        },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
         respondToRequest: async (threadId, requestId, decision) => {

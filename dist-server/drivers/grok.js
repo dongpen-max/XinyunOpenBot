@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.js";
-import { connectMcpStdio } from "../tools/mcp-stdio.js";
+import { connectMcpStdioMany } from "../tools/mcp-stdio.js";
 import { runOpenAICompatibleToolLoop, } from "../tools/openai-compatible.js";
 import { appendNative } from "./native.js";
 const DRIVER_KIND = "grok";
@@ -23,11 +23,13 @@ const MODELS = {
 };
 function decodeConfig(raw) {
     const o = (raw ?? {});
+    const computerTools = o.computerTools !== false;
     return {
         url: typeof o.url === "string" ? o.url : DEFAULT_URL,
         apiKeyEnv: typeof o.apiKeyEnv === "string" ? o.apiKeyEnv : "XAI_API_KEY",
         models: decodeModelCatalog(o.models, MODELS),
-        computerTools: o.computerTools !== false,
+        computerTools,
+        agentTools: typeof o.agentTools === "boolean" ? o.agentTools : computerTools,
     };
 }
 // Proxy entry files live as .ts in dev and .js in the packaged server.
@@ -56,6 +58,9 @@ export function computerMcpConfig(turn) {
     if (turn.integrations?.localComputer)
         return turn.integrations.localComputer;
     return null;
+}
+export function agentsMcpConfig(turn) {
+    return turn.integrations?.agents ?? null;
 }
 function nativeRequest(body) {
     const messages = Array.isArray(body.messages)
@@ -184,9 +189,11 @@ export const GrokDriver = {
             (async () => {
                 let toolProvider = null;
                 try {
-                    const mcp = config.computerTools ? computerMcpConfig(turn) : null;
-                    if (mcp)
-                        toolProvider = await connectMcpStdio(mcp, abort.signal);
+                    const mcps = [
+                        ...(config.computerTools ? [computerMcpConfig(turn)] : []),
+                        ...(config.agentTools ? [agentsMcpConfig(turn)] : []),
+                    ].filter((mcp) => mcp !== null);
+                    toolProvider = await connectMcpStdioMany(mcps, abort.signal);
                     const { text, usage } = await runOpenAICompatibleToolLoop({
                         model: turn.model || models.default,
                         messages,
@@ -278,7 +285,12 @@ export const GrokDriver = {
             snapshot,
             adapter: {
                 provider: DRIVER_KIND,
-                capabilities: { sessionModelSwitch: "in-session", computerMcp: config.computerTools },
+                capabilities: {
+                    sessionModelSwitch: "in-session",
+                    computerMcp: config.computerTools,
+                    agentsMcp: config.agentTools,
+                    ...(config.computerTools ? { computerMode: "mcp" } : {}),
+                },
                 sendTurn,
                 interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
                 respondToRequest: async () => {

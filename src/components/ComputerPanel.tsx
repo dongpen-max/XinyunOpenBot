@@ -3,7 +3,7 @@
 // via SSE frames or a ~4s screenshot poll; local ("This Mac") → frames
 // come from the Electron main process (desktopCapturer over the preload
 // bridge — box endpoints are never touched); off → parked. Auto (unset)
-// prefers the cloud box when one exists, else local inside the app.
+// prefers the shared workspace cloud Box when configured, else local.
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
@@ -48,6 +48,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   // bumped when a Box token is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
+  const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
+  const canWorkInCloud = engine?.capabilities?.computerTools === true;
 
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
@@ -66,17 +68,13 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       setPhase(isElectron ? "local" : "local-unavailable");
       return;
     }
-    // cloud, or auto (cloud box wins when one exists, else local in-app)
+    // cloud, or auto (a configured shared Box is provisioned/reused first)
     api(`/api/bots/${bot.id}/computer`)
       .then((status) => {
         if (!alive) return;
         const autoLocal = bot.computer !== "cloud" && isElectron;
         if (!status.configured) {
           setPhase(autoLocal ? "local" : "unconfigured");
-          return;
-        }
-        if (!status.box && autoLocal) {
-          setPhase("local");
           return;
         }
         setPhase("starting");
@@ -213,6 +211,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         </div>
       )}
 
+      {engine && !canWorkInCloud && (
+        <div className="mx-5 mb-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] leading-relaxed text-warning">
+          {zhCN.settings.computerUnsupported}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         {/* Screen preview */}
         <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
@@ -302,6 +306,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           <div className="mt-0.5 text-[13px] text-ink-secondary">
             {bot.computer ? "" : zhCN.computer.runsOnAutoPrefix + " "}{zhCN.computer.runsOnDesc}
           </div>
+          <div className="mt-2 text-[11.5px] leading-relaxed text-ink-secondary/80">{zhCN.computer.sharedPrimary}</div>
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
             {(
               [

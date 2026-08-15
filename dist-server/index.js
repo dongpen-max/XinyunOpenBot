@@ -10,6 +10,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { approvalKey, autoDecision } from "./auto-approve.js";
 import * as box from "./box.js";
+import { cloudComputerLeases } from "./cloud-computer-pool.js";
 import * as composio from "./composio.js";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.js";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.js";
@@ -127,6 +128,8 @@ function broadcast(payload) {
 // and every client view are projections of it.
 const toolMessageByItem = new Map(); // itemId -> messageId
 const askMessageByRequest = new Map(); // requestId -> messageId
+const cloudLeaseByThread = new Map();
+const pendingCloudLeaseByThread = new Map();
 // Group threads: the fold needs to know WHO is talking — the turn engine
 // records the active member here before dispatching its turn.
 const groupSpeakers = new Map();
@@ -287,7 +290,14 @@ bus.subscribe((event) => {
                         if (frame && store.bot(bot.id)) {
                             pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
                         }
+                    }).finally(() => {
+                        cloudLeaseByThread.get(event.threadId)?.();
+                        cloudLeaseByThread.delete(event.threadId);
                     });
+                }
+                else {
+                    cloudLeaseByThread.get(event.threadId)?.();
+                    cloudLeaseByThread.delete(event.threadId);
                 }
             }
             // group busy/unread settle in the group turn engine, which knows
@@ -468,42 +478,57 @@ async function startTurn(botId, text, opts) {
             if (cfg.composio?.key)
                 integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
             const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
-            // only drivers that can mount the computer MCP server get the tools
-            // (and the prompt about them) — but every bot with a box still gets
-            // the live screen preview, which is a UI feature, not a tool
-            const mountsComputer = instance.adapter.capabilities.computerMcp === true || instance.driverKind === "boxAgent";
+            // Capability, not provider name, decides whether this exact engine can
+            // work through a cloud computer. `native` runs the whole turn on Box;
+            // `mcp` mounts the provider-neutral computer proxy.
+            const computerMode = instance.adapter.capabilities.computerMode;
+            if (wants === "cloud" && !computerMode) {
+                throw new Error("当前模型仅支持对话/本地编程，不能操作云端电脑；请切换到标有“支持云端工作”的模型");
+            }
             let previewBoxId = null;
-            if (wants !== "off" && wants !== "local" && box.boxConfigured(cfg)) {
-                broadcast({ kind: "computer", botId: bot.id, state: "checking" });
-                let b = await box.findBox(cfg, bot.id).catch(() => null);
-                // the Computer driver runs ON the box — provision it on first use
-                if (!b && instance.driverKind === "boxAgent") {
-                    await box.provisionBox(cfg, bot.id, bot.name, (state) => broadcast({ kind: "computer", botId: bot.id, state }));
-                    b = await box.findBox(cfg, bot.id).catch(() => null);
+            let cloudFailure = null;
+            if (computerMode && wants !== "off" && wants !== "local") {
+                if (!box.boxConfigured(cfg)) {
+                    if (wants === "cloud")
+                        throw new Error("尚未配置 Box 令牌，无法启动云端电脑");
                 }
-                // an archived box answers every action with an error until it
-                // resumes — wake it here, once, instead of letting the agent
-                // discover it one failed tool call at a time. Only worth the
-                // resume (~8s, and it un-pauses billing) when the bot can act.
-                if (b && mountsComputer && !["idle", "ready", "running"].includes(b.state)) {
-                    broadcast({ kind: "computer", botId: bot.id, state: "waking" });
-                    b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
-                }
-                if (b) {
-                    broadcast({ kind: "computer", botId: bot.id, state: "ready" });
-                    previewBoxId = b.id;
-                    if (mountsComputer)
+                else {
+                    try {
+                        broadcast({ kind: "computer", botId: bot.id, state: "checking" });
+                        let b = await box.findBox(cfg, bot.id).catch(() => null);
+                        if (!b) {
+                            await box.provisionBox(cfg, bot.id, bot.name, (state) => broadcast({ kind: "computer", botId: bot.id, state }));
+                            b = await box.findBox(cfg, bot.id).catch(() => null);
+                        }
+                        if (!b)
+                            throw new Error("云端电脑创建后仍无法解析，请稍后重试");
+                        if (!["idle", "ready", "running"].includes(b.state)) {
+                            broadcast({ kind: "computer", botId: bot.id, state: "waking" });
+                            b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
+                        }
+                        if (!["idle", "ready", "running"].includes(b.state)) {
+                            throw new Error(`云端电脑当前状态为 ${b.state ?? "unknown"}，未能进入可工作状态`);
+                        }
+                        previewBoxId = b.id;
                         integrations.computer = { boxId: b.id, token: cfg.box.token };
+                    }
+                    catch (error) {
+                        cloudFailure = error instanceof Error ? error : new Error(String(error));
+                        if (wants === "cloud")
+                            throw cloudFailure;
+                    }
                 }
             }
             // local computer (this Mac) via the Electron-hosted cua-driver: the
             // Electron main process owns the daemon (TCC attribution) and writes
             // its spawn contract to cua-connection.json; the harness only reads it
-            if (!integrations.computer && wants !== "off" && wants !== "cloud") {
+            if (!integrations.computer && computerMode === "mcp" && wants !== "off" && wants !== "cloud") {
                 const cua = readCuaConnection();
                 if (cua)
                     integrations.localComputer = cua;
             }
+            if (cloudFailure && !integrations.localComputer)
+                throw cloudFailure;
             // peer-agent comms: give a user-initiated turn the list_bots/ask_bot
             // tools. A comms-invoked turn (depth ≥ cap) gets none — hard recursion
             // stop, so the user's tokens can't be burned by a bot-to-bot loop.
@@ -527,6 +552,18 @@ async function startTurn(botId, text, opts) {
                 : integrations.agents
                     ? "你可以通过机器人协作工具与其他机器人配合：list_bots 查看可用机器人，ask_bot 向指定机器人发送任务并取得回复。"
                     : "";
+            if (integrations.computer) {
+                const leaseAbort = new AbortController();
+                pendingCloudLeaseByThread.set(bot.threadId, leaseAbort);
+                try {
+                    const release = await cloudComputerLeases.acquire(integrations.computer.boxId, () => broadcast({ kind: "computer", botId: bot.id, state: "waiting" }), leaseAbort.signal);
+                    cloudLeaseByThread.set(bot.threadId, release);
+                    broadcast({ kind: "computer", botId: bot.id, state: "ready" });
+                }
+                finally {
+                    pendingCloudLeaseByThread.delete(bot.threadId);
+                }
+            }
             await instance.adapter.sendTurn({
                 threadId: bot.threadId,
                 text: turnText,
@@ -537,7 +574,7 @@ async function startTurn(botId, text, opts) {
                 resumeCursor: rewound ? undefined : store.activeTask(bot.id)?.resumeCursors[bot.modelSelection.instanceId],
                 transcript,
                 system: persona +
-                    (integrations.computer && instance.driverKind !== "boxAgent"
+                    (integrations.computer && computerMode === "mcp"
                         ? " You have your own cloud computer — use the computer tools (screenshot, click, type_text, open_url, computer_exec) whenever browsing or acting on a desktop helps. Every action tool already returns the resulting screen, so don't follow one with a screenshot call, and batch predictable sequences with computer_batch."
                         : integrations.localComputer
                             ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
@@ -557,6 +594,8 @@ async function startTurn(botId, text, opts) {
                 startScreenPoller(bot.id, previewBoxId);
         }
         catch (e) {
+            cloudLeaseByThread.get(bot.threadId)?.();
+            cloudLeaseByThread.delete(bot.threadId);
             const message = e instanceof Error ? e.message : String(e);
             const failure = store.appendMessage(bot.threadId, {
                 role: "bot",
@@ -734,6 +773,10 @@ async function reloadProviders() {
     // async under the hood), stranding the bot busy — and its screen poller —
     // forever. Settle anything still marked busy.
     for (const b of store.bots.filter((b) => b.busy)) {
+        pendingCloudLeaseByThread.get(b.threadId)?.abort();
+        pendingCloudLeaseByThread.delete(b.threadId);
+        cloudLeaseByThread.get(b.threadId)?.();
+        cloudLeaseByThread.delete(b.threadId);
         stopScreenPoller(b.id);
         const note = store.appendMessage(b.threadId, {
             role: "bot",
@@ -1064,6 +1107,8 @@ const server = createServer(async (req, res) => {
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
             // a running turn dies with its bot
+            pendingCloudLeaseByThread.get(bot.threadId)?.abort();
+            pendingCloudLeaseByThread.delete(bot.threadId);
             await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => { });
             stopScreenPoller(bot.id);
             store.deleteBot(bot.id);
@@ -1200,6 +1245,8 @@ const server = createServer(async (req, res) => {
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
             const instance = registry.get(bot.modelSelection.instanceId);
+            pendingCloudLeaseByThread.get(bot.threadId)?.abort();
+            pendingCloudLeaseByThread.delete(bot.threadId);
             await instance?.adapter.interruptTurn(bot.threadId);
             return json(res, 200, { ok: true });
         }

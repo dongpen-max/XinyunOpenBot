@@ -20,6 +20,16 @@ describe("ProviderRegistry", () => {
     expect((await registry.describe())[0].capabilities).toEqual({ computerTools: false, agentTools: false });
   });
 
+  it("derives cloud work support only from adapter capabilities", async () => {
+    const fake = makeFakeDriver({ kind: "boxAgent" });
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "boxAgent" } });
+
+    expect((await registry.describe())[0].capabilities.computerTools).toBe(false);
+    registry.get("a")!.adapter.capabilities.computerMode = "native";
+    expect((await registry.describe())[0].capabilities.computerTools).toBe(true);
+  });
+
   it("uses defaultConfig when the entry has no config", async () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);

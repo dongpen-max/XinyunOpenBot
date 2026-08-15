@@ -18,7 +18,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.ts";
-import { connectMcpStdio, type McpStdioConfig } from "../tools/mcp-stdio.ts";
+import { connectMcpStdioMany, type McpStdioConfig } from "../tools/mcp-stdio.ts";
 import {
   runOpenAICompatibleToolLoop,
   type OpenAIMessage,
@@ -48,15 +48,19 @@ export interface GrokConfig {
   /** API models may consume the bot's MCP computer through function calls.
    * Disable per instance for chat-only or non-tool-compatible endpoints. */
   computerTools: boolean;
+  /** API models may coordinate peer bots through the agents MCP bridge. */
+  agentTools: boolean;
 }
 
 function decodeConfig(raw: unknown): GrokConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
+  const computerTools = o.computerTools !== false;
   return {
     url: typeof o.url === "string" ? o.url : DEFAULT_URL,
     apiKeyEnv: typeof o.apiKeyEnv === "string" ? o.apiKeyEnv : "XAI_API_KEY",
     models: decodeModelCatalog(o.models, MODELS),
-    computerTools: o.computerTools !== false,
+    computerTools,
+    agentTools: typeof o.agentTools === "boolean" ? o.agentTools : computerTools,
   };
 }
 
@@ -86,6 +90,10 @@ export function computerMcpConfig(turn: SendTurnInput): McpStdioConfig | null {
   }
   if (turn.integrations?.localComputer) return turn.integrations.localComputer;
   return null;
+}
+
+export function agentsMcpConfig(turn: SendTurnInput): McpStdioConfig | null {
+  return turn.integrations?.agents ?? null;
 }
 
 function nativeRequest(body: Record<string, unknown>): Record<string, unknown> {
@@ -220,10 +228,13 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? models.default });
 
       (async () => {
-        let toolProvider: Awaited<ReturnType<typeof connectMcpStdio>> | null = null;
+        let toolProvider: Awaited<ReturnType<typeof connectMcpStdioMany>> = null;
         try {
-          const mcp = config.computerTools ? computerMcpConfig(turn) : null;
-          if (mcp) toolProvider = await connectMcpStdio(mcp, abort.signal);
+          const mcps = [
+            ...(config.computerTools ? [computerMcpConfig(turn)] : []),
+            ...(config.agentTools ? [agentsMcpConfig(turn)] : []),
+          ].filter((mcp): mcp is McpStdioConfig => mcp !== null);
+          toolProvider = await connectMcpStdioMany(mcps, abort.signal);
           const { text, usage } = await runOpenAICompatibleToolLoop({
             model: turn.model || models.default,
             messages,
@@ -321,7 +332,12 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session", computerMcp: config.computerTools },
+        capabilities: {
+          sessionModelSwitch: "in-session",
+          computerMcp: config.computerTools,
+          agentsMcp: config.agentTools,
+          ...(config.computerTools ? { computerMode: "mcp" as const } : {}),
+        },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => {

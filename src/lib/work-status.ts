@@ -1,4 +1,4 @@
-type ComputerActivityState = "checking" | "reusing" | "creating" | "waking" | "initializing" | "ready";
+type ComputerActivityState = "checking" | "reusing" | "creating" | "waking" | "waiting" | "initializing" | "ready";
 
 interface WorkBot {
   busy?: boolean;
@@ -23,6 +23,7 @@ const computerLabels: Record<Exclude<ComputerActivityState, "ready">, string> = 
   reusing: "正在复用现有云端 Box",
   creating: "正在创建云端 Box",
   waking: "正在唤醒云端 Box",
+  waiting: "主云端电脑正在工作，已排队等待",
   initializing: "正在初始化操作工具",
 };
 
