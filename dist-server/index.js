@@ -1125,6 +1125,31 @@ const server = createServer(async (req, res) => {
                 }
                 patch.alwaysAllow = [...new Set(body.alwaysAllow)].slice(0, 200);
             }
+            if (body.voiceProfile !== undefined) {
+                if (body.voiceProfile === null) {
+                    patch.voiceProfile = null;
+                }
+                else if (typeof body.voiceProfile === "object") {
+                    const value = body.voiceProfile;
+                    const voice = typeof value.voice === "string" ? value.voice.trim().slice(0, 240) : "";
+                    if (!voice)
+                        return json(res, 400, { error: "voiceProfile.voice is required" });
+                    if (typeof value.speed !== "number" || !Number.isFinite(value.speed)) {
+                        return json(res, 400, { error: "voiceProfile.speed must be a number" });
+                    }
+                    if (value.gain !== undefined && (typeof value.gain !== "number" || !Number.isFinite(value.gain))) {
+                        return json(res, 400, { error: "voiceProfile.gain must be a number" });
+                    }
+                    patch.voiceProfile = {
+                        voice,
+                        speed: Math.min(4, Math.max(0.25, value.speed)),
+                        ...(value.gain === undefined ? {} : { gain: Math.min(10, Math.max(-10, value.gain)) }),
+                    };
+                }
+                else {
+                    return json(res, 400, { error: "voiceProfile must be an object or null" });
+                }
+            }
             const bot = store.patchBot(m[1], patch);
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
@@ -1404,7 +1429,17 @@ const server = createServer(async (req, res) => {
         }
         if (method === "POST" && path === "/api/voice/speak") {
             const body = await readBody(req);
-            const audio = await synthesize(cfg, String(body.text ?? ""));
+            const botId = typeof body.botId === "string" ? body.botId : "";
+            const bot = botId ? store.bot(botId) : null;
+            if (botId && !bot)
+                return json(res, 404, { error: "no such bot" });
+            const inline = body.tuning && typeof body.tuning === "object"
+                ? body.tuning
+                : {};
+            const audio = await synthesize(cfg, String(body.text ?? ""), {
+                ...(bot?.voiceProfile ?? {}),
+                ...inline,
+            });
             res.writeHead(200, {
                 "content-type": audio.mime,
                 "content-length": String(audio.bytes.byteLength),

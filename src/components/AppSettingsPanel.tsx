@@ -1,43 +1,44 @@
-// App-level settings, in the right-side slot: who you are + credentials
-// shared by all bots. Per-bot settings (name, persona, model, computer)
-// live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
-import { Check, Cpu, Palette, X } from "lucide-react";
+// App-level settings shared by all bots. Per-bot identity, model, computer,
+// and voice tuning live in SettingsPanel.
+import { Check, Cloud, Cpu, Download, Link2, Palette, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow, ProxyRow } from "./ApiKeys";
 import { EngineHealthRow, EngineRefreshButton } from "./EngineHealth";
 import { useUpdaterState } from "@/lib/updater";
 import { zhCN } from "@/locales/zh-CN";
+import { cn } from "@/lib/cn";
 import { VoiceSettings } from "./VoiceSettings";
+import { SettingsDisclosure } from "./SettingsDisclosure";
 import {
   APP_THEME_OPTIONS,
   applyAppTheme,
   readAppTheme,
+  syncWindowTitleBarColor,
   type AppThemePreference,
 } from "@/lib/theme";
 
-function AppearanceSettings() {
+type SectionId = "appearance" | "engines" | "voice" | "profile" | "relay" | "connections" | "updates";
+
+function AppearanceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [preference, setPreference] = useState<AppThemePreference>(() => readAppTheme());
 
   const select = (next: AppThemePreference) => {
     setPreference(applyAppTheme(next));
+    syncWindowTitleBarColor("panel");
   };
 
+  const selectedTheme = APP_THEME_OPTIONS.find((theme) => theme.id === preference.id)?.label ?? "自定义色调";
   return (
-    <div className="mt-2 rounded-xl bg-card p-4">
-      <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-          <Palette size={18} />
-        </span>
-        <div>
-          <div className="text-[15px] font-medium text-ink">{zhCN.appSettings.appearance}</div>
-          <div className="mt-0.5 text-[13px] leading-relaxed text-ink-secondary">
-            {zhCN.appSettings.appearanceDesc}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2" role="radiogroup" aria-label={zhCN.appSettings.backgroundTheme}>
+    <SettingsDisclosure
+      icon={Palette}
+      title={zhCN.appSettings.appearance}
+      description={zhCN.appSettings.appearanceDesc}
+      summary={selectedTheme}
+      open={open}
+      onToggle={onToggle}
+    >
+      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={zhCN.appSettings.backgroundTheme}>
         {APP_THEME_OPTIONS.map((theme) => {
           const selected = preference.id === theme.id;
           return (
@@ -47,11 +48,12 @@ function AppearanceSettings() {
               role="radio"
               aria-checked={selected}
               onClick={() => select({ ...preference, id: theme.id })}
-              className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors ${
+              className={cn(
+                "flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-border",
                 selected
                   ? "border-accent-border bg-raised text-ink"
-                  : "border-hairline/40 bg-inset text-ink-secondary hover:bg-raised hover:text-ink"
-              }`}
+                  : "border-hairline/40 bg-inset text-ink-secondary hover:bg-raised hover:text-ink",
+              )}
             >
               <span
                 className="flex size-7 shrink-0 items-center justify-center rounded-full border border-white/15 shadow-inner"
@@ -84,21 +86,17 @@ function AppearanceSettings() {
           />
         </span>
       </label>
-    </div>
+    </SettingsDisclosure>
   );
 }
 
-/** Name + email, persisted to /api/config {profile} on blur. Prefilled from
- * the current config (the values are echoed back — they're not secrets). */
 function ProfileFields() {
   const { state, dispatch } = useStore();
   const [name, setName] = useState(state.config?.profile?.name ?? "");
   const [email, setEmail] = useState(state.config?.profile?.email ?? "");
-  // adopt late-arriving config exactly once per open (config loads async)
   useEffect(() => {
     setName(state.config?.profile?.name ?? "");
     setEmail(state.config?.profile?.email ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.config?.profile?.name, state.config?.profile?.email]);
 
   const save = () => {
@@ -107,20 +105,19 @@ function ProfileFields() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ profile: { name: name.trim(), email: email.trim().toLowerCase() } }),
     })
-      .then((r) => r.json())
+      .then((response) => response.json())
       .then((config) => dispatch({ type: "configStatus", config }))
       .catch(() => {});
   };
-
   const inputClass =
     "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
   return (
     <div className="flex flex-col gap-3">
-      <input value={name} onChange={(e) => setName(e.target.value)} onBlur={save} placeholder={zhCN.appSettings.namePlaceholder} className={inputClass} />
+      <input value={name} onChange={(event) => setName(event.target.value)} onBlur={save} placeholder={zhCN.appSettings.namePlaceholder} className={inputClass} />
       <input
         type="email"
         value={email}
-        onChange={(e) => setEmail(e.target.value)}
+        onChange={(event) => setEmail(event.target.value)}
         onBlur={save}
         placeholder={zhCN.appSettings.emailPlaceholder}
         className={inputClass}
@@ -129,46 +126,34 @@ function ProfileFields() {
   );
 }
 
-/** Manual update check row — packaged app only (no bridge in dev). */
-function UpdatesRow() {
-  const s = useUpdaterState();
-  if (!window.ogb?.updater) return null;
+function UpdatesContent() {
+  const state = useUpdaterState();
+  if (!window.ogb?.updater) return <div className="text-[12px] text-ink-secondary">开发模式下不提供自动更新。</div>;
   const updater = window.ogb.updater;
   const label =
-    s?.status === "checking"
+    state?.status === "checking"
       ? "正在检查…"
-      : s?.status === "available"
-        ? `发现新版本 ${s.version}`
-        : s?.status === "downloading"
-          ? `正在下载… ${Math.round(s.percent ?? 0)}%`
-          : s?.status === "downloaded"
-            ? `${s.version} 已就绪 — 重启后应用`
-            : s?.status === "error"
-              ? `检查失败：${s.message ?? "未知错误"}`
+      : state?.status === "available"
+        ? `发现新版本 ${state.version}`
+        : state?.status === "downloading"
+          ? `正在下载… ${Math.round(state.percent ?? 0)}%`
+          : state?.status === "downloaded"
+            ? `${state.version} 已就绪 — 重启后应用`
+            : state?.status === "error"
+              ? `检查失败：${state.message ?? "未知错误"}`
               : "当前已是最新版本。";
   return (
-    <div className="mt-4 rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">应用更新</div>
-      <div className="mt-0.5 text-[13px] text-ink-secondary">{label}</div>
+    <div>
+      <div className="text-[13px] text-ink-secondary">{label}</div>
       <div className="mt-3 flex gap-2">
-        {s?.status === "available" ? (
-          <button
-            onClick={() => void updater.download()}
-            className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
-          >
-            下载更新
-          </button>
-        ) : s?.status === "downloaded" ? (
-          <button
-            onClick={() => void updater.install()}
-            className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
-          >
-            重启并更新
-          </button>
+        {state?.status === "available" ? (
+          <button onClick={() => void updater.download()} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white">下载更新</button>
+        ) : state?.status === "downloaded" ? (
+          <button onClick={() => void updater.install()} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white">重启并更新</button>
         ) : (
           <button
             onClick={() => void updater.check()}
-            disabled={s?.status === "checking" || s?.status === "downloading"}
+            disabled={state?.status === "checking" || state?.status === "downloading"}
             className="rounded-lg bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
           >
             检查更新
@@ -179,7 +164,7 @@ function UpdatesRow() {
   );
 }
 
-function EngineHealthSection() {
+function EngineHealthSection({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const { state, refreshInstances } = useStore();
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,30 +175,26 @@ function EngineHealthSection() {
     setError(null);
     try {
       await refreshInstances();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setChecking(false);
     }
   };
 
   return (
-    <div className="mt-4 rounded-xl bg-card p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-            <Cpu size={18} />
-          </span>
-          <div className="min-w-0">
-            <div className="text-[15px] font-medium text-ink">AI 引擎状态</div>
-            <div className="mt-0.5 text-[13px] text-ink-secondary">
-              已就绪 {available}/{state.instances.length} 个；CLI 登录和中转站配置会在此统一显示。
-            </div>
-          </div>
-        </div>
+    <SettingsDisclosure
+      icon={Cpu}
+      title="AI 引擎状态"
+      description="统一查看 CLI 登录、中转站和工具能力。"
+      summary={`已就绪 ${available}/${state.instances.length}`}
+      open={open}
+      onToggle={onToggle}
+    >
+      <div className="mb-2 flex justify-end">
         <EngineRefreshButton onRefresh={() => void refresh()} busy={checking} />
       </div>
-      <div className="mt-3 divide-y divide-hairline/30">
+      <div className="divide-y divide-hairline/30">
         {state.instances.map((instance) => (
           <div key={instance.instanceId} className="py-2.5 first:pt-0 last:pb-0">
             <EngineHealthRow instance={instance} compact />
@@ -221,85 +202,94 @@ function EngineHealthSection() {
         ))}
       </div>
       {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">检查失败：{error}</div>}
-    </div>
+    </SettingsDisclosure>
   );
 }
 
 export function AppSettingsPanel() {
   const { dispatch } = useStore();
+  const [openSection, setOpenSection] = useState<SectionId | null>("voice");
+  const isWin = window.ogb?.platform === "win32";
+  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
+  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
+  const toggle = (section: SectionId) => setOpenSection((current) => current === section ? null : section);
+
+  useEffect(() => {
+    syncWindowTitleBarColor("panel");
+    return () => syncWindowTitleBarColor("app");
+  }, []);
 
   return (
     <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
-      <div className="flex items-center justify-between px-4 py-3">
-        <span className="w-6" />
-        <span className="text-[15px] font-semibold text-ink">{zhCN.appSettings.title}</span>
+      <div className={cn("flex min-h-[46px] items-center gap-2 border-b border-hairline/25 px-3", isWin && "pr-[144px]")} style={drag}>
         <button
           onClick={() => dispatch({ type: "toggleAppSettings", open: false })}
-          className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+          className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+          aria-label="关闭应用设置"
+          style={noDrag}
         >
-          <X size={18} />
+          <X size={17} />
         </button>
+        <span className="whitespace-nowrap text-[15px] font-semibold text-ink">{zhCN.appSettings.title}</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 pb-5">
-        <AppearanceSettings />
+      <div className="flex-1 overflow-y-auto px-4 pb-5 pt-3">
+        <div className="space-y-3">
+          <AppearanceSettings open={openSection === "appearance"} onToggle={() => toggle("appearance")} />
+          <EngineHealthSection open={openSection === "engines"} onToggle={() => toggle("engines")} />
+          <VoiceSettings open={openSection === "voice"} onToggle={() => toggle("voice")} />
 
-        <EngineHealthSection />
-
-        <VoiceSettings />
-
-        <div className="mt-4 rounded-xl bg-card p-4">
-          <div className="text-[15px] font-medium text-ink">{zhCN.appSettings.profile}</div>
-          <div className="mt-0.5 text-[13px] text-ink-secondary">{zhCN.appSettings.profileDesc}</div>
-          <div className="mt-4">
+          <SettingsDisclosure
+            icon={UserRound}
+            title={zhCN.appSettings.profile}
+            description={zhCN.appSettings.profileDesc}
+            summary="姓名与邮箱"
+            open={openSection === "profile"}
+            onToggle={() => toggle("profile")}
+          >
             <ProfileFields />
-          </div>
-        </div>
+          </SettingsDisclosure>
 
-        <div className="mt-4 rounded-xl bg-card p-4">
-          <div className="text-[15px] font-medium text-ink">AI 中转站配置</div>
-          <div className="mt-0.5 text-[13px] text-ink-secondary">
-            填入中转站提供的 API 密钥和 URL，保存后立即生效，无需重启。
-          </div>
-          <div className="mt-4 flex flex-col gap-5">
-            <ProxyRow
-              section="anthropic"
-              label="Claude (Anthropic)"
-              keyPlaceholder="sk-… 中转站密钥"
-              urlPlaceholder="https://your-proxy.com/v1"
-            />
-            <ProxyRow
-              section="openai"
-              label="Codex (OpenAI)"
-              keyPlaceholder="sk-… 中转站密钥"
-              urlPlaceholder="https://your-proxy.com/v1"
-            />
-            <ProxyRow
-              section="xai"
-              label="Grok (xAI)"
-              keyPlaceholder="xai-… 中转站密钥"
-              urlPlaceholder="https://your-proxy.com/v1"
-            />
-          </div>
-        </div>
+          <SettingsDisclosure
+            icon={Cloud}
+            title="AI 中转站配置"
+            description="配置 Claude、Codex 和 Grok 的兼容 API。"
+            summary="3 个服务"
+            open={openSection === "relay"}
+            onToggle={() => toggle("relay")}
+          >
+            <div className="flex flex-col gap-5">
+              <ProxyRow section="anthropic" label="Claude (Anthropic)" keyPlaceholder="sk-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
+              <ProxyRow section="openai" label="Codex (OpenAI)" keyPlaceholder="sk-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
+              <ProxyRow section="xai" label="Grok (xAI)" keyPlaceholder="xai-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
+            </div>
+          </SettingsDisclosure>
 
-        <div className="mt-4 rounded-xl bg-card p-4">
-          <div className="text-[15px] font-medium text-ink">{zhCN.appSettings.connections}</div>
-          <div className="mt-0.5 text-[13px] text-ink-secondary">
-            {zhCN.appSettings.connectionsDesc}
-          </div>
-          <div className="mt-4 flex flex-col gap-4">
-            <ApiKeyRow section="composio" label={zhCN.appSettings.composioKey} placeholder="ck_…" />
-            <ApiKeyRow
-              section="composioApi"
-              label={zhCN.appSettings.composioApiKey}
-              placeholder={zhCN.appSettings.composioApiPlaceholder}
-            />
-            <ApiKeyRow section="box" label={zhCN.appSettings.boxToken} placeholder={zhCN.appSettings.boxTokenPlaceholder} />
-          </div>
-        </div>
+          <SettingsDisclosure
+            icon={Link2}
+            title={zhCN.appSettings.connections}
+            description={zhCN.appSettings.connectionsDesc}
+            summary="Composio 与 Box"
+            open={openSection === "connections"}
+            onToggle={() => toggle("connections")}
+          >
+            <div className="flex flex-col gap-4">
+              <ApiKeyRow section="composio" label={zhCN.appSettings.composioKey} placeholder="ck_…" />
+              <ApiKeyRow section="composioApi" label={zhCN.appSettings.composioApiKey} placeholder={zhCN.appSettings.composioApiPlaceholder} />
+              <ApiKeyRow section="box" label={zhCN.appSettings.boxToken} placeholder={zhCN.appSettings.boxTokenPlaceholder} />
+            </div>
+          </SettingsDisclosure>
 
-        <UpdatesRow />
+          <SettingsDisclosure
+            icon={Download}
+            title="应用更新"
+            description="检查、下载并安装 XinyunOpen Bot 新版本。"
+            open={openSection === "updates"}
+            onToggle={() => toggle("updates")}
+          >
+            <UpdatesContent />
+          </SettingsDisclosure>
+        </div>
       </div>
     </aside>
   );

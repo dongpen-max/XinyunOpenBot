@@ -155,6 +155,12 @@ export interface BotRecord {
   hidden?: boolean;
   /** The single workspace-wide coordinator. */
   chiefOfStaff?: boolean;
+  /** Optional TTS tuning for this bot. Null/undefined inherits app defaults. */
+  voiceProfile?: {
+    voice: string;
+    speed: number;
+    gain?: number;
+  } | null;
   busy?: boolean;
   createdAt: number;
 }

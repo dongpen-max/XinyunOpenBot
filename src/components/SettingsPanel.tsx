@@ -1,4 +1,5 @@
-import { ChevronLeft, Crown, X } from "lucide-react";
+import { ChevronLeft, Crown } from "lucide-react";
+import { useEffect } from "react";
 import { useStore, type Bot } from "@/state/store";
 import { MASCOT_SHAPES, MausAvatar, type MausShape } from "./Avatar";
 import {
@@ -11,6 +12,8 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 import { zhCN } from "@/locales/zh-CN";
+import { syncWindowTitleBarColor } from "@/lib/theme";
+import { BotVoiceSettings } from "./BotVoiceSettings";
 
 const SHAPE_GROUPS = [
   { id: "base", label: "基础形态" },
@@ -37,6 +40,9 @@ const inputCls =
 
 export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
+  const isWin = window.ogb?.platform === "win32";
+  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
+  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
   const patch = (
     p: Partial<
       Pick<
@@ -51,6 +57,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "mascotExpression"
         | "autoApprove"
         | "chiefOfStaff"
+        | "voiceProfile"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -61,23 +68,27 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canWorkInCloud = engine?.capabilities?.computerTools === true;
   const currentChief = state.bots.find((candidate) => candidate.chiefOfStaff);
 
+  useEffect(() => {
+    syncWindowTitleBarColor("panel");
+    return () => syncWindowTitleBarColor("app");
+  }, []);
+
   return (
     <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3">
+      <div
+        className={cn("flex min-h-[46px] items-center gap-2 border-b border-hairline/25 px-3", isWin && "pr-[144px]")}
+        style={drag}
+      >
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+          className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+          aria-label="关闭机器人设置"
+          style={noDrag}
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="text-[15px] font-semibold text-ink">{zhCN.settings.title}</span>
-        <button
-          onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-        >
-          <X size={18} />
-        </button>
+        <span className="whitespace-nowrap text-[15px] font-semibold text-ink">{zhCN.settings.title}</span>
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">
@@ -284,6 +295,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <ModelPicker bot={bot} />
           </div>
+
+          <BotVoiceSettings bot={bot} />
 
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">{zhCN.settings.computer}</div>

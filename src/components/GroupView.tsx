@@ -19,6 +19,7 @@ import { Composer } from "./Composer";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { cn } from "@/lib/cn";
+import { SpeakButton } from "./VoiceControls";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -63,6 +64,7 @@ const Transcript = memo(function Transcript({
         const prev = textMessages[i - 1];
         const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
         const user = m.role === "user";
+        const senderBot = memberOf(m.from?.botId);
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
         const row =
           // a member can hit a permission ask mid-turn; without this the
@@ -98,7 +100,12 @@ const Transcript = memo(function Transcript({
                 >
                   {user ? m.text : <ChatMarkdown text={m.text} />}
                 </div>
-                {!user && <ReactionBar threadId={group.threadId} message={m} />}
+                {!user && (
+                  <div className="flex flex-col gap-0.5 self-end pb-0.5">
+                    {senderBot && <SpeakButton botId={senderBot.id} messageId={m.id} text={m.text} />}
+                    <ReactionBar threadId={group.threadId} message={m} />
+                  </div>
+                )}
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
                   {formatTime(m.at)}
                 </span>
@@ -115,7 +122,7 @@ const Transcript = memo(function Transcript({
               </div>
             )}
             {!user && m.from && newCluster && (
-              <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
+              <ClusterLabel bot={senderBot} name={m.from.name} color={m.from.color} />
             )}
             {row}
           </div>

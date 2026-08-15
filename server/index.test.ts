@@ -22,6 +22,7 @@ let boxStub: Server;
 let boxStubPort = 0;
 let voiceStub: Server;
 let voiceStubPort = 0;
+const voiceSpeechBodies: Array<Record<string, unknown>> = [];
 let home: string;
 let stderr = "";
 
@@ -74,6 +75,7 @@ beforeAll(async () => {
         return res.end(JSON.stringify(ok ? { text: "你好，星云" } : { error: { message: "bad stt key" } }));
       }
       if (req.url === "/v1/audio/speech") {
+        voiceSpeechBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
         const ok = req.headers.authorization === "Bearer tts_secret";
         res.writeHead(ok ? 200 : 401, { "content-type": ok ? "audio/mpeg" : "application/json" });
         return res.end(ok ? Buffer.from([0x49, 0x44, 0x33, 0x04]) : JSON.stringify({ error: { message: "bad tts key" } }));
@@ -158,9 +160,17 @@ describe("harness HTTP API", () => {
     expect(created.status).toBe(201);
     const bot = created.body.bot;
 
-    const patched = await api("PATCH", `/api/bots/${bot.id}`, { name: "Renamed", pinned: true });
+    const patched = await api("PATCH", `/api/bots/${bot.id}`, {
+      name: "Renamed",
+      pinned: true,
+      voiceProfile: { voice: "bot-voice", speed: 9, gain: -20 },
+    });
     expect(patched.status).toBe(200);
-    expect(patched.body.bot).toMatchObject({ name: "Renamed", pinned: true });
+    expect(patched.body.bot).toMatchObject({
+      name: "Renamed",
+      pinned: true,
+      voiceProfile: { voice: "bot-voice", speed: 4, gain: -10 },
+    });
 
     const missing = await api("PATCH", "/api/bots/does-not-exist", { name: "x" });
     expect(missing.status).toBe(404);
@@ -318,6 +328,17 @@ describe("harness HTTP API", () => {
     expect(spoken.status).toBe(200);
     expect(spoken.headers.get("content-type")).toBe("audio/mpeg");
     expect(new Uint8Array(await spoken.arrayBuffer())).toEqual(new Uint8Array([0x49, 0x44, 0x33, 0x04]));
+
+    const bots = await api("GET", "/api/bots");
+    const bot = bots.body.bots[0];
+    await api("PATCH", `/api/bots/${bot.id}`, { voiceProfile: { voice: "coral", speed: 1.7 } });
+    const botSpoken = await fetch(`${BASE}/api/voice/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "专属声音", botId: bot.id }),
+    });
+    expect(botSpoken.status).toBe(200);
+    expect(voiceSpeechBodies.at(-1)).toMatchObject({ voice: "coral", speed: 1.7, input: "专属声音" });
   });
 
   it("404s unknown routes with the route in the error", async () => {

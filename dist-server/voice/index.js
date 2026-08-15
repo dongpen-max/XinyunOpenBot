@@ -107,7 +107,7 @@ export async function transcribe(cfg, audio, mime = "audio/webm") {
     }
     return text;
 }
-export async function synthesize(cfg, text) {
+export async function synthesize(cfg, text, tuning = {}) {
     const status = describeVoice(cfg);
     if (!status.tts.configured)
         throw new VoiceConfigError("请先在应用设置中配置语音合成服务地址");
@@ -124,13 +124,13 @@ export async function synthesize(cfg, text) {
     }
     const payload = {
         model: status.tts.model,
-        voice: status.tts.voice,
+        voice: clean(tuning.voice) || status.tts.voice,
         input,
         response_format: "mp3",
-        speed: status.tts.speed,
+        speed: clamp(finite(tuning.speed, status.tts.speed), 0.25, 4),
     };
     if (status.tts.provider === "siliconflow") {
-        payload.gain = status.tts.gain;
+        payload.gain = clamp(finite(tuning.gain, status.tts.gain), -10, 10);
         payload.sample_rate = status.tts.sampleRate;
     }
     const res = await fetch(endpoint(status.tts.url, "/audio/speech"), {

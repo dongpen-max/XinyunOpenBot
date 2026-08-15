@@ -66,13 +66,18 @@ describe("Store", () => {
   it("persists bots and messages across a restart, resetting busy", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    store.patchBot(bot.id, { name: "Testy", busy: true });
+    store.patchBot(bot.id, {
+      name: "Testy",
+      busy: true,
+      voiceProfile: { voice: "FunAudioLLM/CosyVoice2-0.5B:claire", speed: 1.2, gain: 2 },
+    });
     store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi there" });
 
     const reloaded = new Store(selection);
     const back = reloaded.bot(bot.id)!;
     expect(back.name).toBe("Testy");
     expect(back.busy).toBe(false);
+    expect(back.voiceProfile).toEqual({ voice: "FunAudioLLM/CosyVoice2-0.5B:claire", speed: 1.2, gain: 2 });
     const messages = reloaded.messagesFor(bot.threadId);
     expect(messages.at(-1)).toMatchObject({ role: "user", text: "hi there" });
   });

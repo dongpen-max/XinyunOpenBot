@@ -27,6 +27,12 @@ export interface VoiceAudio {
   mime: string;
 }
 
+export interface VoiceTuning {
+  voice?: string;
+  speed?: number;
+  gain?: number;
+}
+
 export class VoiceConfigError extends Error {
   readonly status = 409;
 }
@@ -143,7 +149,7 @@ export async function transcribe(
   return text;
 }
 
-export async function synthesize(cfg: AppConfig, text: string): Promise<VoiceAudio> {
+export async function synthesize(cfg: AppConfig, text: string, tuning: VoiceTuning = {}): Promise<VoiceAudio> {
   const status = describeVoice(cfg);
   if (!status.tts.configured) throw new VoiceConfigError("请先在应用设置中配置语音合成服务地址");
   const input = text.trim();
@@ -160,13 +166,13 @@ export async function synthesize(cfg: AppConfig, text: string): Promise<VoiceAud
 
   const payload: Record<string, unknown> = {
     model: status.tts.model,
-    voice: status.tts.voice,
+    voice: clean(tuning.voice) || status.tts.voice,
     input,
     response_format: "mp3",
-    speed: status.tts.speed,
+    speed: clamp(finite(tuning.speed, status.tts.speed), 0.25, 4),
   };
   if (status.tts.provider === "siliconflow") {
-    payload.gain = status.tts.gain;
+    payload.gain = clamp(finite(tuning.gain, status.tts.gain), -10, 10);
     payload.sample_rate = status.tts.sampleRate;
   }
 

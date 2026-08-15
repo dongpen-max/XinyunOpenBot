@@ -93,11 +93,17 @@ export function applyAppTheme(preference: AppThemePreference, persist = true): A
     }
   }
 
-  const titleBarColor = getComputedStyle(root).getPropertyValue("--color-app").trim() || "#071426";
-  void window.ogb?.setTitleBarColor?.(titleBarColor);
+  syncWindowTitleBarColor("app");
 
   if (persist) localStorage.setItem(APP_THEME_STORAGE_KEY, JSON.stringify(next));
   return next;
+}
+
+export function syncWindowTitleBarColor(surface: "app" | "panel" = "app") {
+  const property = surface === "panel" ? "--color-panel" : "--color-app";
+  const fallback = surface === "panel" ? "#0d1b31" : "#071426";
+  const color = getComputedStyle(document.documentElement).getPropertyValue(property).trim() || fallback;
+  void window.ogb?.setTitleBarColor?.(color);
 }
 
 export function initializeAppTheme(): AppThemePreference {

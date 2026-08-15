@@ -140,6 +140,37 @@ describe("voice provider", () => {
     await expect(synthesize(cfg, "试听声音")).resolves.toMatchObject({ mime: "audio/mpeg" });
   });
 
+  it("applies per-bot tuning without changing the shared provider config", async () => {
+    const url = await listen((_req, res, body) => {
+      expect(JSON.parse(body.toString("utf8"))).toMatchObject({
+        voice: "FunAudioLLM/CosyVoice2-0.5B:diana",
+        speed: 1.65,
+        gain: 3,
+      });
+      res.writeHead(200, { "content-type": "audio/mpeg" });
+      res.end(Buffer.from([1]));
+    });
+    const cfg: AppConfig = {
+      voice: {
+        tts: {
+          url,
+          provider: "siliconflow",
+          model: "FunAudioLLM/CosyVoice2-0.5B",
+          voice: "FunAudioLLM/CosyVoice2-0.5B:anna",
+          speed: 1,
+          gain: 0,
+        },
+      },
+    };
+
+    await synthesize(cfg, "机器人发言", {
+      voice: "FunAudioLLM/CosyVoice2-0.5B:diana",
+      speed: 1.65,
+      gain: 3,
+    });
+    expect(describeVoice(cfg).tts).toMatchObject({ voice: "FunAudioLLM/CosyVoice2-0.5B:anna", speed: 1, gain: 0 });
+  });
+
   it("requires configured endpoints before using voice", async () => {
     await expect(transcribe({}, new Uint8Array([1]))).rejects.toBeInstanceOf(VoiceConfigError);
     await expect(synthesize({}, "hello")).rejects.toBeInstanceOf(VoiceConfigError);

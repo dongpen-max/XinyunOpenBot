@@ -116,6 +116,12 @@ export interface Bot {
   hidden?: boolean;
   /** The workspace's single primary coordinator. */
   chiefOfStaff?: boolean;
+  /** Optional TTS tuning for this bot. Null/undefined inherits app defaults. */
+  voiceProfile?: {
+    voice: string;
+    speed: number;
+    gain?: number;
+  } | null;
   messages: Message[];
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
@@ -303,7 +309,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "chiefOfStaff"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "chiefOfStaff" | "voiceProfile"
         >
       >;
     }

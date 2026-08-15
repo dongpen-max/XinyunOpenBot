@@ -10,9 +10,14 @@ export interface SpeechSnapshot {
   error?: string;
 }
 
-interface SpeakOptions {
+export interface SpeakOptions {
   botId?: string;
   messageId?: string;
+  tuning?: {
+    voice?: string;
+    speed?: number;
+    gain?: number;
+  };
 }
 
 const IDLE: SpeechSnapshot = { status: "idle" };
@@ -62,7 +67,7 @@ export class VoiceSpeaker {
       if (!live() || !utterances.length) return false;
       type Rendered = { blob: Blob } | { error: unknown };
       const render = (utterance: string): Promise<Rendered> =>
-        this.render(utterance, controller.signal).then((blob) => ({ blob }), (error) => ({ error }));
+        this.render(utterance, controller.signal, options).then((blob) => ({ blob }), (error) => ({ error }));
       let next: Promise<Rendered> | null = render(utterances[0]);
       for (let index = 0; index < utterances.length; index += 1) {
         const current = next;
@@ -106,11 +111,11 @@ export class VoiceSpeaker {
     return body.utterances ?? [];
   }
 
-  private async render(text: string, signal: AbortSignal): Promise<Blob> {
+  private async render(text: string, signal: AbortSignal, options: SpeakOptions): Promise<Blob> {
     const res = await fetch("/api/voice/speak", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, botId: options.botId, tuning: options.tuning }),
       signal,
     });
     if (!res.ok) {

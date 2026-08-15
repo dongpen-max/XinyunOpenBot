@@ -3,26 +3,14 @@ import { useEffect, useState } from "react";
 import { useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { voiceSpeaker, useVoiceSpeech } from "@/lib/voice/speaker";
-
-type VoiceProvider = "openai" | "siliconflow";
+import { OPENAI_VOICES, SILICONFLOW_MODEL, voiceOptions, type VoiceProvider } from "@/lib/voice/options";
+import { SettingsDisclosure } from "./SettingsDisclosure";
 
 const SAMPLE = "你好，我是星云机器人。现在正在试听你选择的音色和语速。";
-const SILICONFLOW_MODEL = "FunAudioLLM/CosyVoice2-0.5B";
-const SILICONFLOW_VOICES = [
-  ["alex", "Alex · 沉稳男声"],
-  ["benjamin", "Benjamin · 低沉男声"],
-  ["charles", "Charles · 磁性男声"],
-  ["david", "David · 活泼男声"],
-  ["anna", "Anna · 沉稳女声"],
-  ["bella", "Bella · 热情女声"],
-  ["claire", "Claire · 温柔女声"],
-  ["diana", "Diana · 活泼女声"],
-] as const;
-const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"];
 const inputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
 
-export function VoiceSettings() {
+export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const { state, dispatch } = useStore();
   const status = state.config?.voice;
   const speech = useVoiceSpeech();
@@ -116,25 +104,18 @@ export function VoiceSettings() {
     if (await save()) await voiceSpeaker.speak(SAMPLE);
   };
 
-  const voiceOptions = provider === "siliconflow"
-    ? SILICONFLOW_VOICES.map(([id, label]) => ({ value: `${SILICONFLOW_MODEL}:${id}`, label }))
-    : OPENAI_VOICES.map((value) => ({ value, label: value }));
+  const availableVoices = voiceOptions(provider);
 
   return (
-    <div className="mt-4 rounded-xl bg-card p-4">
-      <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-          <Mic size={18} />
-        </span>
-        <div>
-          <div className="text-[15px] font-medium text-ink">语音聊天</div>
-          <div className="mt-0.5 text-[13px] leading-relaxed text-ink-secondary">
-            调整识别服务、音色、语速和音量。密钥只保存在本机配置中。
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-3">
+    <SettingsDisclosure
+      icon={Mic}
+      title="语音聊天"
+      description="配置识别与合成服务；每个机器人可在自己的设置中覆盖音色和语速。"
+      summary={`${voice.split(":").at(-1) ?? voice} · ${speed.toFixed(2)}×`}
+      open={open}
+      onToggle={onToggle}
+    >
+      <div className="grid gap-3">
         <div className="text-[13px] font-medium text-ink">语音识别（STT）</div>
         <input className={inputClass} value={sttUrl} onChange={(e) => setSttUrl(e.target.value)} placeholder="https://api.example.com/v1" aria-label="STT URL" />
         <input className={inputClass} type="password" value={sttKey} onChange={(e) => setSttKey(e.target.value)} autoComplete="off" placeholder={status?.stt.keyConfigured ? "••••••••（留空保持原密钥）" : "STT API Key（本地服务可留空）"} aria-label="STT API Key" />
@@ -157,7 +138,7 @@ export function VoiceSettings() {
           <label className="mb-1.5 block text-[12px] text-ink-secondary" htmlFor="tts-voice">音色</label>
           <input id="tts-voice" list="tts-voice-options" className={inputClass} value={voice} onChange={(e) => setVoice(e.target.value)} placeholder="选择或填写音色 URI" aria-label="TTS 声音" />
           <datalist id="tts-voice-options">
-            {voiceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {availableVoices.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </datalist>
           <div className="mt-1 text-[11px] text-ink-secondary">可以从列表选择，也可以粘贴自定义音色 URI。</div>
         </div>
@@ -223,6 +204,6 @@ export function VoiceSettings() {
       </div>
       {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
       {speech.error && <div className="mt-2 text-[12px] text-danger">{speech.error}</div>}
-    </div>
+    </SettingsDisclosure>
   );
 }

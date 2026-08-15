@@ -131,11 +131,9 @@ function createWindow() {
       ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 16 } }
       : {
           titleBarStyle: "hidden",
-          // height MUST match the ChatView/GroupView header strip (px-5 py-3
-          // around a 36px control row = 60). Windows draws the caption buttons
-          // to fill the overlay, so anything shorter leaves a dead band under
-          // them and anything taller overhangs the header.
-          titleBarOverlay: { color: "#071426", symbolColor: "#d4e2f4", height: 60 },
+          // A compact overlay keeps native controls visible without covering
+          // the first row of right-side panels.
+          titleBarOverlay: { color: "#071426", symbolColor: "#d4e2f4", height: 46 },
         }),
     webPreferences: {
       contextIsolation: true,
@@ -161,7 +159,7 @@ ipcMain.handle("appearance:title-bar-color", (event, color) => {
   BrowserWindow.fromWebContents(event.sender)?.setTitleBarOverlay({
     color,
     symbolColor: "#d4e2f4",
-    height: 60,
+    height: 46,
   });
 });
 
