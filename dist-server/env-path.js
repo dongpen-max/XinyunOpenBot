@@ -133,14 +133,23 @@ function whichWin(cli) {
     };
     if (/[\\/]/.test(cli) || /^[a-zA-Z]:/.test(cli))
         return probe(cli);
+    const preferNonWindowsApps = /^codex(?:\.(?:exe|cmd|bat|com))?$/i.test(cli);
+    let firstHit = null;
     for (const dir of augmentedPath().split(delimiter)) {
         if (!dir)
             continue;
         const hit = probe(join(dir, cli));
-        if (hit)
-            return hit;
+        if (!hit)
+            continue;
+        firstHit ??= hit;
+        // Microsoft Store exposes Codex from a protected WindowsApps package.
+        // It can be visible to PATH discovery yet reject CreateProcess with
+        // EPERM. A normal npm/global install later on PATH is the usable CLI.
+        if (preferNonWindowsApps && /[\\/]WindowsApps[\\/]/i.test(hit))
+            continue;
+        return hit;
     }
-    return null;
+    return firstHit;
 }
 /** node.exe to run a script with: the one npm's shim would pick, else PATH,
  * else this executable only when it really is Node. In a packaged app,

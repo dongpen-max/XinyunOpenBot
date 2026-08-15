@@ -7,9 +7,10 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { augmentedPath, resetPathCacheForTests } from "./env-path.ts";
+import { augmentedPath, resetPathCacheForTests, resolveCliSpawn } from "./env-path.ts";
 
 const posixIt = it.skipIf(process.platform === "win32");
+const windowsIt = it.skipIf(process.platform !== "win32");
 
 describe("augmentedPath", () => {
   afterEach(() => {
@@ -74,5 +75,45 @@ describe("augmentedPath", () => {
     const parts = augmentedPath().split(delimiter);
     // temp home: .volta was never created, so it must not appear
     expect(parts).not.toContain(join(homedir(), ".volta", "bin"));
+  });
+});
+
+describe("resolveCliSpawn on Windows", () => {
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    process.env.PATHEXT = originalPathExt;
+    resetPathCacheForTests();
+  });
+
+  windowsIt("prefers an npm Codex shim over a Microsoft Store WindowsApps executable", () => {
+    const root = join(homedir(), "codex-resolution");
+    const windowsApps = join(root, "WindowsApps", "OpenAI.Codex_test", "app", "resources");
+    const npm = join(root, "npm");
+    const script = join(npm, "node_modules", "@openai", "codex", "bin", "codex.js");
+    mkdirSync(windowsApps, { recursive: true });
+    mkdirSync(join(npm, "node_modules", "@openai", "codex", "bin"), { recursive: true });
+    writeFileSync(join(windowsApps, "codex.exe"), "");
+    writeFileSync(join(npm, "node.exe"), "");
+    writeFileSync(script, "#!/usr/bin/env node\n");
+    writeFileSync(join(npm, "codex.cmd"), '@"%~dp0\\node.exe"  "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\n');
+    process.env.PATH = [windowsApps, npm].join(delimiter);
+    process.env.PATHEXT = ".EXE;.CMD";
+    resetPathCacheForTests();
+
+    expect(resolveCliSpawn("codex", ["--version"])).toEqual({
+      command: join(npm, "node.exe"),
+      args: [script, "--version"],
+    });
+  });
+
+  windowsIt("respects an explicitly configured WindowsApps Codex path", () => {
+    const cli = join(homedir(), "WindowsApps", "OpenAI.Codex_test", "codex.exe");
+    mkdirSync(join(cli, ".."), { recursive: true });
+    writeFileSync(cli, "");
+
+    expect(resolveCliSpawn(cli, ["--version"])).toEqual({ command: cli, args: ["--version"] });
   });
 });
