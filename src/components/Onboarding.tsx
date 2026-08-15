@@ -13,6 +13,7 @@ type InstanceRow = {
   driverKind: string;
   displayName: string;
   snapshot: { state: "available" | "unavailable"; reason?: string; version?: string | null; authenticated?: boolean };
+  install?: { docsUrl?: string; signInCommand?: string };
 };
 
 const isElectron = navigator.userAgent.includes("Electron");
@@ -96,6 +97,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const codex = byKind("codex");
   const grok = byKind("grokAgent");
   const antigravity = byKind("antigravityAgent");
+  const kimi = byKind("kimiAgent");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-app">
@@ -155,6 +157,18 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 </div>
               ) : (
                 <>
+                  <StatusRow
+                    ok={kimi?.snapshot.state === "available" && (kimi?.snapshot.authenticated ?? false)}
+                    warn
+                    title={`Kimi Code ${kimi?.snapshot.version ? `· ${kimi.snapshot.version.split(" ")[0]}` : ""}`}
+                    detail={
+                      kimi?.snapshot.state === "available"
+                        ? kimi.snapshot.authenticated
+                          ? "Kimi Code 已登录，可用于 Kimi 模型。"
+                          : `未登录${kimi.install?.signInCommand ? `，请在终端执行 ${kimi.install.signInCommand}` : ""}`
+                        : `可选。${kimi?.install?.docsUrl ? ` 安装文档：${kimi.install.docsUrl}` : ""}`
+                    }
+                  />
                   <StatusRow
                     ok={claude?.snapshot.state === "available" && (claude?.snapshot.authenticated ?? false)}
                     warn

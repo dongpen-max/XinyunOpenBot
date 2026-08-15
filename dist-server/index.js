@@ -12,6 +12,7 @@ import { approvalKey, autoDecision } from "./auto-approve.js";
 import * as box from "./box.js";
 import * as composio from "./composio.js";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.js";
+import { resetPathCache } from "./env-path.js";
 import { discoverModels, saveDiscoveredModels } from "./models-discover.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
@@ -100,10 +101,10 @@ function askBotAndWait(targetBotId, message, depth) {
 async function defaultSelection() {
     const described = await registry.describe();
     const available = described.filter((d) => d.snapshot.state === "available");
-    const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
-    return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
+    const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
+    return { instanceId: pick?.instanceId ?? "", model: pick?.models.default || "" };
 }
-let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
@@ -1227,6 +1228,7 @@ const server = createServer(async (req, res) => {
         }
         // ── provider instances (model picker) ──
         if (method === "GET" && path === "/api/instances") {
+            resetPathCache();
             return json(res, 200, { instances: await registry.describe() });
         }
         // ── app config (API keys — never echoed back, booleans only) ──

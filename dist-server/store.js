@@ -2,11 +2,12 @@
 // thread→instance binding and per-instance resume cursors — upstream's
 // ProviderSessionDirectory, recipe step 6: persist the binding from day
 // one). messages-<threadId>.json holds the folded transcript.
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.js";
 import { newId } from "./contracts.js";
 import { pickBotName } from "./names.js";
+import { writeFileAtomic } from "./atomic.js";
 /** What a task is called before its first message names it. */
 export const UNTITLED_TASK = "New task";
 /** A task's name, taken from the first thing you asked it to do. */
@@ -96,10 +97,10 @@ export class Store {
         }
     }
     saveBots() {
-        writeFileSync(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+        writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots, null, 2));
     }
     saveGroups() {
-        writeFileSync(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
+        writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
     }
     // ── groups ────────────────────────────────────────────────────────────
     group(id) {
@@ -192,7 +193,7 @@ export class Store {
     }
     saveThread(threadId) {
         const t = this.thread(threadId);
-        writeFileSync(messagesFile(threadId), JSON.stringify({ activeLeafId: t.activeLeafId, messages: t.messages }, null, 2));
+        writeFileAtomic(messagesFile(threadId), JSON.stringify({ activeLeafId: t.activeLeafId, messages: t.messages }, null, 2));
     }
     messagesFor(threadId) {
         return this.thread(threadId).messages;

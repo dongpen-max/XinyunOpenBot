@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { instanceConfigs } from "./config.ts";
 
-const DEFAULT_IDS = ["grok", "claude", "codex", "antigravity", "computer"];
+const DEFAULT_IDS = ["grok", "kimi", "claude", "codex", "antigravity", "computer"];
 
 describe("instanceConfigs", () => {
   it("returns the whole default fleet when no instances are configured", () => {

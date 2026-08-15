@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
-import { brokerSocketPath, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
 import type {
   DriverCreateInput,
@@ -223,6 +223,16 @@ export function claudeEnvironment(
 export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Claude", supportsMultipleInstances: true },
+  install: {
+    command: {
+      darwin: "npm install -g @anthropic-ai/claude-code",
+      linux: "npm install -g @anthropic-ai/claude-code",
+      win32: "npm install -g @anthropic-ai/claude-code",
+    },
+    needsNode: true,
+    docsUrl: "https://claude.com/claude-code",
+    signInCommand: "claude",
+  },
   models: MODELS,
   decodeConfig,
   defaultConfig: () => decodeConfig({}),
@@ -433,6 +443,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
 
       let buf = "";
+      child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
         buf += chunk;
         let nl;
@@ -450,7 +461,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       });
 
       child.on("error", (e) => {
-        emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
+        emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
         settle(false, "spawn_error");
       });
 

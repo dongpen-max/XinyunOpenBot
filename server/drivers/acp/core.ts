@@ -18,10 +18,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { execCli, killCliTree, spawnCli } from "../../procs.ts";
+import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
 
 import type {
   DriverCreateInput,
+  EngineInstall,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -58,6 +59,7 @@ export interface AcpSupport {
   nativeSource: string;
   /** Message shown when the CLI is present but not signed in. */
   loginNote: string;
+  install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
   /** Mutate the child env in place (e.g. strip a key). Optional. */
@@ -99,6 +101,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
   return {
     driverKind: DRIVER_KIND,
     metadata: { displayName: support.displayName, supportsMultipleInstances: true },
+    install: support.install,
     models: support.models,
     decodeConfig,
     defaultConfig: () => decodeConfig({}),
@@ -355,6 +358,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         };
 
         let buf = "";
+        child.stdout.setEncoding("utf8");
         child.stdout.on("data", (chunk) => {
           buf += chunk;
           let nl;
@@ -390,7 +394,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           if (stderr.length > 8192) stderr = stderr.slice(-8192);
         });
         child.on("error", (e) => {
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
+          emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
           settle(false, "spawn_error");
         });
         child.on("close", (code) => {

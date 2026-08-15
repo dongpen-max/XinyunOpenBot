@@ -5,10 +5,12 @@ import { CodexDriver } from "./codex.js";
 import { GrokDriver } from "./grok.js";
 import { GrokAgentDriver } from "./acp/grok.js";
 import { GeminiAgentDriver } from "./acp/gemini.js";
+import { KimiAgentDriver } from "./acp/kimi.js";
 export const BUILT_IN_DRIVERS = [
     GrokDriver,
     GrokAgentDriver,
     GeminiAgentDriver,
+    KimiAgentDriver,
     ClaudeDriver,
     CodexDriver,
     AntigravityDriver,

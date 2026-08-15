@@ -17,7 +17,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execCli, killCliTree, spawnCli } from "../../procs.js";
+import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.js";
 import { newEventId, newId } from "../../contracts.js";
 import { augmentedPath } from "../../env-path.js";
 // the computer proxy entry: .ts in dev (node type stripping), .js in the
@@ -48,6 +48,7 @@ export function createAcpDriver(support) {
     return {
         driverKind: DRIVER_KIND,
         metadata: { displayName: support.displayName, supportsMultipleInstances: true },
+        install: support.install,
         models: support.models,
         decodeConfig,
         defaultConfig: () => decodeConfig({}),
@@ -290,6 +291,7 @@ export function createAcpDriver(support) {
                     }
                 };
                 let buf = "";
+                child.stdout.setEncoding("utf8");
                 child.stdout.on("data", (chunk) => {
                     buf += chunk;
                     let nl;
@@ -330,7 +332,7 @@ export function createAcpDriver(support) {
                         stderr = stderr.slice(-8192);
                 });
                 child.on("error", (e) => {
-                    emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
+                    emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
                     settle(false, "spawn_error");
                 });
                 child.on("close", (code) => {

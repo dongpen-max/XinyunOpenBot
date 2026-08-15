@@ -2,12 +2,13 @@
 // thread→instance binding and per-instance resume cursors — upstream's
 // ProviderSessionDirectory, recipe step 6: persist the binding from day
 // one). messages-<threadId>.json holds the folded transcript.
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 export type MausColor =
   | "green"
@@ -237,11 +238,11 @@ export class Store {
   }
 
   private saveBots() {
-    writeFileSync(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+    writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots, null, 2));
   }
 
   private saveGroups() {
-    writeFileSync(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
+    writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
   }
 
   // ── groups ────────────────────────────────────────────────────────────
@@ -336,7 +337,7 @@ export class Store {
 
   private saveThread(threadId: string) {
     const t = this.thread(threadId);
-    writeFileSync(
+    writeFileAtomic(
       messagesFile(threadId),
       JSON.stringify({ activeLeafId: t.activeLeafId, messages: t.messages }, null, 2),
     );

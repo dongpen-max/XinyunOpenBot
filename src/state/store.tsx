@@ -162,6 +162,12 @@ export interface InstanceInfo {
     version?: string | null;
   };
   models: { default: string; options: Array<{ id: string; label: string }> };
+  install?: {
+    command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
+    docsUrl?: string;
+    signInCommand?: string;
+    needsNode?: boolean;
+  };
 }
 
 interface AppState {
