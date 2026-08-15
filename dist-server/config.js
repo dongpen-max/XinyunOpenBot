@@ -53,6 +53,10 @@ export function loadConfig() {
             url: process.env.OMB_TTS_BASE_URL,
             model: process.env.OMB_TTS_MODEL,
             voice: process.env.OMB_TTS_VOICE,
+            provider: process.env.OMB_TTS_PROVIDER,
+            speed: process.env.OMB_TTS_SPEED ? Number(process.env.OMB_TTS_SPEED) : undefined,
+            gain: process.env.OMB_TTS_GAIN ? Number(process.env.OMB_TTS_GAIN) : undefined,
+            sampleRate: process.env.OMB_TTS_SAMPLE_RATE ? Number(process.env.OMB_TTS_SAMPLE_RATE) : undefined,
             ...cfg.voice?.tts,
         },
     };

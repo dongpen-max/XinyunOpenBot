@@ -275,14 +275,24 @@ describe("harness HTTP API", () => {
     const put = await api("PUT", "/api/config", {
       voice: {
         stt: { url, key: "stt_secret", model: "whisper-test", language: "zh" },
-        tts: { url, key: "tts_secret", model: "tts-test", voice: "nova" },
+        tts: { url, key: "tts_secret", model: "tts-test", voice: "nova", provider: "openai", speed: 1.25 },
         autoSpeak: true,
       },
     });
     expect(put.status).toBe(200);
     expect(put.body.voice).toMatchObject({
       stt: { configured: true, keyConfigured: true, url, model: "whisper-test", language: "zh" },
-      tts: { configured: true, keyConfigured: true, url, model: "tts-test", voice: "nova" },
+      tts: {
+        configured: true,
+        keyConfigured: true,
+        url,
+        model: "tts-test",
+        voice: "nova",
+        provider: "openai",
+        speed: 1.25,
+        gain: 0,
+        sampleRate: 44_100,
+      },
       autoSpeak: true,
     });
     expect(JSON.stringify(put.body)).not.toContain("stt_secret");

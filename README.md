@@ -108,6 +108,7 @@ pnpm package:win
 
 - STT Base URL、API Key、模型（默认 `whisper-1`）和语言（默认 `zh`）；
 - TTS Base URL、API Key、模型（默认 `tts-1`）和声音（默认 `alloy`）；
+- 可在应用内选择预置或自定义音色，并调整语速；硅基流动模式还支持音量增益和输出采样率；
 - 可选“自动朗读新回复”。
 
 应用会调用 `${Base URL}/audio/transcriptions` 识别录音，并调用 `${Base URL}/audio/speech` 合成回复。API Key 仅由本机 Harness 读取，不会回传到前端。配置完成后，可使用输入框麦克风按钮、机器人回复旁的朗读按钮，或聊天标题栏的电话按钮。

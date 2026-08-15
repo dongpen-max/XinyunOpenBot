@@ -24,7 +24,16 @@ export interface AppConfig {
    * any OpenAI-compatible audio gateway or a local service. */
   voice?: {
     stt?: { key?: string; url?: string; model?: string; language?: string };
-    tts?: { key?: string; url?: string; model?: string; voice?: string };
+    tts?: {
+      key?: string;
+      url?: string;
+      model?: string;
+      voice?: string;
+      provider?: "openai" | "siliconflow";
+      speed?: number;
+      gain?: number;
+      sampleRate?: number;
+    };
     autoSpeak?: boolean;
   };
   instances?: InstanceConfigMap;
@@ -77,6 +86,10 @@ export function loadConfig(): AppConfig {
       url: process.env.OMB_TTS_BASE_URL,
       model: process.env.OMB_TTS_MODEL,
       voice: process.env.OMB_TTS_VOICE,
+      provider: process.env.OMB_TTS_PROVIDER as "openai" | "siliconflow" | undefined,
+      speed: process.env.OMB_TTS_SPEED ? Number(process.env.OMB_TTS_SPEED) : undefined,
+      gain: process.env.OMB_TTS_GAIN ? Number(process.env.OMB_TTS_GAIN) : undefined,
+      sampleRate: process.env.OMB_TTS_SAMPLE_RATE ? Number(process.env.OMB_TTS_SAMPLE_RATE) : undefined,
       ...cfg.voice?.tts,
     },
   };

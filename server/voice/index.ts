@@ -14,6 +14,10 @@ export interface VoiceStatus {
     url: string;
     model: string;
     voice: string;
+    provider: "openai" | "siliconflow";
+    speed: number;
+    gain: number;
+    sampleRate: number;
   };
   autoSpeak: boolean;
 }
@@ -30,8 +34,24 @@ export class VoiceConfigError extends Error {
 const DEFAULT_STT_MODEL = "whisper-1";
 const DEFAULT_TTS_MODEL = "tts-1";
 const DEFAULT_TTS_VOICE = "alloy";
+const DEFAULT_TTS_SPEED = 1;
+const DEFAULT_TTS_GAIN = 0;
+const DEFAULT_TTS_SAMPLE_RATE = 44_100;
 
 const clean = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const finite = (value: unknown, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
+function ttsProvider(cfg: AppConfig, url: string): "openai" | "siliconflow" {
+  if (cfg.voice?.tts?.provider === "siliconflow") return "siliconflow";
+  if (cfg.voice?.tts?.provider === "openai") return "openai";
+  try {
+    return /(^|\.)siliconflow\.cn$/i.test(new URL(url).hostname) ? "siliconflow" : "openai";
+  } catch {
+    return /siliconflow\.cn/i.test(url) ? "siliconflow" : "openai";
+  }
+}
 
 function endpoint(baseUrl: string, path: string): string {
   const base = baseUrl.replace(/\/+$/, "");
@@ -63,6 +83,7 @@ async function providerError(res: Response, action: string): Promise<Error> {
 export function describeVoice(cfg: AppConfig): VoiceStatus {
   const sttUrl = clean(cfg.voice?.stt?.url);
   const ttsUrl = clean(cfg.voice?.tts?.url);
+  const provider = ttsProvider(cfg, ttsUrl);
   return {
     stt: {
       configured: Boolean(sttUrl),
@@ -77,6 +98,10 @@ export function describeVoice(cfg: AppConfig): VoiceStatus {
       url: ttsUrl,
       model: clean(cfg.voice?.tts?.model) || DEFAULT_TTS_MODEL,
       voice: clean(cfg.voice?.tts?.voice) || DEFAULT_TTS_VOICE,
+      provider,
+      speed: clamp(finite(cfg.voice?.tts?.speed, DEFAULT_TTS_SPEED), 0.25, 4),
+      gain: clamp(finite(cfg.voice?.tts?.gain, DEFAULT_TTS_GAIN), -10, 10),
+      sampleRate: clamp(Math.round(finite(cfg.voice?.tts?.sampleRate, DEFAULT_TTS_SAMPLE_RATE)), 8_000, 48_000),
     },
     autoSpeak: cfg.voice?.autoSpeak === true,
   };
@@ -133,6 +158,18 @@ export async function synthesize(cfg: AppConfig, text: string): Promise<VoiceAud
     throw error;
   }
 
+  const payload: Record<string, unknown> = {
+    model: status.tts.model,
+    voice: status.tts.voice,
+    input,
+    response_format: "mp3",
+    speed: status.tts.speed,
+  };
+  if (status.tts.provider === "siliconflow") {
+    payload.gain = status.tts.gain;
+    payload.sample_rate = status.tts.sampleRate;
+  }
+
   const res = await fetch(endpoint(status.tts.url, "/audio/speech"), {
     method: "POST",
     headers: {
@@ -140,12 +177,7 @@ export async function synthesize(cfg: AppConfig, text: string): Promise<VoiceAud
       "content-type": "application/json",
       accept: "audio/mpeg,audio/*",
     },
-    body: JSON.stringify({
-      model: status.tts.model,
-      voice: status.tts.voice,
-      input,
-      response_format: "mp3",
-    }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) throw await providerError(res, "语音合成");

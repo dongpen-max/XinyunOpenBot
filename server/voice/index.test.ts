@@ -59,6 +59,10 @@ describe("voice provider", () => {
         url: "http://voice.test/v1",
         model: "tts-1",
         voice: "alloy",
+        provider: "openai",
+        speed: 1,
+        gain: 0,
+        sampleRate: 44_100,
       },
       autoSpeak: true,
     });
@@ -90,6 +94,7 @@ describe("voice provider", () => {
         voice: "xiaoyun",
         input: "任务完成",
         response_format: "mp3",
+        speed: 1,
       });
       res.writeHead(200, { "content-type": "audio/mpeg" });
       res.end(Buffer.from([9, 8, 7]));
@@ -101,6 +106,38 @@ describe("voice provider", () => {
     const audio = await synthesize(cfg, "任务完成");
     expect([...audio.bytes]).toEqual([9, 8, 7]);
     expect(audio.mime).toBe("audio/mpeg");
+  });
+
+  it("sends SiliconFlow-only tuning parameters and clamps unsafe values", async () => {
+    const url = await listen((req, res, body) => {
+      expect(req.url).toBe("/v1/audio/speech");
+      expect(JSON.parse(body.toString("utf8"))).toEqual({
+        model: "FunAudioLLM/CosyVoice2-0.5B",
+        voice: "FunAudioLLM/CosyVoice2-0.5B:anna",
+        input: "试听声音",
+        response_format: "mp3",
+        speed: 4,
+        gain: -10,
+        sample_rate: 48_000,
+      });
+      res.writeHead(200, { "content-type": "audio/mpeg" });
+      res.end(Buffer.from([1]));
+    });
+    const cfg: AppConfig = {
+      voice: {
+        tts: {
+          url,
+          provider: "siliconflow",
+          model: "FunAudioLLM/CosyVoice2-0.5B",
+          voice: "FunAudioLLM/CosyVoice2-0.5B:anna",
+          speed: 9,
+          gain: -50,
+          sampleRate: 96_000,
+        },
+      },
+    };
+
+    await expect(synthesize(cfg, "试听声音")).resolves.toMatchObject({ mime: "audio/mpeg" });
   });
 
   it("requires configured endpoints before using voice", async () => {

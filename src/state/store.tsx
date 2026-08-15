@@ -169,6 +169,10 @@ export interface ConfigStatus {
       url: string;
       model: string;
       voice: string;
+      provider: "openai" | "siliconflow";
+      speed: number;
+      gain: number;
+      sampleRate: number;
     };
     autoSpeak: boolean;
   };
