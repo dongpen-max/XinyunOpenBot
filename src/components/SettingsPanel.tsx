@@ -12,6 +12,11 @@ import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 import { zhCN } from "@/locales/zh-CN";
 
+const SHAPE_GROUPS = [
+  { id: "base", label: "基础形态" },
+  { id: "animal", label: "动物伙伴" },
+] as const;
+
 function Field({
   label,
   children,
@@ -104,21 +109,29 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
                 {zhCN.settings.shape}
               </div>
-              <div className="grid grid-cols-5 gap-2">
-                {MASCOT_SHAPES.map(({ id, label }) => (
-                  <button
-                    key={`${id}-${activeState}`}
-                    onClick={() => patch({ mascotShape: id as MausShape })}
-                    className={cn(
-                      "flex h-[58px] flex-col items-center justify-center gap-0.5 rounded-xl bg-inset transition-colors hover:bg-raised",
-                      (bot.mascotShape ?? "cursor") === id && "ring-2 ring-accent-border",
-                    )}
-                    title={label}
-                    aria-label={`使用${label}形状`}
-                  >
-                    <MausAvatar color={bot.color} shape={id} state={activeState} size={36} animated={false} />
-                    <span className="text-[10px] text-ink-secondary">{label}</span>
-                  </button>
+              <div className="space-y-3">
+                {SHAPE_GROUPS.map((group) => (
+                  <section key={group.id} aria-label={group.label}>
+                    <div className="mb-1.5 text-[11px] font-medium text-ink-secondary">{group.label}</div>
+                    <div className="grid grid-cols-5 gap-2">
+                      {MASCOT_SHAPES.filter(({ category }) => category === group.id).map(({ id, label }) => (
+                        <button
+                          key={`${id}-${activeState}`}
+                          onClick={() => patch({ mascotShape: id as MausShape })}
+                          className={cn(
+                            "flex h-[62px] flex-col items-center justify-center gap-0.5 rounded-xl bg-inset transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-border",
+                            (bot.mascotShape ?? "cursor") === id && "ring-2 ring-accent-border",
+                          )}
+                          title={label}
+                          aria-label={`使用${label}形状`}
+                          aria-pressed={(bot.mascotShape ?? "cursor") === id}
+                        >
+                          <MausAvatar color={bot.color} shape={id} state={activeState} size={38} animated={false} />
+                          <span className="text-[10px] leading-none text-ink-secondary">{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
 
