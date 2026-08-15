@@ -1,10 +1,11 @@
 import { track } from "@/lib/analytics";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Clock, Mic, Square, X } from "lucide-react";
+import { ArrowUp, Clock, Mic, Square, Users, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
+import { groupComposerHint } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { zhCN } from "@/locales/zh-CN";
 
@@ -20,6 +21,8 @@ function mentionQueryAt(text: string, caret: number): { start: number; query: st
   return { start: at, query };
 }
 
+type MentionChoice = { id: string; name: string; bot?: Bot };
+
 export function Composer({
   bot,
   group,
@@ -33,7 +36,8 @@ export function Composer({
 }) {
   const { state, dispatch } = useStore();
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
-  // offers the members (Buzz rule: only mentioned bots reply).
+  // offers members plus @everyone; explicit mentions override the room's
+  // configured default responder.
   const busy = group ? Boolean(group.busyBotId) : Boolean(bot?.busy);
   // a pending approval blocks the prompt until it is answered
   const threadId = group?.threadId ?? bot?.threadId ?? "";
@@ -62,7 +66,14 @@ export function Composer({
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
     if (!mention || mention.start === dismissedAt) return [];
-    const pool = group ? (members ?? []) : state.bots.filter((b) => b.id !== bot?.id && !b.hidden);
+    const pool: MentionChoice[] = group
+      ? [
+          { id: "__everyone__", name: "everyone" },
+          ...(members ?? []).map((member) => ({ id: member.id, name: member.name, bot: member })),
+        ]
+      : state.bots
+          .filter((member) => member.id !== bot?.id && !member.hidden)
+          .map((member) => ({ id: member.id, name: member.name, bot: member }));
     const q = mention.query.trim().toLowerCase();
     // "@Scout " — the full name plus a space — is a COMPLETED tag, not a
     // search: keep the picker closed so Enter sends instead of re-picking
@@ -81,7 +92,7 @@ export function Composer({
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
-  const pickMention = (peer: Bot) => {
+  const pickMention = (peer: MentionChoice) => {
     if (!mention) return;
     const after = text.slice(caret);
     const next = `${text.slice(0, mention.start)}@${peer.name} ${after}`;
@@ -207,9 +218,20 @@ export function Composer({
                   i === highlight ? "bg-raised-hover" : "",
                 )}
               >
-                <MausAvatar color={peer.color} shape={peer.mascotShape} state={normalizeState(peer.mascotExpression) ?? "happy"} size={24} />
+                {peer.bot ? (
+                  <MausAvatar
+                    color={peer.bot.color}
+                    shape={peer.bot.mascotShape}
+                    state={normalizeState(peer.bot.mascotExpression) ?? "happy"}
+                    size={24}
+                  />
+                ) : (
+                  <span className="flex size-6 items-center justify-center rounded-full bg-raised text-ink-secondary">
+                    <Users size={14} aria-hidden="true" />
+                  </span>
+                )}
                 <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
-                <span className="shrink-0 text-xs text-ink-secondary">Agent</span>
+                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "机器人" : "群聊"}</span>
               </button>
             ))}
           </div>
@@ -283,7 +305,7 @@ export function Composer({
               : busy
                 ? zhCN.composer.workingQueue
                 : group
-                  ? `${zhCN.composer.messageGroup.replace("{name}", group.name)} — @ ${zhCN.composer.mentionHint}`
+                  ? `${zhCN.composer.messageGroup.replace("{name}", group.name)} — ${groupComposerHint(group, members ?? [])}`
                   : zhCN.composer.messagePlaceholder.replace("{name}", bot?.name ?? "")
           }
           aria-label={`Message ${group ? group.name : (bot?.name ?? "")}`}
@@ -305,7 +327,7 @@ export function Composer({
         {!busy && !text.trim() && (
           <button
             onClick={toggleMic}
-            aria-label={recording ? "Stop dictation" : "Start dictation"}
+            aria-label={recording ? "停止语音输入" : "开始语音输入"}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full",
               recording

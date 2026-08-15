@@ -96,6 +96,8 @@ export class ProviderRegistry {
             displayName: entry.shadow.displayName ?? entry.shadow.driverKind,
             snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
             models: { default: "", options: [] },
+            install: this.driversByKind.get(entry.shadow.driverKind)?.install,
+            capabilities: { computerTools: false, agentTools: false },
           };
         }
         const inst = entry.live;
@@ -111,6 +113,11 @@ export class ProviderRegistry {
           displayName: inst.displayName ?? inst.driverKind,
           snapshot,
           models: inst.models,
+          install: this.driversByKind.get(inst.driverKind)?.install,
+          capabilities: {
+            computerTools: inst.driverKind === "boxAgent" || inst.adapter.capabilities.computerMcp === true,
+            agentTools: inst.adapter.capabilities.agentsMcp === true,
+          },
         };
       }),
     );

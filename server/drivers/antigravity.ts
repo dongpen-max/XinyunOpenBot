@@ -10,7 +10,7 @@
 // `request-review` auto-denies; `--dangerously-skip-permissions` (fullAuto)
 // approves everything. Real per-action approval cards are a future path via
 // native ACP (agy issue #31), which would reuse acp/core.ts like grok/gemini.
-import { execCli, killCliTree, spawnCli } from "../procs.ts";
+import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -74,6 +74,10 @@ function decodeConfig(raw: unknown): AntigravityConfig {
 export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
+  install: {
+    docsUrl: "https://antigravity.google/docs/cli",
+    signInCommand: "agy login",
+  },
   models: MODELS,
   decodeConfig,
   defaultConfig: () => decodeConfig({}),
@@ -274,7 +278,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       });
 
       child.on("error", (e) => {
-        emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
+        emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
         settle(false, "spawn_error");
       });
 

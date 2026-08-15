@@ -1,10 +1,11 @@
 // App-level settings, in the right-side slot: who you are + credentials
 // shared by all bots. Per-bot settings (name, persona, model, computer)
 // live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
-import { Check, Palette, X } from "lucide-react";
+import { Check, Cpu, Palette, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow, ProxyRow } from "./ApiKeys";
+import { EngineHealthRow, EngineRefreshButton } from "./EngineHealth";
 import { useUpdaterState } from "@/lib/updater";
 import { zhCN } from "@/locales/zh-CN";
 import {
@@ -134,19 +135,19 @@ function UpdatesRow() {
   const updater = window.ogb.updater;
   const label =
     s?.status === "checking"
-      ? "Checking…"
+      ? "正在检查…"
       : s?.status === "available"
-        ? `${s.version} available`
+        ? `发现新版本 ${s.version}`
         : s?.status === "downloading"
-          ? `Downloading… ${Math.round(s.percent ?? 0)}%`
+          ? `正在下载… ${Math.round(s.percent ?? 0)}%`
           : s?.status === "downloaded"
-            ? `${s.version} ready — restart to apply`
+            ? `${s.version} 已就绪 — 重启后应用`
             : s?.status === "error"
-              ? `Check failed: ${s.message ?? "unknown error"}`
-              : "You're on the latest version we know of.";
+              ? `检查失败：${s.message ?? "未知错误"}`
+              : "当前已是最新版本。";
   return (
     <div className="mt-4 rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">App updates</div>
+      <div className="text-[15px] font-medium text-ink">应用更新</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">{label}</div>
       <div className="mt-3 flex gap-2">
         {s?.status === "available" ? (
@@ -154,14 +155,14 @@ function UpdatesRow() {
             onClick={() => void updater.download()}
             className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
           >
-            Download
+            下载更新
           </button>
         ) : s?.status === "downloaded" ? (
           <button
             onClick={() => void updater.install()}
             className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
           >
-            Restart to update
+            重启并更新
           </button>
         ) : (
           <button
@@ -169,10 +170,56 @@ function UpdatesRow() {
             disabled={s?.status === "checking" || s?.status === "downloading"}
             className="rounded-lg bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
           >
-            Check for updates
+            检查更新
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function EngineHealthSection() {
+  const { state, refreshInstances } = useStore();
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const available = state.instances.filter((instance) => instance.snapshot.state === "available").length;
+
+  const refresh = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      await refreshInstances();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-xl bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Cpu size={18} />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[15px] font-medium text-ink">AI 引擎状态</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              已就绪 {available}/{state.instances.length} 个；CLI 登录和中转站配置会在此统一显示。
+            </div>
+          </div>
+        </div>
+        <EngineRefreshButton onRefresh={() => void refresh()} busy={checking} />
+      </div>
+      <div className="mt-3 divide-y divide-hairline/30">
+        {state.instances.map((instance) => (
+          <div key={instance.instanceId} className="py-2.5 first:pt-0 last:pb-0">
+            <EngineHealthRow instance={instance} compact />
+          </div>
+        ))}
+      </div>
+      {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">检查失败：{error}</div>}
     </div>
   );
 }
@@ -195,6 +242,8 @@ export function AppSettingsPanel() {
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         <AppearanceSettings />
+
+        <EngineHealthSection />
 
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">{zhCN.appSettings.profile}</div>

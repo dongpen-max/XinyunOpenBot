@@ -12,14 +12,16 @@ import { fileURLToPath } from "node:url";
 import { approvalKey, autoDecision } from "./auto-approve.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
+import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
+import { resetPathCache } from "./env-path.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { discoverModels, saveDiscoveredModels, type RelaySection } from "./models-discover.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { mentionedBots, Store, type Message } from "./store.ts";
+import { mentionedBots, roomResponders, Store, type GroupDefaultResponder, type Message } from "./store.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
@@ -108,10 +110,10 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
 async function defaultSelection() {
   const described = await registry.describe();
   const available = described.filter((d) => d.snapshot.state === "available");
-  const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
-  return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
+  const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
+  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default || "" };
 }
-let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
@@ -492,11 +494,13 @@ async function startTurn(
         instance.adapter.capabilities.computerMcp === true || instance.driverKind === "boxAgent";
       let previewBoxId: string | null = null;
       if (wants !== "off" && wants !== "local" && box.boxConfigured(cfg)) {
+        broadcast({ kind: "computer", botId: bot.id, state: "checking" });
         let b = await box.findBox(cfg, bot.id).catch(() => null);
         // the Computer driver runs ON the box — provision it on first use
         if (!b && instance.driverKind === "boxAgent") {
-          broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-          await box.provisionBox(cfg, bot.id, bot.name);
+          await box.provisionBox(cfg, bot.id, bot.name, (state) =>
+            broadcast({ kind: "computer", botId: bot.id, state }),
+          );
           b = await box.findBox(cfg, bot.id).catch(() => null);
         }
         // an archived box answers every action with an error until it
@@ -508,6 +512,7 @@ async function startTurn(
           b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
         }
         if (b) {
+          broadcast({ kind: "computer", botId: bot.id, state: "ready" });
           previewBoxId = b.id;
           if (mountsComputer) integrations.computer = { boxId: b.id, token: cfg.box!.token! };
         }
@@ -542,6 +547,11 @@ async function startTurn(
             store.bots.filter((b) => b.id !== bot.id),
           )
         : [];
+      const coordinationPrompt = bot.chiefOfStaff
+        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
+        : integrations.agents
+          ? "你可以通过机器人协作工具与其他机器人配合：list_bots 查看可用机器人，ask_bot 向指定机器人发送任务并取得回复。"
+          : "";
 
       await instance.adapter.sendTurn({
         threadId: bot.threadId,
@@ -559,9 +569,7 @@ async function startTurn(
             : integrations.localComputer
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
-          (integrations.agents
-            ? " You can work with the user's other bots through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
-            : "") +
+          (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           (tagged.length
             ? ` The user tagged ${tagged
                 .map((t) => `@${t.name} (ask_bot bot_id ${t.id})`)
@@ -588,11 +596,11 @@ async function startTurn(
 
 // ── config hot-reload ─────────────────────────────────────────────────
 // ── group turn engine ──────────────────────────────────────────────────
-// The Buzz rule: in a room, a bot replies only when @mentioned. Mentioned
-// members run SEQUENTIALLY (one speaker at a time — the transcript and the
-// streaming bubble stay coherent), each on a fresh session with the recent
-// room conversation serialized into its prompt. A member's reply may
-// @mention teammates; those get one chained turn (hop 1), never deeper.
+// Room messages go to the configured default responder unless the user
+// explicitly @mentions members. Responders run SEQUENTIALLY (one speaker at
+// a time — the transcript and streaming bubble stay coherent), each on a
+// fresh session with recent room context. A member's reply may @mention
+// teammates; those get one chained turn (hop 1), never deeper.
 const groupQueues = new Map<string, Promise<void>>();
 const GROUP_CONTEXT_MESSAGES = 30;
 const MAX_GROUP_HOPS = 1;
@@ -698,7 +706,7 @@ async function runGroupMemberTurn(
     const members = group.memberIds
       .map((id) => store.bot(id))
       .filter((b): b is NonNullable<typeof b> => Boolean(b) && b!.id !== bot.id);
-    for (const next of mentionedBots(replyText, members)) {
+    for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
       if (spoken.has(next.id)) continue;
       await runGroupMemberTurn(groupId, next.id, hop + 1, spoken);
     }
@@ -714,10 +722,7 @@ function startGroupTurn(groupId: string, text: string) {
   const members = group.memberIds
     .map((id) => store.bot(id))
     .filter((b): b is NonNullable<typeof b> => Boolean(b));
-  const mentioned = mentionedBots(text, members);
-  // Buzz rule: nobody replies unless mentioned — except a one-member room,
-  // where the single bot obviously IS the addressee
-  let responders = mentioned.length ? mentioned : members.length === 1 ? members : [];
+  let responders = roomResponders(text, members, group.defaultResponder);
   // bot⇄bot channels: chipping in without a tag addresses the last speaker
   if (!responders.length && group.dm) {
     const lastSpeakerId = [...store.messagesFor(group.threadId)]
@@ -951,6 +956,8 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/groups\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
+      const existing = store.group(m[1]);
+      if (!existing) return json(res, 404, { error: "no such room" });
       const patch: Record<string, unknown> = {};
       for (const key of ["name", "bulletin", "unread"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
@@ -958,6 +965,18 @@ const server = createServer(async (req, res) => {
       if (Array.isArray(body.memberIds)) {
         const ids = body.memberIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id)));
         if (ids.length) patch.memberIds = ids;
+      }
+      if (body.defaultResponder !== undefined) {
+        const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
+        const memberIds = (patch.memberIds as string[] | undefined) ?? existing.memberIds;
+        let responder: GroupDefaultResponder | null = null;
+        if (value?.kind === "everyone") responder = { kind: "everyone" };
+        else if (value?.kind === "mentions") responder = { kind: "mentions" };
+        else if (value?.kind === "member" && typeof value.botId === "string" && memberIds.includes(value.botId)) {
+          responder = { kind: "member", botId: value.botId };
+        }
+        if (!responder) return json(res, 400, { error: "invalid default responder" });
+        patch.defaultResponder = responder;
       }
       const group = store.patchGroup(m[1], patch);
       if (!group) return json(res, 404, { error: "no such room" });
@@ -1024,6 +1043,13 @@ const server = createServer(async (req, res) => {
       for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
+      if (body.chiefOfStaff !== undefined && typeof body.chiefOfStaff !== "boolean") {
+        return json(res, 400, { error: "chiefOfStaff must be true or false" });
+      }
+      const existing = store.bot(m[1]);
+      if (body.hidden === true && existing?.chiefOfStaff && body.chiefOfStaff !== false) {
+        return json(res, 400, { error: "choose another Chief of Staff before hiding this bot" });
+      }
       // the two permission fields decide what runs unattended, so they are
       // type-checked rather than copied through: a string alwaysAllow would
       // still answer .includes() — with substring matches, not tool names
@@ -1039,8 +1065,17 @@ const server = createServer(async (req, res) => {
       }
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      broadcast({ kind: "bot", bot });
-      return json(res, 200, { bot });
+      const chiefChanges =
+        body.chiefOfStaff === true
+          ? store.setChiefOfStaff(bot.id)
+          : body.chiefOfStaff === false && bot.chiefOfStaff
+            ? store.setChiefOfStaff(null)
+            : [];
+      if (chiefChanges === null) return json(res, 404, { error: "no such bot" });
+      const changed = new Map([[bot.id, store.bot(bot.id)!]]);
+      for (const changedBot of chiefChanges) changed.set(changedBot.id, changedBot);
+      for (const changedBot of changed.values()) broadcast({ kind: "bot", bot: changedBot });
+      return json(res, 200, { bot: store.bot(bot.id)! });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
@@ -1234,6 +1269,7 @@ const server = createServer(async (req, res) => {
 
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
+      resetPathCache();
       return json(res, 200, { instances: await registry.describe() });
     }
 
@@ -1308,7 +1344,13 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such bot" });
       switch (m[2]) {
         case "provision":
-          return json(res, 200, await box.provisionBox(cfg, botId, bot.name));
+          return json(
+            res,
+            200,
+            await box.provisionBox(cfg, botId, bot.name, (state) =>
+              broadcast({ kind: "computer", botId, state }),
+            ),
+          );
         case "join":
           return json(res, 200, await box.joinBox(cfg, botId));
         case "sleep":

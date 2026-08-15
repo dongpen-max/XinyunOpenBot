@@ -17,6 +17,7 @@ describe("ProviderRegistry", () => {
     expect(live!.driverKind).toBe("fake");
     expect(live!.displayName).toBe("Bot A");
     expect(registry.instances()).toHaveLength(1);
+    expect((await registry.describe())[0].capabilities).toEqual({ computerTools: false, agentTools: false });
   });
 
   it("uses defaultConfig when the entry has no config", async () => {

@@ -2,12 +2,13 @@
 // thread→instance binding and per-instance resume cursors — upstream's
 // ProviderSessionDirectory, recipe step 6: persist the binding from day
 // one). messages-<threadId>.json holds the folded transcript.
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 export type MausColor =
   | "green"
@@ -69,14 +70,21 @@ export interface Message {
   comm?: { groupId: string; withBotId: string; withName: string; withColor: string };
 }
 
-/** A room: a shared thread where several bots + the user talk. Bots reply
- * only when @mentioned (the Buzz rule). The bulletin is the room's shared
- * instructions — every member's turn gets it as part of its system prompt. */
+export type GroupDefaultResponder =
+  | { kind: "member"; botId: string }
+  | { kind: "everyone" }
+  | { kind: "mentions" };
+
+/** A room: a shared thread where several bots + the user talk. Plain
+ * messages follow `defaultResponder`; explicit @mentions always override it.
+ * The bulletin is the room's shared instructions — every member's turn gets
+ * it as part of its system prompt. */
 export interface GroupRecord {
   id: string;
   threadId: ThreadId;
   name: string;
   memberIds: string[];
+  defaultResponder: GroupDefaultResponder;
   bulletin: string;
   unread: boolean;
   createdAt: number;
@@ -145,6 +153,8 @@ export interface BotRecord {
   rewound?: boolean;
   pinned?: boolean;
   hidden?: boolean;
+  /** The single workspace-wide coordinator. */
+  chiefOfStaff?: boolean;
   busy?: boolean;
   createdAt: number;
 }
@@ -186,6 +196,50 @@ export function mentionedBots<T extends { name: string; hidden?: boolean }>(text
   return found;
 }
 
+/** Normalize persisted or API-provided routing. Old rooms did not have this
+ * field; giving them their first member as lead fixes the old silent-send
+ * behavior without making every prompt fan out to every model. */
+export function normalizeGroupDefaultResponder(
+  value: unknown,
+  memberIds: string[],
+  dm = false,
+): GroupDefaultResponder {
+  if (dm) return { kind: "mentions" };
+  if (value && typeof value === "object") {
+    const candidate = value as { kind?: unknown; botId?: unknown };
+    if (candidate.kind === "everyone") return { kind: "everyone" };
+    if (candidate.kind === "mentions") return { kind: "mentions" };
+    if (
+      candidate.kind === "member" &&
+      typeof candidate.botId === "string" &&
+      memberIds.includes(candidate.botId)
+    ) {
+      return { kind: "member", botId: candidate.botId };
+    }
+  }
+  if (memberIds.length === 0) return { kind: "mentions" };
+  return { kind: "member", botId: memberIds[0] };
+}
+
+/** Resolve the bots invoked by a human room message. Explicit targets win;
+ * otherwise the room policy chooses one member, everyone, or nobody. */
+export function roomResponders<T extends { id: string; name: string; hidden?: boolean }>(
+  text: string,
+  members: T[],
+  defaultResponder: GroupDefaultResponder,
+): T[] {
+  const available = members.filter((member) => !member.hidden);
+  if (/(?:^|\s)@everyone\b/i.test(text)) return available;
+  const mentioned = mentionedBots(text, available);
+  if (mentioned.length) return mentioned;
+  if (defaultResponder.kind === "everyone") return available;
+  if (defaultResponder.kind === "member") {
+    const lead = available.find((member) => member.id === defaultResponder.botId);
+    return lead ? [lead] : [];
+  }
+  return [];
+}
+
 const onboardingCard = (): OptionCardData => ({
   title: "What do you mostly want help with?",
   subtitle: "Pick whatever's closest; we can always expand from there.",
@@ -218,9 +272,33 @@ export class Store {
     } catch {
       this.groups = [];
     }
-    // busy never survives a restart — no turn does either
-    for (const b of this.bots) b.busy = false;
-    for (const g of this.groups) g.busyBotId = null;
+    // busy never survives a restart — no turn does either. Rooms saved
+    // before default responders existed adopt their first member as lead.
+    let botsMigrated = false;
+    let chiefSeen = false;
+    let groupsMigrated = false;
+    for (const b of this.bots) {
+      b.busy = false;
+      if (!b.chiefOfStaff) continue;
+      if (!chiefSeen) {
+        chiefSeen = true;
+        if (b.hidden) {
+          b.hidden = false;
+          botsMigrated = true;
+        }
+        continue;
+      }
+      b.chiefOfStaff = false;
+      botsMigrated = true;
+    }
+    for (const g of this.groups) {
+      g.busyBotId = null;
+      const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
+      if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;
+      g.defaultResponder = normalized;
+    }
+    if (botsMigrated) this.saveBots();
+    if (groupsMigrated) this.saveGroups();
     // bots saved before tasks existed have one endless thread; adopt it as
     // their first task so nothing is lost and nothing special-cases it
     for (const b of this.bots) {
@@ -237,11 +315,11 @@ export class Store {
   }
 
   private saveBots() {
-    writeFileSync(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+    writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots, null, 2));
   }
 
   private saveGroups() {
-    writeFileSync(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
+    writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
   }
 
   // ── groups ────────────────────────────────────────────────────────────
@@ -259,6 +337,7 @@ export class Store {
       threadId: newId(),
       name,
       memberIds,
+      defaultResponder: dm ? { kind: "mentions" } : { kind: "member", botId: memberIds[0] },
       bulletin: "",
       unread: false,
       createdAt: Date.now(),
@@ -277,10 +356,15 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "bulletin" | "unread" | "busyBotId">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     Object.assign(group, patch);
+    group.defaultResponder = normalizeGroupDefaultResponder(
+      group.defaultResponder,
+      group.memberIds,
+      Boolean(group.dm),
+    );
     this.saveGroups();
     return group;
   }
@@ -336,7 +420,7 @@ export class Store {
 
   private saveThread(threadId: string) {
     const t = this.thread(threadId);
-    writeFileSync(
+    writeFileAtomic(
       messagesFile(threadId),
       JSON.stringify({ activeLeafId: t.activeLeafId, messages: t.messages }, null, 2),
     );
@@ -489,6 +573,21 @@ export class Store {
     Object.assign(bot, patch);
     this.saveBots();
     return bot;
+  }
+
+  /** Elect one coordinator, or clear the role, and return all changed bots. */
+  setChiefOfStaff(id: string | null): BotRecord[] | null {
+    if (id && !this.bot(id)) return null;
+    const changed: BotRecord[] = [];
+    for (const bot of this.bots) {
+      const next = bot.id === id;
+      if (Boolean(bot.chiefOfStaff) === next && !(next && bot.hidden)) continue;
+      bot.chiefOfStaff = next;
+      if (next) bot.hidden = false;
+      changed.push(bot);
+    }
+    if (changed.length) this.saveBots();
+    return changed;
   }
 
   setResumeCursor(botId: string, instanceId: string, cursor: unknown) {

@@ -26,6 +26,15 @@ const support: AcpSupport = {
   defaultCli: "grok",
   nativeSource: "grok.acp",
   loginNote: "Grok CLI is not signed in — run `grok login` in a terminal",
+  install: {
+    command: {
+      darwin: "curl -fsSL https://x.ai/cli/install.sh | bash",
+      linux: "curl -fsSL https://x.ai/cli/install.sh | bash",
+      win32: "irm https://x.ai/cli/install.ps1 | iex",
+    },
+    docsUrl: "https://docs.x.ai/grok-cli",
+    signInCommand: "grok login",
+  },
 
   // --permission-mode must always be explicit: ~/.grok/config.toml may set
   // permission_mode = "always-approve", which would silently make every

@@ -76,7 +76,7 @@ export type RuntimeEvent = RuntimeEventBase &
       }
     | { type: "request.resolved"; behavior: string; source: string }
     | { type: "thread.token-usage.updated"; input: number; output: number }
-    | { type: "runtime.error"; message: string }
+    | { type: "runtime.error"; message: string; setup?: boolean }
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
@@ -151,6 +151,13 @@ export interface ProviderSnapshot {
   version?: string | null;
 }
 
+export interface EngineInstall {
+  command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
+  docsUrl?: string;
+  signInCommand?: string;
+  needsNode?: boolean;
+}
+
 // ── driver SPI (upstream ProviderDriver — a plain record, not a service) ─
 // `create` owns ALL per-instance state; two create calls share nothing.
 // Failures must reject, never throw synchronously — the registry downgrades
@@ -209,6 +216,7 @@ export interface ProviderInstance {
 export interface ProviderDriver<Config = unknown> {
   readonly driverKind: DriverKind;
   readonly metadata: { displayName: string; supportsMultipleInstances?: boolean };
+  readonly install?: EngineInstall;
   /** Decode the opaque config envelope; throw on invalid (→ shadow). */
   decodeConfig(raw: unknown): Config;
   defaultConfig(): Config;

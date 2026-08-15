@@ -4,6 +4,7 @@
 // pure; everything async lives in the wrapped dispatch + SSE fold.
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -56,12 +57,18 @@ export interface Message {
   comm?: { groupId: string; withBotId: string; withName: string; withColor: MausColor };
 }
 
+export type GroupDefaultResponder =
+  | { kind: "member"; botId: string }
+  | { kind: "everyone" }
+  | { kind: "mentions" };
+
 /** A room: several bots + you in one shared thread. */
 export interface Group {
   id: string;
   threadId: string;
   name: string;
   memberIds: string[];
+  defaultResponder: GroupDefaultResponder;
   bulletin: string;
   unread: boolean;
   createdAt: number;
@@ -107,6 +114,8 @@ export interface Bot {
   alwaysAllow?: string[];
   pinned?: boolean;
   hidden?: boolean;
+  /** The workspace's single primary coordinator. */
+  chiefOfStaff?: boolean;
   messages: Message[];
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
@@ -162,7 +171,27 @@ export interface InstanceInfo {
     version?: string | null;
   };
   models: { default: string; options: Array<{ id: string; label: string }> };
+  install?: {
+    command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
+    docsUrl?: string;
+    signInCommand?: string;
+    needsNode?: boolean;
+  };
+  capabilities?: {
+    /** Can this exact driver mount cloud/local computer tools into a turn? */
+    computerTools: boolean;
+    /** Can this exact driver call the user's other bots? */
+    agentTools: boolean;
+  };
 }
+
+export type ComputerActivityState =
+  | "checking"
+  | "reusing"
+  | "creating"
+  | "waking"
+  | "initializing"
+  | "ready";
 
 interface AppState {
   bots: Bot[];
@@ -179,6 +208,8 @@ interface AppState {
   screens: Record<string, { png: string; mime: string }>;
   /** bots whose cloud computer is being provisioned */
   provisioning: Record<string, boolean>;
+  /** short-lived cloud-computer lifecycle shown while a turn/panel starts it */
+  computerActivity: Record<string, ComputerActivityState | undefined>;
   connected: boolean;
   error: string | null;
   mascotMotion: {
@@ -194,7 +225,11 @@ type Action =
   | { type: "groupDeleted"; groupId: string }
   | { type: "createGroup"; memberIds: string[]; name?: string }
   | { type: "sendGroup"; groupId: string; text: string }
-  | { type: "patchGroup"; groupId: string; patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds">> }
+  | {
+      type: "patchGroup";
+      groupId: string;
+      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder">>;
+    }
   | { type: "deleteGroup"; groupId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -231,7 +266,7 @@ type Action =
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
-  | { type: "provisioning"; botId: string; on: boolean }
+  | { type: "computerActivity"; botId: string; state?: ComputerActivityState }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
@@ -246,7 +281,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "chiefOfStaff"
         >
       >;
     }
@@ -353,7 +388,15 @@ function reducer(state: AppState, action: Action): AppState {
             : action.bot.busy === false && before?.busy
               ? "celebrate"
               : null;
-      const next = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      const animated = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      const next = action.bot.chiefOfStaff
+        ? {
+            ...animated,
+            bots: animated.bots.map((bot) =>
+              bot.id === action.bot.id ? bot : { ...bot, chiefOfStaff: false },
+            ),
+          }
+        : animated;
       return updateBot(next, action.bot.id, (b) => ({ ...b, ...action.bot, messages: b.messages }));
     }
     case "messageAdded": {
@@ -437,11 +480,16 @@ function reducer(state: AppState, action: Action): AppState {
         ...withMascotMotion(state, action.botId, "success"),
         screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime } },
         provisioning: { ...state.provisioning, [action.botId]: false },
+        computerActivity: { ...state.computerActivity, [action.botId]: undefined },
       };
-    case "provisioning":
+    case "computerActivity":
       return {
-        ...(action.on ? withMascotMotion(state, action.botId, "launch") : state),
-        provisioning: { ...state.provisioning, [action.botId]: action.on },
+        ...(action.state && action.state !== "ready" ? withMascotMotion(state, action.botId, "launch") : state),
+        provisioning: {
+          ...state.provisioning,
+          [action.botId]: Boolean(action.state && action.state !== "ready"),
+        },
+        computerActivity: { ...state.computerActivity, [action.botId]: action.state },
       };
     case "setModel":
       return updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection }));
@@ -490,9 +538,17 @@ function reducer(state: AppState, action: Action): AppState {
         Object.prototype.hasOwnProperty.call(action.patch, "color") ||
         Object.prototype.hasOwnProperty.call(action.patch, "mascotShape") ||
         Object.prototype.hasOwnProperty.call(action.patch, "mascotExpression");
-      const next = mascotChanged
+      const animated = mascotChanged
         ? withMascotMotion(state, action.botId, "customize")
         : state;
+      const next = action.patch.chiefOfStaff
+        ? {
+            ...animated,
+            bots: animated.bots.map((bot) =>
+              bot.id === action.botId ? bot : { ...bot, chiefOfStaff: false },
+            ),
+          }
+        : animated;
       return updateBot(next, action.botId, (b) => ({ ...b, ...action.patch }));
     }
     case "previewMascotMotion": {
@@ -577,6 +633,7 @@ const initialState: AppState = {
   appSettingsOpen: false,
   screens: {},
   provisioning: {},
+  computerActivity: {},
   connected: false,
   error: null,
   mascotMotion: null,
@@ -613,6 +670,7 @@ export function useStreaming() {
 const StoreContext = createContext<{
   state: AppState;
   dispatch: React.Dispatch<Action>;
+  refreshInstances: () => Promise<InstanceInfo[]>;
 } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -663,6 +721,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // debounced PATCH per bot for text-field edits (name/title/description)
   const patchTimers = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; patch: Record<string, unknown> }>());
+
+  const refreshInstances = useCallback(async () => {
+    const { instances } = await api("/api/instances");
+    const next = Array.isArray(instances) ? (instances as InstanceInfo[]) : [];
+    rawDispatch({ type: "instances", instances: next });
+    return next;
+  }, []);
 
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {
@@ -904,9 +969,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api("/api/bots")
         .then(({ bots, groups }) => alive && rawDispatch({ type: "hydrate", bots, groups: groups ?? [] }))
         .catch(() => {});
-      api("/api/instances")
-        .then(({ instances }) => alive && rawDispatch({ type: "instances", instances }))
-        .catch(() => {});
+      refreshInstances().catch(() => {});
       api("/api/config")
         .then((config) => alive && rawDispatch({ type: "configStatus", config }))
         .catch(() => {});
@@ -999,7 +1062,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "screenFrame", botId: frame.botId, png: frame.png, mime: frame.mime ?? "image/png" });
           break;
         case "computer":
-          rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
+          rawDispatch({ type: "computerActivity", botId: frame.botId, state: frame.state });
           break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });
@@ -1021,9 +1084,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       alive = false;
       es.close();
     };
-  }, []);
+  }, [refreshInstances]);
 
-  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
+  const value = useMemo(() => ({ state, dispatch, refreshInstances }), [state, dispatch, refreshInstances]);
   return (
     <StoreContext.Provider value={value}>
       <StreamContext.Provider value={stream}>{children}</StreamContext.Provider>

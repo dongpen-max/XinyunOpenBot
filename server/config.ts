@@ -1,11 +1,12 @@
 // Config + data dirs. One file, ~/.openmausbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { InstanceConfigMap } from "./contracts.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 export interface AppConfig {
   xai?: { key?: string; url?: string };
@@ -74,7 +75,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     }
   }
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(p, JSON.stringify(disk, null, 2));
+  writeFileAtomic(p, JSON.stringify(disk, null, 2));
 }
 
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
@@ -99,6 +100,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // `enabled: false` is the explicit way to drop one from the fleet.
   const map: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
+    kimi: { driver: "kimiAgent" },
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },

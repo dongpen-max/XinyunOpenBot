@@ -69,7 +69,7 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
         <button
           onClick={copy}
           className="rounded p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-          title="Copy code"
+          title="复制代码"
         >
           {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
         </button>

@@ -7,6 +7,7 @@ import {
   Check,
   ClipboardCopy,
   Copy,
+  Crown,
   EyeOff,
   FolderPlus,
   Loader2,
@@ -65,16 +66,16 @@ function UpdateButton() {
   const working = status === "checking" || status === "downloading";
   const label =
     status === "available"
-      ? `Version ${s?.version ?? ""} available — download`
+      ? `发现版本 ${s?.version ?? ""} — 点击下载`
       : status === "downloading"
-        ? `Downloading… ${Math.round(s?.percent ?? 0)}%`
+        ? `正在下载… ${Math.round(s?.percent ?? 0)}%`
         : status === "downloaded"
-          ? `Version ${s?.version ?? ""} ready — restart to update`
+          ? `版本 ${s?.version ?? ""} 已就绪 — 点击重启更新`
           : status === "checking"
-            ? "Checking for updates…"
+            ? "正在检查更新…"
             : upToDate
-              ? "You're up to date"
-              : "Check for updates";
+              ? "当前已是最新版本"
+              : "检查更新";
 
   return (
     <button
@@ -113,7 +114,7 @@ function preview(bot: Bot): string {
   if (!last) return "";
   if (last.kind === "options" && last.card) return last.card.title;
   if (last.kind === "activity" && last.tool) return last.tool.name;
-  if (last.kind === "screen") return "Screen frame";
+  if (last.kind === "screen") return "电脑画面";
   return last.text ?? "";
 }
 
@@ -340,8 +341,10 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
   }, [onClose]);
 
   if (!bot) return null;
+  const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
+  const canCoordinate = engine?.capabilities?.agentTools === true;
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - 340);
+  const top = Math.max(8, Math.min(menu.y, window.innerHeight - 380));
   const left = Math.min(menu.x, window.innerWidth - 240);
 
   const item = (
@@ -382,6 +385,15 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
           bot.pinned ? zhCN.sidebar.unpin : zhCN.sidebar.pin,
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } }),
         ),
+        item(
+          <Crown size={16} className={bot.chiefOfStaff ? "text-accent" : "text-ink-secondary"} />,
+          bot.chiefOfStaff ? zhCN.sidebar.removeChief : zhCN.sidebar.makeChief,
+          () => dispatch({ type: "updateBot", botId: bot.id, patch: { chiefOfStaff: !bot.chiefOfStaff } }),
+          {
+            disabled: !bot.chiefOfStaff && !canCoordinate,
+            hint: !bot.chiefOfStaff && !canCoordinate ? zhCN.sidebar.chiefNeedEngine : undefined,
+          },
+        ),
         item(<FolderPlus size={16} className="text-ink-secondary" />, zhCN.sidebar.moveToSection, undefined, {
           disabled: true,
           hint: zhCN.sidebar.comingSoon,
@@ -403,7 +415,10 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
         }),
         divider("d3"),
         item(<EyeOff size={16} className="text-ink-secondary" />, zhCN.sidebar.hideFromSidebar, () =>
-          dispatch({ type: "updateBot", botId: bot.id, patch: { hidden: true } }),
+          dispatch({ type: "updateBot", botId: bot.id, patch: { hidden: true } }), {
+            disabled: Boolean(bot.chiefOfStaff),
+            hint: bot.chiefOfStaff ? zhCN.sidebar.chiefCannotHide : undefined,
+          },
         ),
         item(<Trash2 size={16} />, zhCN.sidebar.delete, () => dispatch({ type: "deleteBot", botId: bot.id }), {
           danger: true,
@@ -428,8 +443,14 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
       }}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left",
-        selected ? "bg-raised" : "hover:bg-raised/50",
+        "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left",
+        bot.chiefOfStaff
+          ? selected
+            ? "border-accent/40 bg-accent/15"
+            : "border-accent/25 bg-accent/5 hover:bg-accent/10"
+          : selected
+            ? "border-transparent bg-raised"
+            : "border-transparent hover:bg-raised/50",
       )}
     >
       <MausAvatar
@@ -453,8 +474,14 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[13px] text-ink-secondary">
-            {preview(bot)}
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-ink-secondary">
+            {bot.chiefOfStaff && (
+              <span className="flex shrink-0 items-center gap-1 text-[11.5px] font-medium text-accent">
+                <Crown size={11} /> {zhCN.sidebar.chiefOfStaff}
+              </span>
+            )}
+            {bot.chiefOfStaff && preview(bot) && <span className="shrink-0 text-ink-secondary/60">·</span>}
+            <span className="truncate">{preview(bot)}</span>
           </span>
           {bot.unread && (
             <span className="size-2 shrink-0 rounded-full bg-accent" />
@@ -474,7 +501,7 @@ export function Sidebar() {
   const [query, setQuery] = useState("");
 
   const q = query.trim().toLowerCase();
-  const visibleBots = state.bots
+  const matchingBots = state.bots
     .filter((b) => !b.hidden)
     .filter(
       (b) =>
@@ -482,7 +509,10 @@ export function Sidebar() {
         b.name.toLowerCase().includes(q) ||
         (b.title ?? "").toLowerCase().includes(q) ||
         preview(b).toLowerCase().includes(q),
-    )
+    );
+  const chiefBot = matchingBots.find((bot) => bot.chiefOfStaff);
+  const visibleBots = matchingBots
+    .filter((bot) => !bot.chiefOfStaff)
     .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
 
@@ -553,7 +583,7 @@ export function Sidebar() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQuery("")}
             placeholder={zhCN.sidebar.search}
-            aria-label="Search bots"
+            aria-label="搜索机器人"
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
@@ -562,8 +592,13 @@ export function Sidebar() {
       {/* Bot list */}
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
-          {visibleBots.length === 0 && visibleGroups.length === 0 && q && (
-            <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">Nothing matches “{query}”</div>
+          {!chiefBot && visibleBots.length === 0 && visibleGroups.length === 0 && q && (
+            <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">没有匹配“{query}”的结果</div>
+          )}
+          {chiefBot && (
+            <div className="mb-1.5">
+              <BotListItem bot={chiefBot} onMenu={setMenu} />
+            </div>
           )}
           {visibleGroups.map((g) => (
             <GroupListItem key={g.id} group={g} onMenu={setRoomMenu} />
@@ -597,7 +632,7 @@ export function Sidebar() {
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
             className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
-            title="App settings"
+            title="应用设置"
           >
             <Settings size={18} />
           </button>

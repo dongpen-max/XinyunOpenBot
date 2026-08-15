@@ -6,6 +6,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { useStore, type Bot, type InstanceInfo } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { cn } from "@/lib/cn";
+import { engineHealth, isEngineSelectable } from "@/lib/engine-health";
 import { zhCN } from "@/locales/zh-CN";
 
 function modelLabel(instance: InstanceInfo | undefined, model: string): string {
@@ -66,7 +67,8 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
           {/* instance rail */}
           <div className="flex flex-col gap-1 border-r border-hairline/40 bg-panel p-2">
             {state.instances.map((instance) => {
-              const unavailable = instance.snapshot.state !== "available";
+              const health = engineHealth(instance);
+              const unavailable = !isEngineSelectable(instance);
               const onRail = instance.instanceId === railInstance?.instanceId;
               return (
                 <button
@@ -74,8 +76,8 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                   onClick={() => setRailId(instance.instanceId)}
                   title={
                     unavailable
-                      ? `${instance.displayName} — ${instance.snapshot.reason ?? "unavailable"}`
-                      : instance.displayName
+                      ? `${instance.displayName} — ${health.label}：${health.detail}`
+                      : `${instance.displayName} — ${health.label}`
                   }
                   className={cn(
                     "flex size-9 items-center justify-center rounded-lg",
@@ -93,18 +95,27 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
           <div className="min-w-0 flex-1 p-2">
             {railInstance ? (
               <>
+                {(() => {
+                  const health = engineHealth(railInstance);
+                  return (
                 <div className="px-2 pb-1 pt-1">
                   <div className="text-[13px] font-semibold text-ink">{railInstance.displayName}</div>
-                  <div className="truncate text-[11px] text-ink-secondary">
-                    {railInstance.snapshot.state === "available"
-                      ? (railInstance.snapshot.version ?? "ready")
-                      : (railInstance.snapshot.reason ?? "unavailable")}
+                  <div className="mt-0.5 text-[11px] leading-relaxed text-ink-secondary">
+                    <span className={health.tone === "danger" ? "text-danger" : health.tone === "warning" ? "text-warning" : undefined}>{health.label}</span>
+                    <span> · {health.detail}</span>
                   </div>
+                  {railInstance.snapshot.state === "available" && (
+                    <div className="mt-1 text-[10.5px] text-ink-secondary/80">
+                      {railInstance.capabilities?.computerTools ? "✓ 支持云端电脑操作" : "仅对话/编程 · 不接管云端电脑"}
+                    </div>
+                  )}
                 </div>
+                  );
+                })()}
                 {railInstance.models.options.map((option) => {
                   const current =
                     selection.instanceId === railInstance.instanceId && selection.model === option.id;
-                  const disabled = railInstance.snapshot.state !== "available";
+                  const disabled = !isEngineSelectable(railInstance);
                   return (
                     <button
                       key={option.id}

@@ -11,11 +11,11 @@ import { useUpdaterState } from "@/lib/updater";
 // so name the two cases that actually happen and clip anything else to its
 // first line.
 function friendlyError(message?: string): string {
-  if (!message) return "Something went wrong.";
+  if (!message) return "更新时出现未知错误。";
   if (/cannot find .*\.yml|404/i.test(message))
-    return "No update has been published for this platform yet.";
+    return "此平台暂未发布可用更新。";
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|net::/i.test(message))
-    return "Couldn't reach the update server.";
+    return "无法连接更新服务器。";
   return message.split("\n")[0].slice(0, 140);
 }
 
@@ -31,19 +31,19 @@ export function UpdateBanner() {
 
   const title =
     s.status === "available"
-      ? `XinyunOpen Bot ${s.version} is available`
+      ? `XinyunOpen Bot ${s.version} 可用`
       : s.status === "downloading"
-        ? `Downloading ${s.version ?? "update"}…`
+        ? `正在下载 ${s.version ?? "更新"}…`
         : s.status === "downloaded"
-          ? `${s.version} is ready`
-          : "Update check failed";
+          ? `${s.version} 已准备好`
+          : "更新检查失败";
   const subtitle =
     s.status === "available"
-      ? "A newer version is ready to download."
+      ? "新版本已准备好下载。"
       : s.status === "downloading"
         ? `${Math.round(s.percent ?? 0)}%`
         : s.status === "downloaded"
-          ? "Restart to finish updating."
+          ? "重启应用即可完成更新。"
           : friendlyError(s.message);
 
   return (
@@ -62,7 +62,7 @@ export function UpdateBanner() {
           <button
             onClick={() => setDismissed(key)}
             className="shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-            title="Dismiss"
+            title="关闭"
           >
             <X size={14} />
           </button>
@@ -85,7 +85,7 @@ export function UpdateBanner() {
               onClick={() => void updater.download()}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-[13px] font-medium text-white"
             >
-              <ArrowDownToLine size={13} /> Download
+              <ArrowDownToLine size={13} /> 下载
             </button>
           )}
           {s.status === "downloaded" && (
@@ -93,7 +93,7 @@ export function UpdateBanner() {
               onClick={() => void updater.install()}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-[13px] font-medium text-white"
             >
-              <RefreshCw size={13} /> Restart to update
+              <RefreshCw size={13} /> 重启更新
             </button>
           )}
           {s.status === "error" && (
@@ -101,14 +101,14 @@ export function UpdateBanner() {
               onClick={() => void updater.check()}
               className="flex-1 rounded-lg bg-raised py-1.5 text-[13px] text-ink hover:bg-raised-hover"
             >
-              Try again
+              重试
             </button>
           )}
           <button
             onClick={() => setDismissed(key)}
             className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
           >
-            Later
+            稍后
           </button>
         </div>
       )}

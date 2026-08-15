@@ -52,6 +52,11 @@ export const zhCN = {
     copyConvId: "复制会话 ID",
     hideFromSidebar: "从侧边栏隐藏",
     delete: "删除",
+    chiefOfStaff: "总管机器人",
+    makeChief: "设为总管机器人",
+    removeChief: "取消总管机器人",
+    chiefNeedEngine: "请先选择支持机器人协作的引擎",
+    chiefCannotHide: "请先取消或转移总管角色",
   },
 
   // Chat view
@@ -138,6 +143,13 @@ export const zhCN = {
     autoModeOff: "每个操作都需要您批准。启用后，此机器人可以自主工作而无需频繁询问。",
     notifications: "通知",
     notificationsDesc: "当此助手完成任务或需要输入时通知您",
+    chiefOfStaff: "总管机器人",
+    chiefOfStaffScope: "每个工作区仅限一个",
+    chiefActive: "此机器人是主要联系人，可以协调其他机器人并汇总结果。",
+    chiefUnsupported: "此机器人仍保留总管角色，但当前引擎无法联系其他机器人。请切换到支持协作工具的引擎。",
+    chiefNeedEngine: "选择支持机器人协作工具的引擎后，才能启用总管角色。",
+    chiefHandoff: "启用后将从 {name} 转移总管角色，并把此机器人设为主要联系人。",
+    chiefEnable: "将此机器人设为主要联系人，在任务需要时协调其他机器人。",
   },
 
   // App settings

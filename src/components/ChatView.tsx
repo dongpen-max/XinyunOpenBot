@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Crown,
   Loader2,
   Monitor,
   Pencil,
@@ -26,6 +27,7 @@ import { ModelPicker } from "./ModelPicker";
 import { TaskPicker } from "./TaskPicker";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { cn } from "@/lib/cn";
+import { actionableRuntimeError, deriveWorkStatus } from "@/lib/work-status";
 import { zhCN } from "@/locales/zh-CN";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
@@ -39,9 +41,9 @@ function dayLabel(at: number): string {
   const now = new Date();
   const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  if (diffDays === 0) return "今天";
+  if (diffDays === 1) return "昨天";
+  return d.toLocaleDateString("zh-CN", { weekday: "short", month: "short", day: "numeric" });
 }
 
 function DaySeparator({ at }: { at: number }) {
@@ -62,8 +64,8 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
       }}
-      aria-label="Copy message"
-      title="Copy message"
+      aria-label="复制消息"
+      title="复制消息"
       className={cn(
         "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",
         className,
@@ -92,7 +94,7 @@ function ThinkingStrip({ text, active }: { text: string; active: boolean }) {
         >
           <Brain size={13} className="text-ink-secondary" />
           <span className={cn(active ? "thinking-shimmer animate-shimmer" : "text-ink-secondary")}>
-            {active ? "Thinking…" : "Thought process"}
+            {active ? "正在分析…" : "分析过程"}
           </span>
           <ChevronDown size={12} className={cn("text-ink-secondary transition-transform", open && "rotate-180")} />
         </button>
@@ -117,19 +119,26 @@ function ThinkingStrip({ text, active }: { text: string; active: boolean }) {
 
 /** A failed turn: a real error block with a retry, not a truncated pill. */
 function ErrorRow({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const error = actionableRuntimeError(message);
   return (
     <div className="flex justify-start">
       <div className="max-w-[70%] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">{message}</span>
+          <span className="min-w-0 break-words">
+            <span className="block font-medium">{error.summary}</span>
+            <span className="mt-0.5 block text-[12px] leading-relaxed text-danger/85">{error.hint}</span>
+            {error.technical && error.technical !== error.summary && (
+              <code className="mt-1.5 block max-w-full overflow-x-auto rounded bg-danger/10 px-2 py-1 font-mono text-[10.5px] text-danger/80">{error.technical}</code>
+            )}
+          </span>
         </div>
         {onRetry && (
           <button
             onClick={onRetry}
             className="mt-1.5 flex items-center gap-1.5 rounded-full border border-danger/30 px-2.5 py-1 text-[12.5px] hover:bg-danger/15"
           >
-            <RefreshCw size={12} /> Retry
+            <RefreshCw size={12} /> 重试
           </button>
         )}
       </div>
@@ -200,14 +209,14 @@ function BubbleEditor({
           onClick={onCancel}
           className="rounded-full px-3 py-1 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
-          Cancel
+          取消
         </button>
         <button
           onClick={submit}
           disabled={!draft.trim()}
           className="rounded-full bg-accent px-3 py-1 text-[13px] font-medium text-white disabled:opacity-40"
         >
-          Send
+          发送
         </button>
       </div>
     </div>
@@ -263,9 +272,9 @@ function Bubble({
         {user && message.kind === "text" && !bot.busy && (
           <button
             onClick={onStartEdit}
-            aria-label="Edit message"
+            aria-label="编辑消息"
             className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-            title="Edit message"
+            title="编辑消息"
           >
             <Pencil size={14} />
           </button>
@@ -288,12 +297,12 @@ function Bubble({
               </div>
               {collapsible && (
                 <button onClick={() => setExpanded(true)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
-                  Show full message
+                  展开完整消息
                 </button>
               )}
               {expanded && (
                 <button onClick={() => setExpanded(false)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
-                  Show less
+                  收起
                 </button>
               )}
             </>
@@ -309,8 +318,8 @@ function Bubble({
             {isLastBotText && !bot.busy && onRegenerate && (
               <button
                 onClick={onRegenerate}
-                aria-label="Regenerate response"
-                title="Regenerate response"
+                aria-label="重新生成回复"
+                title="重新生成回复"
                 className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 <RefreshCw size={14} />
@@ -335,7 +344,7 @@ function Bubble({
             onClick={() => switchTo(versions[versionIndex - 1])}
             disabled={versionIndex <= 0 || bot.busy}
             className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Previous version"
+            title="上一版本"
           >
             <ChevronLeft size={14} />
           </button>
@@ -346,7 +355,7 @@ function Bubble({
             onClick={() => switchTo(versions[versionIndex + 1])}
             disabled={versionIndex >= versions.length - 1 || bot.busy}
             className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Next version"
+            title="下一版本"
           >
             <ChevronRight size={14} />
           </button>
@@ -368,7 +377,7 @@ function ActivityChip({ message }: { message: Message }) {
       <div className="flex justify-start">
         <button
           onClick={() => dispatch({ type: "select", id: comm.groupId })}
-          title={`Open the conversation with ${comm.withName}`}
+          title={`打开与 ${comm.withName} 的对话`}
           className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
           <MausAvatar color={comm.withColor} state="happy" size={16} />
@@ -434,7 +443,7 @@ function WorkingTimer({ since }: { since: number }) {
   const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     const tick = () => {
-      if (ref.current) ref.current.textContent = `Working for ${Math.max(0, Math.round((Date.now() - since) / 1000))}s`;
+      if (ref.current) ref.current.textContent = `已运行 ${Math.max(0, Math.round((Date.now() - since) / 1000))} 秒`;
     };
     tick();
     const timer = setInterval(tick, 1000);
@@ -477,7 +486,7 @@ const MessagesList = memo(function MessagesList({
           <MausAvatar color={bot.color} shape={bot.mascotShape} state="idle" size={64} motion="none" motionKey={0} />
           <div className="text-[17px] font-semibold text-ink">{bot.name}</div>
           <div className="max-w-[360px] text-[14px] text-ink-secondary">
-            {bot.description || "Send a message to start the conversation."}
+            {bot.description || "发送一条消息开始对话。"}
           </div>
         </div>
       )}
@@ -541,10 +550,16 @@ export function ChatView({ bot }: { bot: Bot }) {
   const streaming = stream.streaming[bot.threadId];
   const reasoning = stream.reasoning[bot.threadId];
   const provisioning = state.provisioning[bot.id];
+  const computerActivity = state.computerActivity[bot.id];
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
 
   // only the active branch is rendered; forks stay reachable via ‹ › nav
   const messages = useMemo(() => visibleMessages(bot), [bot]);
+  const workStatus = useMemo(
+    () => deriveWorkStatus({ bot, messages, streaming, reasoning, computerActivity }),
+    [bot, messages, streaming, reasoning, computerActivity],
+  );
+  const globalError = state.error ? actionableRuntimeError(state.error) : null;
   const lastBotTextId = useMemo(
     () => [...messages].reverse().find((m) => m.role === "bot" && m.kind === "text")?.id,
     [messages],
@@ -622,7 +637,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       >
         <button
           onClick={() => dispatch({ type: "toggleSettings" })}
-          className="flex items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-raised/50"
+          className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-raised/50"
           title={zhCN.chat.botSettings}
           style={noDrag}
         >
@@ -634,15 +649,29 @@ export function ChatView({ bot }: { bot: Bot }) {
             motion={mascotMotion?.kind ?? "none"}
             motionKey={mascotMotion?.nonce ?? 0}
           />
-          <span className="text-[15px] font-semibold text-ink">{bot.name}</span>
-          {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
+          <span className="min-w-0 text-left">
+            <span className="flex items-center gap-1.5 truncate text-[15px] font-semibold text-ink">
+              <span className="truncate">{bot.name}</span>
+              {bot.chiefOfStaff && (
+                <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent/12 px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
+                  <Crown size={10} /> {zhCN.settings.chiefOfStaff}
+                </span>
+              )}
+            </span>
+            {workStatus && (
+              <span className="flex items-center gap-1 text-[11px] font-normal text-ink-secondary" aria-live="polite">
+                <Loader2 size={10} className="animate-spin" />
+                <span className="truncate">{workStatus.label}{workStatus.detail ? ` · ${workStatus.detail}` : ""}</span>
+              </span>
+            )}
+          </span>
         </button>
         <div className="flex items-center gap-2" style={noDrag}>
           {bot.busy && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
               className="flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
-              title="Stop this turn"
+              title="停止当前任务"
             >
               <Square size={12} className="fill-current" />
               {zhCN.chat.stop}
@@ -667,7 +696,8 @@ export function ChatView({ bot }: { bot: Bot }) {
       {state.error && (
         <div className="mx-auto w-full max-w-[900px] px-5">
           <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
-            {state.error}
+            <div className="font-medium">{globalError?.summary}</div>
+            <div className="mt-0.5 text-[12px] text-danger/85">{globalError?.hint}</div>
           </div>
         </div>
       )}
@@ -694,7 +724,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           className="mx-auto flex max-w-[900px] flex-col gap-3 pb-4"
           role="log"
           aria-live="polite"
-          aria-label={`Conversation with ${bot.name}`}
+            aria-label={`与 ${bot.name} 的对话`}
         >
           <MessagesList
             bot={bot}
@@ -707,11 +737,11 @@ export function ChatView({ bot }: { bot: Bot }) {
             onSubmitEdit={submitEdit}
             onRegenerate={regenerate}
           />
-          {provisioning && (
+          {provisioning && workStatus?.kind === "computer" && (
             <div className="flex justify-start">
               <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary">
                 <Loader2 size={13} className="animate-spin" />
-                {zhCN.chat.settingUpComputer}
+                {workStatus.label}
               </div>
             </div>
           )}
@@ -722,12 +752,14 @@ export function ChatView({ bot }: { bot: Bot }) {
             bot.busy && (
               <div className="flex justify-start">
                 <div className="flex items-center gap-2.5 rounded-2xl bg-raised px-4 py-3">
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
-                  </span>
-                  <WorkingTimer since={lastUserMessage?.at ?? Date.now()} />
+                   <Loader2 size={14} className="animate-spin text-ink-secondary" />
+                   <span className="min-w-0">
+                     <span className="block text-[12.5px] text-ink">{workStatus?.label ?? "正在工作"}</span>
+                     <span className="flex items-center gap-1.5 text-[11.5px] text-ink-secondary">
+                       {workStatus?.detail && <span className="max-w-[300px] truncate">{workStatus.detail}</span>}
+                       <WorkingTimer since={lastUserMessage?.at ?? Date.now()} />
+                     </span>
+                   </span>
                 </div>
               </div>
             )
@@ -739,10 +771,10 @@ export function ChatView({ bot }: { bot: Bot }) {
       {!follow && (
         <button
           onClick={jumpToLatest}
-          aria-label="Jump to latest messages"
+          aria-label="跳到最新消息"
           className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
         >
-          <ArrowDown size={13} /> Jump to latest
+          <ArrowDown size={13} /> 跳到最新消息
         </button>
       )}
 

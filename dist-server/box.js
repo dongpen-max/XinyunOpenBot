@@ -169,14 +169,16 @@ export async function boxStatus(cfg, botId) {
  * idempotent bootstrap (screenshot tooling for the computer-use bridge +
  * a tmux welcome), and mint a fresh desktop URL.
  */
-export async function provisionBox(cfg, botId, botName) {
+export async function provisionBox(cfg, botId, botName, report) {
     if (!boxConfigured(cfg)) {
         throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.openmausbot/config.json');
     }
+    report?.("checking");
     const vmName = await boxNameFor(botId);
     let box = await findBox(cfg, botId);
     let created = false;
     if (!box) {
+        report?.("creating");
         const createRes = await boxJson(cfg, "/boxes", {
             method: "POST",
             // substrate-side backstop: archives itself (billing pauses, disk
@@ -190,6 +192,11 @@ export async function provisionBox(cfg, botId, botName) {
         created = true;
         await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
     }
+    else {
+        report?.("reusing");
+    }
+    if (!created && !READY.has(box.state))
+        report?.("waking");
     const ready = await waitReady(cfg, box.id);
     if (!ready)
         throw new Error("box did not become ready within 90s — retry in a minute");
@@ -202,6 +209,7 @@ export async function provisionBox(cfg, botId, botName) {
     //   3. computer-server started loopback-only on :8000 when installed —
     //      driven from outside via the box's run-command endpoint, so no
     //      inbound port and no tunnel is ever needed.
+    report?.("initializing");
     const cuaInstall = [
         "sudo apt-get update -qq || true",
         "sudo apt-get install -y -qq gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true",
@@ -230,6 +238,7 @@ export async function provisionBox(cfg, botId, botName) {
         await new Promise((r) => setTimeout(r, 3000));
     }
     const joinUrl = await mintDesktopUrl(cfg, box.id);
+    report?.("ready");
     return { boxId: box.id, machineName: vmName, reused: !created, state: ready.state, joinUrl };
 }
 /** Wake the bot's box and return a FRESH desktop URL. */

@@ -1,9 +1,10 @@
 // Config + data dirs. One file, ~/.openmausbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic.js";
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
 export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbot");
 const LEGACY_DATA_DIR = join(homedir(), ".opengrokbot");
@@ -57,7 +58,7 @@ export function saveConfig(patch) {
         }
     }
     mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(p, JSON.stringify(disk, null, 2));
+    writeFileAtomic(p, JSON.stringify(disk, null, 2));
 }
 export function instanceConfigs(cfg) {
     // The default `grok` instance rides the `grokAgent` driver, not the API-key
@@ -81,6 +82,7 @@ export function instanceConfigs(cfg) {
     // `enabled: false` is the explicit way to drop one from the fleet.
     const map = {
         grok: { driver: "grokAgent" },
+        kimi: { driver: "kimiAgent" },
         claude: { driver: "claudeAgent" },
         codex: { driver: "codex" },
         antigravity: { driver: "antigravityAgent" },

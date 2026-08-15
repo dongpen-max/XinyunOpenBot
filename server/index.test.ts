@@ -45,6 +45,7 @@ beforeAll(async () => {
       instances: {
         ghost: { driver: "not-a-real-driver", displayName: "Ghost" },
         grok: off,
+        kimi: off,
         claude: off,
         codex: off,
         antigravity: off,
@@ -159,8 +160,9 @@ describe("harness HTTP API", () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
 
-    // verify the seeded bot's selection points at the ghost instance
-    expect(bot.modelSelection.instanceId).toBe("ghost");
+    // with no runnable engine, selection stays empty instead of pointing at a
+    // shadow provider that can never execute a turn
+    expect(bot.modelSelection.instanceId).toBe("");
 
     const empty = await api("POST", `/api/bots/${bot.id}/messages`, { text: "   " });
     expect(empty.status).toBe(400);
