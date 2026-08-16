@@ -12,7 +12,7 @@ on:
 
 jobs:
   ios-simulator-build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -37,9 +37,9 @@ jobs:
           if not apps:
               raise SystemExit('No Xcode installation found under /Applications')
 
-          compatible = [app for app in apps if version(app) >= (26, 2) and version(app) < (26, 3)]
+          compatible = [app for app in apps if version(app) >= (26, 4) and version(app) < (26, 5)]
           if not compatible:
-              raise SystemExit('Xcode 26.2.x with Swift 6.2 was not found under /Applications')
+              raise SystemExit('Xcode 26.4.x was not found under /Applications')
 
           selected = max(compatible, key=version)
           print('Installed Xcodes:', *sorted(apps), sep='\n- ', file=sys.stderr)
