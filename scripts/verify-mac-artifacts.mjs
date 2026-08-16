@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 if (process.platform !== "darwin") throw new Error("macOS artifact verification must run on macOS");
@@ -46,8 +46,8 @@ for (const key of [
 
 const helper = path.join(appDir, "Contents", "Resources", "XinyunOpen Bot Speech.app");
 const cua = path.join(appDir, "Contents", "Resources", "cua-driver");
-execFileSync("/usr/bin/test", ["-x", path.join(helper, "Contents", "MacOS", "speech-helper")]);
-execFileSync("/usr/bin/test", ["-x", cua]);
+accessSync(path.join(helper, "Contents", "MacOS", "speech-helper"), constants.X_OK);
+accessSync(cua, constants.X_OK);
 
 const sums = [dmg, zip, metadata].map((name) => {
   const bytes = readFileSync(path.join(root, name));
