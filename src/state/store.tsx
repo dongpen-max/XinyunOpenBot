@@ -209,8 +209,12 @@ export interface InstanceInfo {
     computerTools: boolean;
     /** Can this exact driver call the user's other bots? */
     agentTools: boolean;
+    /** Supports the per-message low/medium/high thinking selector. */
+    reasoningEffort: boolean;
   };
 }
+
+export type ReasoningEffort = "low" | "medium" | "high";
 
 export type ComputerActivityState =
   | "checking"
@@ -252,7 +256,7 @@ type Action =
   | { type: "groupPatched"; group: Partial<Group> & { id: string } }
   | { type: "groupDeleted"; groupId: string }
   | { type: "createGroup"; memberIds: string[]; name?: string }
-  | { type: "sendGroup"; groupId: string; text: string }
+  | { type: "sendGroup"; groupId: string; text: string; reasoningEffort?: ReasoningEffort }
   | {
       type: "patchGroup";
       groupId: string;
@@ -264,7 +268,7 @@ type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string }
+  | { type: "send"; botId: string; text: string; reasoningEffort?: ReasoningEffort }
   | { type: "editMessage"; botId: string; messageId: string; text: string }
   | { type: "switchBranch"; botId: string; messageId: string }
   | { type: "threadActive"; threadId: string; activeLeafId: string }
@@ -777,7 +781,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "send":
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text }),
+            body: JSON.stringify({ text: action.text, reasoningEffort: action.reasoningEffort }),
           }).catch(showError);
           break;
         case "editMessage":
@@ -916,7 +920,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "sendGroup":
           api(`/api/groups/${action.groupId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text }),
+            body: JSON.stringify({ text: action.text, reasoningEffort: action.reasoningEffort }),
           }).catch(showError);
           break;
         case "patchGroup":

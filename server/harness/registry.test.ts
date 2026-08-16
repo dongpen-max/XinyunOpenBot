@@ -17,7 +17,11 @@ describe("ProviderRegistry", () => {
     expect(live!.driverKind).toBe("fake");
     expect(live!.displayName).toBe("Bot A");
     expect(registry.instances()).toHaveLength(1);
-    expect((await registry.describe())[0].capabilities).toEqual({ computerTools: false, agentTools: false });
+    expect((await registry.describe())[0].capabilities).toEqual({
+      computerTools: false,
+      agentTools: false,
+      reasoningEffort: false,
+    });
   });
 
   it("derives cloud work support only from adapter capabilities", async () => {

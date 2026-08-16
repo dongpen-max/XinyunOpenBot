@@ -9,6 +9,7 @@ export type DriverKind = string;
 export type InstanceId = string;
 export type ThreadId = string;
 export type TurnId = string;
+export type ReasoningEffort = "low" | "medium" | "high";
 
 // ── model selection ────────────────────────────────────────────────────
 // "Which model" is a data value carried on the request, never a service
@@ -90,6 +91,8 @@ export interface SendTurnInput {
   threadId: ThreadId;
   text: string;
   model?: string;
+  /** Per-message model thinking budget. Unsupported adapters ignore it. */
+  reasoningEffort?: ReasoningEffort;
   resumeCursor?: unknown;
   /** Prior turns for transcript-replay providers (API-backed drivers). */
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
@@ -134,6 +137,8 @@ export interface ProviderAdapter {
      * told it has a computer whose tools its driver cannot mount — it
      * burns turns hunting for tools that aren't there. */
     computerMcp?: boolean;
+    /** This adapter can map low/medium/high onto a native provider option. */
+    reasoningEffort?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;

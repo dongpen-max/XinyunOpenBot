@@ -5,6 +5,7 @@ declare global {
   interface Window {
     ogb?: {
       platform: string;
+      getPathForFile?(file: File): string;
       setTitleBarColor?(color: string): Promise<void>;
       screenFrame(): Promise<string | null>;
       speechStart(): Promise<void>;

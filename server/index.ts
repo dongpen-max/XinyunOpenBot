@@ -16,8 +16,10 @@ import * as composio from "./composio.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { resetPathCache } from "./env-path.ts";
-import type { RuntimeEvent } from "./contracts.ts";
+import type { ReasoningEffort, RuntimeEvent } from "./contracts.ts";
 import { discoverModels, saveDiscoveredModels, type RelaySection } from "./models-discover.ts";
+import { parseReasoningEffort } from "./reasoning.ts";
+import { shouldUseCloudComputer } from "./turn-computer.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -427,7 +429,7 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 async function startTurn(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; userMessage?: Message },
+  opts?: { commsDepth?: number; userMessage?: Message; reasoningEffort?: ReasoningEffort },
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
@@ -507,7 +509,7 @@ async function startTurn(
       }
       let previewBoxId: string | null = null;
       let cloudFailure: Error | null = null;
-      if (computerMode && wants !== "off" && wants !== "local") {
+      if (shouldUseCloudComputer(wants, computerMode, commsDepth)) {
         if (!box.boxConfigured(cfg)) {
           if (wants === "cloud") throw new Error("尚未配置 Box 令牌，无法启动云端电脑");
         } else {
@@ -593,6 +595,7 @@ async function startTurn(
         threadId: bot.threadId,
         text: turnText,
         model: bot.modelSelection.model,
+        reasoningEffort: opts?.reasoningEffort,
         // a rewound thread never resumes the abandoned branch's session
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
@@ -663,6 +666,7 @@ async function runGroupMemberTurn(
   hop: number,
   // bots that already spoke for this user message — "@Scout ask @Pixel"
   // must not run Pixel twice (once chained, once as a direct responder)
+  reasoningEffort?: ReasoningEffort,
   spoken: Set<string> = new Set(),
 ): Promise<void> {
   const group = store.group(groupId);
@@ -723,7 +727,7 @@ async function runGroupMemberTurn(
     });
     const timer = setTimeout(finish, 5 * 60_000);
     instance.adapter
-      .sendTurn({ threadId: group.threadId, text, system })
+      .sendTurn({ threadId: group.threadId, text, system, model: bot.modelSelection.model, reasoningEffort })
       .catch((err) => {
         const failure = store.appendMessage(group.threadId, {
           role: "bot",
@@ -746,12 +750,12 @@ async function runGroupMemberTurn(
       .filter((b): b is NonNullable<typeof b> => Boolean(b) && b!.id !== bot.id);
     for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
       if (spoken.has(next.id)) continue;
-      await runGroupMemberTurn(groupId, next.id, hop + 1, spoken);
+      await runGroupMemberTurn(groupId, next.id, hop + 1, reasoningEffort, spoken);
     }
   }
 }
 
-function startGroupTurn(groupId: string, text: string) {
+function startGroupTurn(groupId: string, text: string, reasoningEffort?: ReasoningEffort) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
   const userMessage = store.appendMessage(group.threadId, { role: "user", kind: "text", text });
@@ -776,7 +780,7 @@ function startGroupTurn(groupId: string, text: string) {
     const spoken = new Set<string>();
     for (const responder of responders) {
       if (spoken.has(responder.id)) continue;
-      await runGroupMemberTurn(groupId, responder.id, 0, spoken);
+      await runGroupMemberTurn(groupId, responder.id, 0, reasoningEffort, spoken);
     }
   });
   groupQueues.set(groupId, next.catch(() => {}));
@@ -1079,7 +1083,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
-      startGroupTurn(m[1], text);
+      const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
+      startGroupTurn(m[1], text, reasoningEffort);
       return json(res, 202, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
@@ -1219,7 +1224,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
-      await startTurn(m[1], text);
+      const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
+      await startTurn(m[1], text, { reasoningEffort });
       return json(res, 202, { ok: true });
     }
 

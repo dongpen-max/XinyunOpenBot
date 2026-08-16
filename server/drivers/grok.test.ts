@@ -79,6 +79,7 @@ describe("OpenAI-compatible API tools", () => {
       threadId: "tool-thread",
       text: "look at the computer",
       model: "test-model",
+      reasoningEffort: "high",
       integrations: {
         localComputer: {
           command: process.execPath,
@@ -90,6 +91,7 @@ describe("OpenAI-compatible API tools", () => {
     await recorder.until((event) => event.type === "turn.completed", 15_000);
 
     expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.reasoning_effort === "high")).toBe(true);
     expect(requests[0].tools?.[0]).toMatchObject({
       type: "function",
       function: { name: "screenshot" },

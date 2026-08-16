@@ -105,6 +105,8 @@ export async function runOpenAICompatibleToolLoop(opts) {
     let sawUsage = false;
     for (let roundIndex = 0; roundIndex < maxRounds; roundIndex++) {
         const body = { model: opts.model, messages, stream: true };
+        if (opts.reasoningEffort)
+            body.reasoning_effort = opts.reasoningEffort;
         if (tools.length) {
             body.tools = tools;
             body.tool_choice = "auto";

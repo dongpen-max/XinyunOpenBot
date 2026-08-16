@@ -804,7 +804,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           gated on busy like the pencil button — editing rewinds the thread,
           which a live turn forbids (the server 409s it). */}
       <Composer
-        key={bot.id}
+        key={bot.threadId}
         bot={bot}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
       />

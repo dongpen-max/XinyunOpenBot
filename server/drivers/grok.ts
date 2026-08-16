@@ -238,6 +238,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           const { text, usage } = await runOpenAICompatibleToolLoop({
             model: turn.model || models.default,
             messages,
+            reasoningEffort: turn.reasoningEffort,
             signal: abort.signal,
             toolProvider,
             request: async (body, signal) => {
@@ -334,6 +335,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         provider: DRIVER_KIND,
         capabilities: {
           sessionModelSwitch: "in-session",
+          reasoningEffort: true,
           computerMcp: config.computerTools,
           agentsMcp: config.agentTools,
           ...(config.computerTools ? { computerMode: "mcp" as const } : {}),

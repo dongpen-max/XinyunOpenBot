@@ -392,6 +392,7 @@ export const CodexDriver = {
                     await request("turn/start", {
                         threadId: codexThreadId,
                         input: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
+                        ...(turn.reasoningEffort ? { effort: turn.reasoningEffort } : {}),
                     });
                 }
                 catch (e) {
@@ -425,6 +426,7 @@ export const CodexDriver = {
                 provider: DRIVER_KIND,
                 capabilities: {
                     sessionModelSwitch: "unsupported",
+                    reasoningEffort: true,
                     agentsMcp: true,
                     computerMcp: true,
                     computerMode: "mcp",

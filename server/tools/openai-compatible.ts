@@ -1,4 +1,5 @@
 import { newId } from "../contracts.ts";
+import type { ReasoningEffort } from "../contracts.ts";
 import type { ToolProvider, ToolResult } from "./contracts.ts";
 
 export type OpenAIContent =
@@ -41,6 +42,7 @@ interface CompletionRound {
 export interface OpenAIToolLoopOptions {
   model: string;
   messages: OpenAIMessage[];
+  reasoningEffort?: ReasoningEffort;
   signal: AbortSignal;
   toolProvider?: ToolProvider | null;
   maxRounds?: number;
@@ -157,6 +159,7 @@ export async function runOpenAICompatibleToolLoop(opts: OpenAIToolLoopOptions): 
 
   for (let roundIndex = 0; roundIndex < maxRounds; roundIndex++) {
     const body: Record<string, unknown> = { model: opts.model, messages, stream: true };
+    if (opts.reasoningEffort) body.reasoning_effort = opts.reasoningEffort;
     if (tools.length) {
       body.tools = tools;
       body.tool_choice = "auto";
@@ -223,4 +226,3 @@ export async function runOpenAICompatibleToolLoop(opts: OpenAIToolLoopOptions): 
   }
   throw new Error(`tool loop exceeded ${maxRounds} provider rounds`);
 }
-

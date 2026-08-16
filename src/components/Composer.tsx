@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Clock, Loader2, Mic, Square, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, BrainCircuit, Clock, Loader2, Mic, Paperclip, Square, Users, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
@@ -9,6 +9,9 @@ import { groupComposerHint } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { zhCN } from "@/locales/zh-CN";
 import { transcribeVoice, VoiceRecorder } from "@/lib/voice/recorder";
+import { attachmentsFromFiles, composeMessage, isLongPaste, pasteAttachment, type Attachment } from "@/lib/composer-attachments";
+import { useComposerDraft, useReasoningEffort, type ReasoningEffort } from "@/lib/drafts";
+import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -53,7 +56,16 @@ export function Composer({
   const busyName = group
     ? (members?.find((b) => b.id === group.busyBotId)?.name ?? "A bot")
     : (bot?.name ?? "The bot");
-  const [text, setText] = useState("");
+  const [text, setText, attachments, setAttachments] = useComposerDraft(threadId);
+  const [reasoningEffort, setReasoningEffort] = useReasoningEffort(threadId);
+  const addAttachments = useCallback(
+    (next: Attachment[]) => setAttachments((previous) => [...previous, ...next]),
+    [setAttachments],
+  );
+  const removeAttachment = useCallback(
+    (id: string) => setAttachments((previous) => previous.filter((attachment) => attachment.id !== id)),
+    [setAttachments],
+  );
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
@@ -63,6 +75,14 @@ export function Composer({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const baseText = useRef("");
   const recorderRef = useRef<VoiceRecorder | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const reasoningSupport = useMemo(() => {
+    const targets = group ? (members ?? []) : bot ? [bot] : [];
+    const supported = targets.filter((target) =>
+      state.instances.find((instance) => instance.instanceId === target.modelSelection.instanceId)?.capabilities?.reasoningEffort,
+    ).length;
+    return { any: supported > 0, all: targets.length > 0 && supported === targets.length };
+  }, [group, members, bot, state.instances]);
 
   // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
   const mention = mentionQueryAt(text, caret);
@@ -111,28 +131,31 @@ export function Composer({
 
   // One message may be queued while the bot works; it auto-sends the moment
   // the turn settles. Enter during a turn queues instead of silently dying.
-  const [queued, setQueued] = useState<string | null>(null);
+  const [queued, setQueued] = useState<{ text: string; preview: string; reasoningEffort: ReasoningEffort } | null>(null);
+  const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
-    const t = text.trim();
+    const t = composeMessage(text, attachments);
     if (!t) return;
     if (busy) {
-      setQueued(t);
+      setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningEffort });
       setText("");
+      setAttachments([]);
       return;
     }
     if (group) {
-      dispatch({ type: "sendGroup", groupId: group.id, text: t });
+      dispatch({ type: "sendGroup", groupId: group.id, text: t, reasoningEffort });
       track("message_sent", { room: true });
     } else if (bot) {
-      dispatch({ type: "send", botId: bot.id, text: t });
+      dispatch({ type: "send", botId: bot.id, text: t, reasoningEffort });
       track("message_sent", { driver: bot.modelSelection?.instanceId });
     }
     setText("");
+    setAttachments([]);
   };
   useEffect(() => {
     if (!busy && queued) {
-      if (group) dispatch({ type: "sendGroup", groupId: group.id, text: queued });
-      else if (bot) dispatch({ type: "send", botId: bot.id, text: queued });
+      if (group) dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningEffort: queued.reasoningEffort });
+      else if (bot) dispatch({ type: "send", botId: bot.id, text: queued.text, reasoningEffort: queued.reasoningEffort });
       track("message_sent", { queued: true });
       setQueued(null);
     }
@@ -195,7 +218,7 @@ export function Composer({
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-              Queued — sends when {busyName} finishes: “{queued}”
+              已排队，将在 {busyName} 完成后发送：“{queued.preview}”
             </span>
             <button
               onClick={() => setQueued(null)}
@@ -258,7 +281,58 @@ export function Composer({
             />
           </div>
         )}
+        <ComposerAttachments items={attachments} onAdd={addAttachments} onRemove={removeAttachment} />
         <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            void attachmentsFromFiles(files, pathForFile).then(({ attachments: next, rejectedNames }) => {
+              if (next.length) addAttachments(next);
+              if (rejectedNames.length) setSpeechError(`${rejectedNames.join("、")} 无法读取，请先保存到本机。`);
+            });
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={Boolean(approval)}
+          aria-label="添加文件"
+          title="添加文件（小型文本/代码会直接发送内容，其他文件使用本机路径）"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+        >
+          <Paperclip size={17} />
+        </button>
+        <label
+          className={cn(
+            "mb-0.5 flex h-7 shrink-0 items-center gap-1 rounded-full border border-hairline/40 bg-panel/70 px-2 text-[11px] text-ink-secondary",
+            reasoningSupport.any ? "hover:border-hairline hover:text-ink" : "opacity-45",
+          )}
+          title={
+            reasoningSupport.all
+              ? "思考模式：低更快，高更深入且耗时更长"
+              : reasoningSupport.any
+                ? "支持的群成员会使用所选思考模式；其他成员使用模型默认值"
+                : "当前模型暂不支持调整思考强度"
+          }
+        >
+          <BrainCircuit size={13} />
+          <select
+            value={reasoningEffort}
+            onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
+            disabled={!reasoningSupport.any || Boolean(approval)}
+            aria-label="思考模式"
+            className="cursor-pointer bg-transparent text-[11px] font-medium text-inherit outline-none disabled:cursor-not-allowed"
+          >
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+          </select>
+        </label>
         <textarea
           ref={inputRef}
           rows={1}
@@ -267,6 +341,18 @@ export function Composer({
             setText(e.target.value);
             setCaret(e.target.selectionStart ?? e.target.value.length);
             setDismissedAt(null);
+          }}
+          onPaste={(event) => {
+            const pasted = event.clipboardData.getData("text/plain");
+            if (!isLongPaste(pasted)) return;
+            event.preventDefault();
+            const start = event.currentTarget.selectionStart;
+            const end = event.currentTarget.selectionEnd;
+            if (start !== end) {
+              setText(`${text.slice(0, start)}${text.slice(end)}`);
+              setCaret(start);
+            }
+            setAttachments((previous) => [...previous, pasteAttachment(pasted)]);
           }}
           onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
@@ -290,7 +376,7 @@ export function Composer({
               }
             }
             // an empty composer + ArrowUp = edit your last message (like a chat app)
-            if (e.key === "ArrowUp" && !text && onEditLast) {
+            if (e.key === "ArrowUp" && !hasContent && onEditLast) {
               e.preventDefault();
               onEditLast();
               return;
@@ -337,7 +423,7 @@ export function Composer({
             <Square size={14} className="fill-current" />
           </button>
         )}
-        {!busy && !text.trim() && (
+        {!busy && !hasContent && (
           <button
             onClick={() => void toggleMic()}
             disabled={transcribing}
@@ -353,7 +439,7 @@ export function Composer({
             {transcribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
           </button>
         )}
-        {text.trim() && (
+        {hasContent && (
           <button
             onClick={send}
             aria-label={busy ? "Queue message" : "Send message"}

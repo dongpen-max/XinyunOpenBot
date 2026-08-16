@@ -97,7 +97,7 @@ export class ProviderRegistry {
             snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
             models: { default: "", options: [] },
             install: this.driversByKind.get(entry.shadow.driverKind)?.install,
-            capabilities: { computerTools: false, agentTools: false },
+            capabilities: { computerTools: false, agentTools: false, reasoningEffort: false },
           };
         }
         const inst = entry.live;
@@ -117,6 +117,7 @@ export class ProviderRegistry {
           capabilities: {
             computerTools: inst.adapter.capabilities.computerMode !== undefined,
             agentTools: inst.adapter.capabilities.agentsMcp === true,
+            reasoningEffort: inst.adapter.capabilities.reasoningEffort === true,
           },
         };
       }),

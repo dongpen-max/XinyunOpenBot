@@ -1,10 +1,12 @@
 // Renderer bridge. contextIsolation stays on; the renderer only ever sees
 // this narrow surface (window.ogb), never Node or ipcRenderer itself.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("ogb", {
   /** Host platform ("darwin" | "win32" | "linux") — for platform-aware UI. */
   platform: process.platform,
+  /** Electron 32+ removed File.path; expose only the selected file's path. */
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   /** Keep Windows caption buttons aligned with the selected app background. */
   setTitleBarColor: (color) => ipcRenderer.invoke("appearance:title-bar-color", color),
   /** One frame of this Mac's screen as a data: URL (Screen Recording TCC). */

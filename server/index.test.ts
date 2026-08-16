@@ -201,6 +201,13 @@ describe("harness HTTP API", () => {
     const empty = await api("POST", `/api/bots/${bot.id}/messages`, { text: "   " });
     expect(empty.status).toBe(400);
 
+    const invalidEffort = await api("POST", `/api/bots/${bot.id}/messages`, {
+      text: "hello",
+      reasoningEffort: "maximum",
+    });
+    expect(invalidEffort.status).toBe(400);
+    expect(invalidEffort.body.error).toContain("low, medium, or high");
+
     // the seeded bot's selection points at the ghost instance — sending a
     // real message must fail loudly, not 202-and-hang
     const send = await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello?" });

@@ -100,6 +100,7 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       threadId: "t-happy",
       text: "list files",
       system: "You are Testy.",
+      reasoningEffort: "high",
     });
     await recorder.until((e) => e.type === "turn.completed");
 
@@ -132,6 +133,7 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     // persona rides in front of the prompt text — codex has no system slot
     const turnStart = seen.calls.at(-1);
     expect(turnStart.params.input[0].text).toBe("You are Testy.\n\nlist files");
+    expect(turnStart.params.effort).toBe("high");
   });
 
   it("streams agentMessage deltas without re-emitting the settled text", async () => {
