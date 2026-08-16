@@ -23,6 +23,19 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Select newest installed Xcode
+        run: |
+          XCODE_APP=$(python3 - <<'PY'
+          import glob, re
+          apps = glob.glob('/Applications/Xcode*.app')
+          def version(path):
+              match = re.search(r'Xcode[_-]([0-9.]+)', path)
+              return tuple(int(part) for part in match.group(1).split('.')) if match else (0,)
+          print(max(apps, key=version))
+          PY
+          )
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @xinyun/mobile typecheck
       - run: pnpm dlx expo-doctor@latest apps/mobile
@@ -37,5 +50,5 @@ jobs:
         working-directory: apps/mobile
         run: |
           WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)
-          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspace"]["schemes"][0])')
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
           xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
