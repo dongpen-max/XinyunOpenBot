@@ -192,7 +192,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
+    <aside className="animate-panel-in flex h-full w-full min-w-0 flex-col bg-panel">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3">
         <button

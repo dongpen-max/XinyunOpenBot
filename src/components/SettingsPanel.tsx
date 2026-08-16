@@ -74,7 +74,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   }, []);
 
   return (
-    <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
+    <aside className="animate-panel-in flex h-full w-full min-w-0 flex-col bg-panel">
       {/* Header */}
       <div
         className={cn("flex min-h-[46px] items-center gap-2 border-b border-hairline/25 px-3", isWin && "pr-[144px]")}

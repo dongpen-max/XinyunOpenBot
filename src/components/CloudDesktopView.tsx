@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ChevronLeft,
   Loader2,
   Maximize2,
   Minimize2,
@@ -11,6 +10,7 @@ import {
 } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { syncWindowTitleBarColor } from "@/lib/theme";
 import type { CloudDesktopBounds, CloudDesktopState } from "@/types/ogb";
 
 const labels: Record<CloudDesktopState["state"], string> = {
@@ -38,9 +38,14 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
   });
   const [sleeping, setSleeping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const isWin = window.ogb?.platform === "win32";
-  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
+  const noDrag = window.ogb?.platform === "win32"
+    ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties)
+    : undefined;
+
+  useEffect(() => {
+    syncWindowTitleBarColor("panel");
+    return () => syncWindowTitleBarColor("app");
+  }, []);
 
   useEffect(() => {
     if (!bridge) {
@@ -161,40 +166,43 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
   const failedMessage = actionError ?? (desktop.state === "failed" ? desktop.message : null);
 
   return (
-    <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
-      <div
+    <div
+      className="fixed inset-x-0 bottom-0 top-[46px] z-[80] bg-black/70 backdrop-blur-[2px]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${bot.name}的云端桌面`}
+    >
+      <aside
         className={cn(
-          "flex min-h-[46px] items-center gap-2 border-b border-hairline/40 bg-panel px-3",
-          isWin && "pr-[148px]",
+          "absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-hairline/70 bg-app",
+          "inset-x-[clamp(24px,4.5vw,92px)] bottom-[clamp(24px,4vh,48px)] top-[clamp(24px,3.5vh,36px)]",
+          "shadow-[0_28px_90px_rgba(0,0,0,0.62)]",
         )}
-        style={drag}
       >
-        <button
-          onClick={() => void closeDesktop()}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+        <div
+          className="flex min-h-12 shrink-0 items-center gap-3 border-b border-hairline/40 bg-panel px-3"
           style={noDrag}
         >
-          <ChevronLeft size={15} /> 返回聊天
-        </button>
-        <div className="mx-1 h-5 w-px bg-hairline/50" />
-        <div className="flex min-w-0 items-center gap-2 text-[13px] text-ink" aria-live="polite">
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              desktop.state === "ready"
-                ? "bg-success"
-                : desktop.state === "failed"
-                  ? "bg-danger"
-                  : "bg-warning",
-            )}
-          />
-          <span className="truncate">{bot.name} · {labels[desktop.state]}</span>
-        </div>
-        <div className="ml-auto flex items-center gap-1" style={noDrag}>
+          <div className="flex min-w-0 items-center gap-2 text-[13px] text-ink" aria-live="polite">
+            <span
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                desktop.state === "ready"
+                  ? "bg-success"
+                  : desktop.state === "failed"
+                    ? "bg-danger"
+                    : "bg-warning",
+              )}
+            />
+            <span className="truncate font-medium">{bot.name}</span>
+            <span className="hidden shrink-0 text-ink-secondary sm:inline">· {labels[desktop.state]}</span>
+          </div>
+          <span className="hidden min-w-0 truncate text-[11.5px] text-ink-secondary md:block">云端桌面</span>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => void reconnect()}
             disabled={!bridge || busy || sleeping}
-            className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
             title="获取新连接并重新连接"
           >
             <RefreshCw size={15} />
@@ -202,7 +210,7 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           <button
             onClick={() => void reload()}
             disabled={!bridge || busy || sleeping || desktop.state === "failed"}
-            className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
             title="刷新当前桌面页面"
           >
             <RotateCw size={15} />
@@ -210,7 +218,7 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           <button
             onClick={() => void toggleFullscreen()}
             disabled={!bridge || sleeping}
-            className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
             title={desktop.fullscreen ? "退出全屏" : "全屏"}
           >
             {desktop.fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
@@ -218,44 +226,44 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           <button
             onClick={() => void sleep()}
             disabled={!bridge || sleeping}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
             title="先关闭内嵌桌面，再休眠云电脑"
           >
             {sleeping ? <Loader2 size={14} className="animate-spin" /> : <Moon size={14} />}
-            休眠
           </button>
           <button
             onClick={() => void closeDesktop()}
-            className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
             title="关闭桌面"
           >
             <X size={16} />
           </button>
         </div>
-      </div>
+        </div>
 
-      <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#05080d]">
-        {(busy || sleeping) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-secondary">
-            <Loader2 size={22} className="animate-spin" />
-            <span className="text-[13px]">{sleeping ? "正在休眠云电脑…" : labels[desktop.state]}</span>
-          </div>
-        )}
-        {failedMessage && !sleeping && (
-          <div className="absolute inset-0 flex items-center justify-center p-8">
-            <div className="max-w-md rounded-xl border border-danger/30 bg-danger/10 px-5 py-4 text-center">
-              <div className="text-[14px] font-medium text-danger">{failedMessage}</div>
-              <button
-                onClick={() => void reconnect()}
-                disabled={!bridge}
-                className="mt-3 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
-              >
-                重新连接
-              </button>
+        <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#05080d]">
+          {(busy || sleeping) && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-secondary">
+              <Loader2 size={22} className="animate-spin" />
+              <span className="text-[13px]">{sleeping ? "正在休眠云电脑…" : labels[desktop.state]}</span>
             </div>
-          </div>
-        )}
-      </div>
-    </main>
+          )}
+          {failedMessage && !sleeping && (
+            <div className="absolute inset-0 flex items-center justify-center p-4">
+              <div className="max-w-md rounded-xl border border-danger/30 bg-danger/10 px-5 py-4 text-center">
+                <div className="text-[14px] font-medium text-danger">{failedMessage}</div>
+                <button
+                  onClick={() => void reconnect()}
+                  disabled={!bridge}
+                  className="mt-3 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
+                >
+                  重新连接
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
   );
 }

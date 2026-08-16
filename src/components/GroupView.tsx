@@ -194,7 +194,15 @@ function DefaultResponderSelect({ group, members }: { group: Group; members: Bot
   );
 }
 
-export function GroupView({ group }: { group: Group }) {
+export function GroupView({
+  group,
+  reserveWindowControls = true,
+  compactHeader = false,
+}: {
+  group: Group;
+  reserveWindowControls?: boolean;
+  compactHeader?: boolean;
+}) {
   const { state, dispatch } = useStore();
   const stream = useStreaming();
   const streaming = stream.streaming[group.threadId];
@@ -237,17 +245,25 @@ export function GroupView({ group }: { group: Group }) {
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* Header: static member avatars; a ring and dot mark the working bot. */}
-      <div className={cn("flex items-center justify-between px-5 py-3", isWin && "pr-[148px]")} style={drag}>
-        <span className="text-[15px] font-semibold text-ink">{group.name}</span>
+      <div
+        className={cn(
+          "flex items-center justify-between py-3",
+          compactHeader ? "px-3" : "px-5",
+          isWin && reserveWindowControls && "pr-[148px]",
+        )}
+        style={drag}
+      >
+        <span className="min-w-0 truncate text-[15px] font-semibold text-ink">{group.name}</span>
         <div className="flex items-center gap-1.5" style={noDrag}>
-          {!group.dm && <DefaultResponderSelect group={group} members={members} />}
+          {!group.dm && !compactHeader && <DefaultResponderSelect group={group} members={members} />}
           {!group.dm && <GroupCallButton group={group} active={callOpen} onToggle={() => setCallOpen((open) => !open)} />}
-          {members.map((b) => (
+          {members.map((b, index) => (
             <span
               key={b.id}
               title={`${b.name}${group.busyBotId === b.id ? " — 正在工作…" : ""}`}
               className={cn(
                 "relative inline-flex rounded-full",
+                compactHeader && index > 1 && "hidden",
                 group.busyBotId === b.id && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
               )}
             >

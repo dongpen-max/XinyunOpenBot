@@ -239,7 +239,7 @@ interface AppState {
   settingsOpen: boolean;
   pluginsOpen: boolean;
   computerOpen: boolean;
-  /** Bot whose cloud desktop currently replaces the central chat surface. */
+  /** Bot whose cloud desktop currently appears in the full-app overlay. */
   cloudDesktopBotId: string | null;
   appSettingsOpen: boolean;
   /** latest live frame of a bot's computer, per botId */
@@ -563,6 +563,7 @@ function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open,
         computerOpen: open ? false : state.computerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
     case "togglePlugins":
@@ -574,10 +575,18 @@ function reducer(state: AppState, action: Action): AppState {
         computerOpen: open,
         settingsOpen: open ? false : state.settingsOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
     case "openCloudDesktop":
-      return { ...state, selectedId: action.botId, cloudDesktopBotId: action.botId };
+      return {
+        ...state,
+        selectedId: action.botId,
+        cloudDesktopBotId: action.botId,
+        settingsOpen: false,
+        computerOpen: false,
+        appSettingsOpen: false,
+      };
     case "closeCloudDesktop":
       return { ...state, cloudDesktopBotId: null };
     case "toggleAppSettings": {
@@ -588,6 +597,7 @@ function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
+        cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
     case "updateBot": {

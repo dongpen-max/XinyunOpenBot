@@ -517,7 +517,7 @@ export function Sidebar() {
   const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
 
   return (
-    <aside className="flex h-full w-[320px] shrink-0 flex-col border-r border-hairline/40 bg-panel">
+    <aside className="flex h-full w-full min-w-0 flex-col bg-panel">
       {/* Titlebar: real traffic lights in Electron, faux ones in the browser */}
       <div
         className="flex items-center justify-between px-4 pt-3.5 pb-1"

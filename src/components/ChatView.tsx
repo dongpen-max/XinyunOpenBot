@@ -545,7 +545,15 @@ const MessagesList = memo(function MessagesList({
   );
 });
 
-export function ChatView({ bot }: { bot: Bot }) {
+export function ChatView({
+  bot,
+  reserveWindowControls = true,
+  compactHeader = false,
+}: {
+  bot: Bot;
+  reserveWindowControls?: boolean;
+  compactHeader?: boolean;
+}) {
   const { state, dispatch } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -649,12 +657,19 @@ export function ChatView({ bot }: { bot: Bot }) {
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* Header */}
       <div
-        className={cn("flex items-center justify-between px-5 py-3", isWin && "pr-[148px]")}
+        className={cn(
+          "flex items-center justify-between py-3",
+          compactHeader ? "px-3" : "px-5",
+          isWin && reserveWindowControls && "pr-[148px]",
+        )}
         style={drag}
       >
         <button
           onClick={() => dispatch({ type: "toggleSettings" })}
-          className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-raised/50"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center rounded-lg px-1.5 py-1 hover:bg-raised/50",
+            compactHeader ? "gap-0" : "gap-2.5",
+          )}
           title={zhCN.chat.botSettings}
           style={noDrag}
         >
@@ -666,7 +681,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             motion={mascotMotion?.kind ?? "none"}
             motionKey={mascotMotion?.nonce ?? 0}
           />
-          <span className="min-w-0 text-left">
+          <span className={cn("min-w-0 text-left", compactHeader && "hidden")}>
             <span className="flex items-center gap-1.5 truncate text-[15px] font-semibold text-ink">
               <span className="truncate">{bot.name}</span>
               {bot.chiefOfStaff && (
@@ -683,7 +698,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             )}
           </span>
         </button>
-        <div className="flex items-center gap-2" style={noDrag}>
+        <div className={cn("flex min-w-0 items-center", compactHeader ? "gap-1" : "gap-2")} style={noDrag}>
           {bot.busy && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
@@ -694,7 +709,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               {zhCN.chat.stop}
             </button>
           )}
-          <TaskPicker bot={bot} />
+          {!compactHeader && <TaskPicker bot={bot} />}
           <ModelPicker bot={bot} />
           <CallButton bot={bot} active={callOpen} onToggle={() => setCallOpen((open) => !open)} />
           <button
