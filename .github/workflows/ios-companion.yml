@@ -26,16 +26,26 @@ jobs:
       - name: Select newest installed Xcode
         run: |
           XCODE_APP=$(python3 - <<'PY'
-          import glob, re
+          import glob, os, re, sys
+
           apps = glob.glob('/Applications/Xcode*.app')
+
           def version(path):
-              match = re.search(r'Xcode[_-]([0-9.]+)', path)
+              match = re.fullmatch(r'Xcode[_-]([0-9]+(?:\.[0-9]+)*)\.app', os.path.basename(path))
               return tuple(int(part) for part in match.group(1).split('.')) if match else (0,)
-          print(max(apps, key=version))
+
+          if not apps:
+              raise SystemExit('No Xcode installation found under /Applications')
+
+          selected = max(apps, key=version)
+          print('Installed Xcodes:', *sorted(apps), sep='\n- ', file=sys.stderr)
+          print(f'Selected Xcode: {selected}', file=sys.stderr)
+          print(selected)
           PY
           )
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
+          swift --version
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @xinyun/mobile typecheck
       - run: pnpm dlx expo-doctor@latest apps/mobile
