@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
+import { disposeAllCloudDesktops, registerCloudDesktopIpc } from "./cloud-desktop.mjs";
 
 app.setName("XinyunOpen Bot");
 // Keep the existing OpenMausBot user-data directory so upgrading the branded
@@ -259,6 +260,7 @@ app.whenReady().then(async () => {
   );
   registerCuaIpc();
   registerUpdaterIpc();
+  registerCloudDesktopIpc(() => SERVER_PORT);
   // Start the CUA daemon before the window so the harness can pick up the
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
@@ -284,6 +286,7 @@ app.on("before-quit", (e) => {
   if (cuaCleanedUp) return;
   e.preventDefault();
   stopSpeech();
+  disposeAllCloudDesktops();
   Promise.allSettled([stopServerPackaged(), stopCua()]).finally(() => {
     cuaCleanedUp = true;
     app.quit();

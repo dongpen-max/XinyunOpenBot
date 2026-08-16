@@ -239,6 +239,8 @@ interface AppState {
   settingsOpen: boolean;
   pluginsOpen: boolean;
   computerOpen: boolean;
+  /** Bot whose cloud desktop currently replaces the central chat surface. */
+  cloudDesktopBotId: string | null;
   appSettingsOpen: boolean;
   /** latest live frame of a bot's computer, per botId */
   screens: Record<string, { png: string; mime: string }>;
@@ -310,6 +312,8 @@ type Action =
   | { type: "toggleSettings"; open?: boolean }
   | { type: "togglePlugins"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
+  | { type: "openCloudDesktop"; botId: string }
+  | { type: "closeCloudDesktop" }
   | { type: "toggleAppSettings"; open?: boolean }
   | {
       type: "updateBot";
@@ -357,7 +361,10 @@ function reducer(state: AppState, action: Action): AppState {
       const known = (id: string) => action.bots.some((b) => b.id === id) || action.groups.some((g) => g.id === id);
       const selectedId =
         state.selectedId && known(state.selectedId) ? state.selectedId : (action.bots[0]?.id ?? "");
-      return { ...state, bots: action.bots, groups: action.groups, selectedId };
+      const cloudDesktopBotId = action.bots.some((bot) => bot.id === state.cloudDesktopBotId)
+        ? state.cloudDesktopBotId
+        : null;
+      return { ...state, bots: action.bots, groups: action.groups, selectedId, cloudDesktopBotId };
     }
     case "groupPatched": {
       const exists = state.groups.some((g) => g.id === action.group.id);
@@ -380,11 +387,16 @@ function reducer(state: AppState, action: Action): AppState {
         return {
           ...state,
           selectedId: action.id,
+          cloudDesktopBotId: null,
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
         };
       }
       return updateBot(
-        withMascotMotion({ ...state, selectedId: action.id }, action.id, "switch"),
+        withMascotMotion({
+          ...state,
+          selectedId: action.id,
+          cloudDesktopBotId: state.cloudDesktopBotId === action.id ? action.id : null,
+        }, action.id, "switch"),
         action.id,
         (b) => ({ ...b, unread: false }),
       );
@@ -410,7 +422,12 @@ function reducer(state: AppState, action: Action): AppState {
       const bots = state.bots.filter((b) => b.id !== action.botId);
       const selectedId =
         state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? bots[0]?.id ?? "") : state.selectedId;
-      return { ...state, bots, selectedId };
+      return {
+        ...state,
+        bots,
+        selectedId,
+        cloudDesktopBotId: state.cloudDesktopBotId === action.botId ? null : state.cloudDesktopBotId,
+      };
     }
     case "markUnread":
       return updateBot(withMascotMotion(state, action.botId, "surprise"), action.botId, (b) => ({ ...b, unread: true }));
@@ -559,6 +576,10 @@ function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
+    case "openCloudDesktop":
+      return { ...state, selectedId: action.botId, cloudDesktopBotId: action.botId };
+    case "closeCloudDesktop":
+      return { ...state, cloudDesktopBotId: null };
     case "toggleAppSettings": {
       const open = action.open ?? !state.appSettingsOpen;
       return {
@@ -666,6 +687,7 @@ const initialState: AppState = {
   settingsOpen: false,
   pluginsOpen: false,
   computerOpen: false,
+  cloudDesktopBotId: null,
   appSettingsOpen: false,
   screens: {},
   provisioning: {},

@@ -7,7 +7,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
-  ExternalLink,
   Loader2,
   Monitor,
   Moon,
@@ -161,17 +160,26 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         ? cloudFrame && `data:${cloudFrame.mime};base64,${cloudFrame.png}`
         : null;
 
-  const run = (kind: "join" | "sleep") => {
+  const run = async (kind: "join" | "sleep") => {
     setPending(kind);
     setError(null);
-    api(`/api/bots/${bot.id}/computer/${kind}`, { method: "POST" })
-      .then((result) => {
-        // the join URL's stream token rotates — always freshly minted, never cached
-        if (kind === "join" && result.joinUrl) window.open(result.joinUrl);
-        if (kind === "sleep") setBoxState("archived");
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setPending(null));
+    try {
+      if (kind === "join") {
+        if (!window.ogb?.cloudDesktop) throw new Error("云端桌面只能在 XinyunOpen Bot 桌面应用中打开");
+        dispatch({ type: "openCloudDesktop", botId: bot.id });
+        return;
+      }
+      // A sleeping Box invalidates its stream. Tear down the native view
+      // before asking the server to archive the shared workspace computer.
+      await window.ogb?.cloudDesktop?.close();
+      dispatch({ type: "closeCloudDesktop" });
+      await api(`/api/bots/${bot.id}/computer/sleep`, { method: "POST" });
+      setBoxState("archived");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "云电脑操作失败，请稍后重试");
+    } finally {
+      setPending(null);
+    }
   };
 
   const emptyState: Record<Exclude<Phase, "ready" | "local">, string> = {
@@ -279,16 +287,16 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {phase === "ready" && (
           <div className="mt-3 flex gap-2">
             <button
-              onClick={() => run("join")}
+              onClick={() => void run("join")}
               disabled={pending === "join"}
               className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
             >
-              {pending === "join" ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+              {pending === "join" ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}
               {zhCN.computer.openDesktop}
             </button>
             {boxState !== "archived" && (
               <button
-                onClick={() => run("sleep")}
+                onClick={() => void run("sleep")}
                 disabled={pending === "sleep"}
                 className="flex items-center justify-center gap-2 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
                 title={zhCN.computer.sleepTitle}

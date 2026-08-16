@@ -9,6 +9,7 @@ import { GroupView } from "@/components/GroupView";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
+import { CloudDesktopView } from "@/components/CloudDesktopView";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { NoEngines } from "@/components/NoEngines";
@@ -17,6 +18,9 @@ function Shell() {
   const { state, dispatch } = useStore();
   const group = state.groups.find((g) => g.id === state.selectedId);
   const bot = group ? undefined : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
+  const cloudDesktopBot = state.cloudDesktopBotId
+    ? state.bots.find((candidate) => candidate.id === state.cloudDesktopBotId)
+    : undefined;
   const noEngines = state.connected && state.instances.length > 0 && !state.instances.some((i) => i.snapshot.state === "available");
 
   // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next.
@@ -54,7 +58,9 @@ function Shell() {
       <UpdateBanner />
       <div className="relative flex min-h-0 flex-1">
       <Sidebar />
-      {noEngines ? (
+      {cloudDesktopBot ? (
+        <CloudDesktopView key={cloudDesktopBot.id} bot={cloudDesktopBot} />
+      ) : noEngines ? (
         <NoEngines />
       ) : group ? (
         <GroupView key={group.id} group={group} />

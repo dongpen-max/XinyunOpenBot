@@ -22,6 +22,15 @@ declare global {
       permRequestMic(): Promise<boolean>;
       /** Opens System Settings on a privacy pane: mic|screen|speech. */
       permOpenSettings(pane: "mic" | "screen" | "speech"): Promise<void>;
+      cloudDesktop?: {
+        open(botId: string): Promise<{ ok: boolean }>;
+        reconnect(botId: string): Promise<{ ok: boolean }>;
+        setBounds(bounds: CloudDesktopBounds): Promise<void>;
+        reload(): Promise<void>;
+        close(): Promise<void>;
+        toggleFullscreen(): Promise<boolean>;
+        onState(cb: (state: CloudDesktopState) => void): () => void;
+      };
       /** In-app auto-update (packaged app only; dormant in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {
@@ -40,4 +49,18 @@ export interface UpdaterState {
   version?: string;
   percent?: number;
   message?: string;
+}
+
+export interface CloudDesktopBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface CloudDesktopState {
+  state: "connecting" | "ready" | "reconnecting" | "failed" | "closed";
+  botId: string | null;
+  message?: string;
+  fullscreen: boolean;
 }

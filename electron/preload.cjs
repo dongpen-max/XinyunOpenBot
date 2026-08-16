@@ -32,6 +32,27 @@ contextBridge.exposeInMainWorld("ogb", {
   /** Opens System Settings on the given privacy pane: mic|screen|speech. */
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
 
+  /** Cloud desktop stays in a hardened WebContentsView owned by the main
+   * process. The renderer sends only a bot id and display bounds; join URLs
+   * and their rotating stream tokens never cross this bridge. */
+  cloudDesktop: {
+    open: (botId) => ipcRenderer.invoke("cloud-desktop:open", botId),
+    reconnect: (botId) => ipcRenderer.invoke("cloud-desktop:reconnect", botId),
+    setBounds: (bounds) => ipcRenderer.invoke("cloud-desktop:set-bounds", bounds),
+    reload: () => ipcRenderer.invoke("cloud-desktop:reload"),
+    close: () => ipcRenderer.invoke("cloud-desktop:close"),
+    toggleFullscreen: () => ipcRenderer.invoke("cloud-desktop:toggle-fullscreen"),
+    onState: (cb) => {
+      ipcRenderer
+        .invoke("cloud-desktop:get-state")
+        .then((state) => cb(state))
+        .catch(() => {});
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("cloud-desktop:state", handler);
+      return () => ipcRenderer.removeListener("cloud-desktop:state", handler);
+    },
+  },
+
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
    *    version?, percent?, message? }. onState fires immediately with the
