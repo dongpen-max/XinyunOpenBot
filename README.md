@@ -1,6 +1,10 @@
 # XinyunOpen Bot
 
-**面向中国用户的开源 Grok Bot 替代方案，默认使用简体中文。**
+<p align="center">
+  <img src="./docs/promo/grok-alternative/ready/00-cover.png" alt="XinyunOpen Bot — 开源的 Grok Bot 平替" width="100%" />
+</p>
+
+**面向中国用户的开源 Grok Bot 平替方案，默认使用简体中文。**
 
 XinyunOpen Bot 是一个基于 Electron、React 和 TypeScript 的桌面 AI 机器人管理工具。你可以像聊天联系人一样创建多个机器人，为每个机器人选择不同模型、独立任务和云端电脑，并在一个桌面应用里统一管理 Claude、Codex、GPT、Grok、Gemini 以及 OpenAI 兼容中转站模型。
 
@@ -41,10 +45,62 @@ XinyunOpen Bot 保留多机器人聊天体验，并强化国内中转站、多�
 - **云端电脑**：机器人可以使用 Box 云桌面执行浏览器、Shell、截图、点击和输入操作。
 - **本机电脑控制**：在支持的平台上可通过 CUA integration 操作本机桌面。
 - **聊天房间**：多个机器人可以加入同一个房间，通过 @mention 协作。
+- **总管机器人**：主要联系人可以调用 `list_bots` 与 `ask_bot`，向其他机器人分配任务并汇总结果。
+- **五档思考强度**：支持极低、低、中、高、最大五档；极低档会自动选择同厂商的下一级模型。
 - **对话分支**：编辑历史消息后生成新的对话分支。
-- **语音聊天**：Windows、macOS 和 Linux 桌面端支持麦克风转写、回复朗读及一对一半双工连续通话。
+- **实时语音聊天**：Windows、macOS 和 Linux 桌面端支持麦克风转写、流式回复播报、抢断及连续通话。
+- **机器人专属声音**：每个机器人可独立设置音色、语速和音量，群聊朗读时自动区分发言者。
+- **国产模型预设**：可直接配置 DeepSeek、智谱 GLM、通义千问和 Kimi 的兼容 API。
 - **应用内更新**：从公开 Releases 仓库读取更新元数据并下载安装。
 - **本地数据**：配置、聊天记录和事件日志默认保存在 `~/.openmausbot/`。
+
+## 功能预览
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/02-xinyun-grok.png" alt="星云 Grok 模型接入" />
+      <br /><strong>Grok 4.6 / 4.5 直接接入</strong><br />
+      通过兼容 API 使用 Grok，并保留云端电脑、工具调用和多机器人能力。
+    </td>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/01-chief-agent.png" alt="总管机器人协调其他机器人" />
+      <br /><strong>总管机器人分配与汇总任务</strong><br />
+      一个机器人负责沟通，其他机器人负责执行子任务。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/06-group-chat.png" alt="多机器人群聊" />
+      <br /><strong>多机器人群聊</strong><br />
+      使用 @ 提及指定机器人，不同成员可以拥有不同模型、角色与声音。
+    </td>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/05-realtime-voice.png" alt="实时 STT 与 TTS 语音聊天" />
+      <br /><strong>边生成，边语音回答</strong><br />
+      支持 STT、流式 TTS、麦克风抢断和连续语音通话。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/04-per-bot-voice.png" alt="每个机器人独立音色和语速" />
+      <br /><strong>每个机器人都有自己的声音</strong><br />
+      分别设置音色、语速和音量，让群聊中的角色更容易区分。
+    </td>
+    <td width="50%" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/03-reasoning-levels.png" alt="五档模型思考强度" />
+      <br /><strong>五档思考强度</strong><br />
+      简单问题快速回答，复杂任务可切换到炫紫 MAX 档。
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center" valign="top">
+      <img src="./docs/promo/grok-alternative/ready/07-domestic-models.png" alt="DeepSeek、GLM、通义千问和 Kimi" width="72%" />
+      <br /><strong>国产模型直接接入</strong><br />
+      内置 DeepSeek、智谱 GLM、通义千问和 Kimi 的兼容 API 预设。
+    </td>
+  </tr>
+</table>
 
 ## 快速开始
 
