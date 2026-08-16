@@ -36,7 +36,7 @@ export class StreamingSpeechBuffer {
   private readonly preferredChars: number;
   private readonly maxChars: number;
 
-  constructor({ preferredChars = 28, maxChars = 48 }: StreamingSpeechOptions = {}) {
+  constructor({ preferredChars = 120, maxChars = 240 }: StreamingSpeechOptions = {}) {
     this.preferredChars = Math.max(1, preferredChars);
     this.maxChars = Math.max(this.preferredChars, maxChars);
   }
@@ -57,6 +57,7 @@ export class StreamingSpeechBuffer {
     let inlineCode = false;
     let linkLabel = false;
     let linkDepth = 0;
+    let lastBoundaryEnd: number | null = null;
 
     while (cursor < this.source.length) {
       const marker = this.source.slice(cursor, cursor + 3);
@@ -106,9 +107,15 @@ export class StreamingSpeechBuffer {
       if (!fence && !inlineCode && !linkLabel && linkDepth === 0) {
         const boundaryEnd = this.boundaryEnd(cursor);
         if (boundaryEnd !== null) {
-          this.append(chunks, start, boundaryEnd);
-          start = this.skipWhitespace(boundaryEnd);
-          cursor = start;
+          lastBoundaryEnd = boundaryEnd;
+          if (boundaryEnd - start >= this.preferredChars) {
+            this.append(chunks, start, boundaryEnd);
+            start = this.skipWhitespace(boundaryEnd);
+            lastBoundaryEnd = null;
+            cursor = start;
+          } else {
+            cursor = boundaryEnd;
+          }
           continue;
         }
       }
@@ -121,9 +128,10 @@ export class StreamingSpeechBuffer {
       this.consumed = this.source.length;
     } else if (idle || this.source.length - this.consumed >= this.maxChars) {
       const idleEnd = this.idleBoundary(this.consumed);
-      if (idleEnd !== null) {
-        this.append(chunks, this.consumed, idleEnd);
-        this.consumed = this.skipWhitespace(idleEnd);
+      const flushEnd = idleEnd ?? (idle ? lastBoundaryEnd : null);
+      if (flushEnd !== null) {
+        this.append(chunks, this.consumed, flushEnd);
+        this.consumed = this.skipWhitespace(flushEnd);
       }
     }
     return chunks;

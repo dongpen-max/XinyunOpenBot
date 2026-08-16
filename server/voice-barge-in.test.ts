@@ -67,7 +67,9 @@ describe("SpeechTurnQueue", () => {
   it("keeps FIFO order inside one call turn", () => {
     const queue = new SpeechTurnQueue<string>();
     queue.enqueue(["一", "二", "三"]);
+    expect(queue.peek()).toBe("一");
     expect([queue.shift(), queue.shift(), queue.shift()]).toEqual(["一", "二", "三"]);
+    expect(queue.peek()).toBeUndefined();
   });
 
   it("drops audio produced by a stale turn after interruption", () => {

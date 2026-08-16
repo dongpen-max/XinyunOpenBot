@@ -106,54 +106,74 @@ export function speakable(input) {
 /** Sentence-ish boundary: `.`/`!`/`?` followed by space, but not inside a
  * decimal, an ellipsis, or a common abbreviation. */
 const BOUNDARY = /(?<!\b(?:e\.g|i\.e|etc|vs|Dr|Mr|Mrs|Ms|No|approx))(?<![.\d])([.!?])(["')\]]*)\s+/g;
+const CJK_BOUNDARY = /([。！？；])(["')\]”’]*)\s*/g;
 /**
- * Split speakable text into utterances a synthesizer can start on.
+ * Split speakable text into natural chunks a synthesizer can render.
  *
- * Both tiers want this: cloud TTS charges and buffers per request, and the
- * local model generates per utterance — so the unit of work is a sentence
- * either way. Very short fragments are glued onto their neighbour, because
- * a synthesizer given two words produces two words of flat, contextless
- * prosody.
+ * Sentence boundaries are retained as safe cut points, but adjacent sentences
+ * stay together so the voice keeps one prosodic context instead of restarting
+ * after every full stop. The hard cap remains below `/api/voice/speak`'s 1200
+ * character limit.
  */
-export function toUtterances(input, { minChars = 12, maxChars = 320 } = {}) {
+export function toUtterances(input, { minChars = 12, preferredChars = 420, maxChars = 900 } = {}) {
     const text = speakable(input);
     if (!text)
         return [];
+    const hardMax = Math.max(1, Math.min(1200, maxChars));
+    const preferred = Math.max(1, Math.min(preferredChars, hardMax));
+    const minimum = Math.max(1, Math.min(minChars, hardMax));
     // Split on a sentinel, never on the whitespace itself: the boundary
     // match consumes the trailing space, so splitting on " " would split
     // every word in the text rather than every sentence.
     const MARK = "\u0000";
     const rough = text
         .replace(BOUNDARY, `$1$2${MARK}`)
+        .replace(CJK_BOUNDARY, `$1$2${MARK}`)
         .split(MARK)
         .map((s) => s.trim())
         .filter(Boolean);
+    const parts = rough.flatMap((piece) => (piece.length <= hardMax ? [piece] : splitLong(piece, hardMax)));
     const out = [];
-    for (const piece of rough) {
-        // a sentence longer than the cap is broken at a clause, never mid-word
-        const parts = piece.length <= maxChars ? [piece] : splitLong(piece, maxChars);
-        for (const part of parts) {
-            const prev = out[out.length - 1];
-            if (prev && (prev.length < minChars || part.length < minChars)) {
-                out[out.length - 1] = `${prev} ${part}`;
-            }
-            else {
-                out.push(part);
-            }
+    let current = "";
+    for (let index = 0; index < parts.length; index += 1) {
+        const part = parts[index];
+        const combined = current ? joinSpeech(current, part) : part;
+        if (current && combined.length > hardMax) {
+            out.push(current);
+            current = part;
+        }
+        else {
+            current = combined;
+        }
+        if (current.length >= preferred && index + 1 < parts.length) {
+            out.push(current);
+            current = "";
         }
     }
+    if (current) {
+        const previous = out[out.length - 1];
+        const combined = previous ? joinSpeech(previous, current) : current;
+        if (previous && current.length < minimum && combined.length <= hardMax)
+            out[out.length - 1] = combined;
+        else
+            out.push(current);
+    }
     return out;
+}
+function joinSpeech(left, right) {
+    const noSpace = /[\p{Script=Han}。！？；，、：]$/u.test(left) && /^[\p{Script=Han}]/u.test(right);
+    return `${left}${noSpace ? "" : " "}${right}`;
 }
 function splitLong(text, maxChars) {
     const out = [];
     let rest = text;
     while (rest.length > maxChars) {
         const window = rest.slice(0, maxChars);
-        // prefer a clause break, then any space; never cut a word in half
-        const at = Math.max(window.lastIndexOf(", "), window.lastIndexOf("; "), window.lastIndexOf(" — "));
-        const cut = at > maxChars / 2 ? at + 1 : window.lastIndexOf(" ");
-        if (cut <= 0)
-            break;
+        // Prefer a clause break, then a word boundary. Text without either still
+        // has to respect the synthesizer's hard request limit.
+        const clause = Math.max(window.lastIndexOf(", ") + 1, window.lastIndexOf("; ") + 1, window.lastIndexOf(" — ") + 2, window.lastIndexOf("，") + 1, window.lastIndexOf("；") + 1, window.lastIndexOf("、") + 1, window.lastIndexOf("：") + 1);
+        const word = window.lastIndexOf(" ");
+        const cut = clause > maxChars / 2 ? clause : word > maxChars / 2 ? word : maxChars;
         out.push(rest.slice(0, cut).trim());
         rest = rest.slice(cut).trim();
     }

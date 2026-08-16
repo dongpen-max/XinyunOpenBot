@@ -18,17 +18,23 @@ export class SpeechTurnQueue<T> {
     return values.length;
   }
 
+  peek(): T | undefined {
+    this.dropStale();
+    return this.values[0]?.value;
+  }
+
   shift(): T | undefined {
-    while (this.values.length) {
-      const next = this.values.shift()!;
-      if (next.epoch === this.currentEpoch) return next.value;
-    }
-    return undefined;
+    this.dropStale();
+    return this.values.shift()?.value;
   }
 
   invalidate(): number {
     this.currentEpoch += 1;
     this.values = [];
     return this.currentEpoch;
+  }
+
+  private dropStale() {
+    while (this.values[0] && this.values[0].epoch !== this.currentEpoch) this.values.shift();
   }
 }

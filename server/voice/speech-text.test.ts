@@ -76,11 +76,17 @@ describe("speakable", () => {
 });
 
 describe("toUtterances", () => {
-  it("splits on sentences", () => {
+  it("keeps several short sentences in one continuous utterance", () => {
     const out = toUtterances("The tests pass now. I changed two files. Want me to push it?");
-    expect(out).toHaveLength(3);
-    expect(out[0]).toBe("The tests pass now.");
-    expect(out[2]).toBe("Want me to push it?");
+    expect(out).toEqual(["The tests pass now. I changed two files. Want me to push it?"]);
+  });
+
+  it("groups Chinese sentences instead of synthesizing them one by one", () => {
+    const out = toUtterances("测试已经通过。两个文件已经修改。现在可以直接提交并推送。", {
+      preferredChars: 16,
+      maxChars: 40,
+    });
+    expect(out).toEqual(["测试已经通过。两个文件已经修改。", "现在可以直接提交并推送。"]);
   });
 
   it("does not split inside a decimal or an abbreviation", () => {
@@ -99,9 +105,16 @@ describe("toUtterances", () => {
     const long = `I looked at ${Array.from({ length: 40 }, (_, i) => `item ${i}`).join(", ")} and finished.`;
     const out = toUtterances(long, { maxChars: 120 });
     expect(out.length).toBeGreaterThan(1);
-    for (const piece of out) expect(piece.length).toBeLessThanOrEqual(140);
+    for (const piece of out) expect(piece.length).toBeLessThanOrEqual(120);
     // nothing lost, nothing cut in half
     expect(out.join(" ")).toContain("item 39");
+  });
+
+  it("never exceeds the synthesis cap for long text without spaces", () => {
+    const out = toUtterances("连续语音".repeat(300), { preferredChars: 400, maxChars: 900 });
+    expect(out.length).toBeGreaterThan(1);
+    for (const piece of out) expect(piece.length).toBeLessThanOrEqual(900);
+    expect(out.join("")).toBe("连续语音".repeat(300));
   });
 
   it("runs its input through the spoken register first", () => {

@@ -184,8 +184,19 @@ export function GroupCallOverlay({
     void (async () => {
       try {
         while (alive.current && run === drainRun.current && queue.current.length > 0) {
-          const reply = queue.current.shift();
-          if (!reply) break;
+          const first = queue.current.shift();
+          if (!first) break;
+          const batch = [first];
+          while (queue.current.peek()?.botId === first.botId) {
+            const next = queue.current.shift();
+            if (next) batch.push(next);
+          }
+          const last = batch[batch.length - 1];
+          const reply = {
+            ...first,
+            text: batch.map((item) => item.text).join("\n"),
+            messageId: last.messageId,
+          };
 
           recorderRef.current?.cancel();
           recorderRef.current = null;

@@ -3,19 +3,27 @@ import { describe, expect, it } from "vitest";
 import { StreamingSpeechBuffer } from "../src/lib/voice/streaming-speech.ts";
 
 describe("StreamingSpeechBuffer", () => {
-  it("emits complete sentences once as a stream grows", () => {
-    const buffer = new StreamingSpeechBuffer();
+  it("holds short sentences until they form one natural speech chunk", () => {
+    const buffer = new StreamingSpeechBuffer({ preferredChars: 15, maxChars: 36 });
 
     expect(buffer.update("第一句还没写完")).toEqual([]);
-    expect(buffer.update("第一句还没写完。第二句")).toEqual(["第一句还没写完。"]);
-    expect(buffer.update("第一句还没写完。第二句也好了！第三句")).toEqual(["第二句也好了！"]);
+    expect(buffer.update("第一句还没写完。第二句")).toEqual([]);
+    expect(buffer.update("第一句还没写完。第二句也好了！第三句")).toEqual([
+      "第一句还没写完。第二句也好了！",
+    ]);
     expect(buffer.update("第一句还没写完。第二句也好了！第三句", { final: true })).toEqual(["第三句"]);
   });
 
-  it("emits every newly completed sentence in order", () => {
-    const buffer = new StreamingSpeechBuffer();
-    expect(buffer.update("一。二？三！")).toEqual(["一。", "二？", "三！"]);
+  it("emits several newly completed sentences as one chunk", () => {
+    const buffer = new StreamingSpeechBuffer({ preferredChars: 6, maxChars: 12 });
+    expect(buffer.update("一。二？三！")).toEqual(["一。二？三！"]);
     expect(buffer.update("一。二？三！")).toEqual([]);
+  });
+
+  it("flushes a short completed sentence after a real stream pause", () => {
+    const buffer = new StreamingSpeechBuffer({ preferredChars: 20, maxChars: 40 });
+    expect(buffer.update("短句完成。还有后文")).toEqual([]);
+    expect(buffer.update("短句完成。还有后文", { idle: true })).toEqual(["短句完成。"]);
   });
 
   it("flushes a useful prefix after an idle pause", () => {
@@ -34,9 +42,8 @@ describe("StreamingSpeechBuffer", () => {
 
   it("does not split decimal numbers or common abbreviations", () => {
     const buffer = new StreamingSpeechBuffer();
-    expect(buffer.update("耗时 11.7 秒，例如 i.e. 这是近似值。下一句。")).toEqual([
-      "耗时 11.7 秒，例如 i.e. 这是近似值。",
-      "下一句。",
+    expect(buffer.update("耗时 11.7 秒，例如 i.e. 这是近似值。下一句。", { final: true })).toEqual([
+      "耗时 11.7 秒，例如 i.e. 这是近似值。下一句。",
     ]);
   });
 
@@ -47,7 +54,8 @@ describe("StreamingSpeechBuffer", () => {
 
     expect(buffer.update(open)).toEqual(["说明如下。"]);
     expect(buffer.update(open, { idle: true })).toEqual([]);
-    expect(buffer.update(closed)).toEqual(["```ts\nconst secret = 1;\nconsole.log(secret);\n```", "已经完成。"]);
+    expect(buffer.update(closed)).toEqual(["```ts\nconst secret = 1;\nconsole.log(secret);\n```"]);
+    expect(buffer.update(closed, { idle: true })).toEqual(["已经完成。"]);
   });
 
   it("waits for an incomplete Markdown link during idle flush", () => {
@@ -61,14 +69,14 @@ describe("StreamingSpeechBuffer", () => {
   });
 
   it("uses the settled message only to flush the unread tail", () => {
-    const buffer = new StreamingSpeechBuffer();
+    const buffer = new StreamingSpeechBuffer({ preferredChars: 5, maxChars: 20 });
     expect(buffer.update("已经播放。还剩尾句")).toEqual(["已经播放。"]);
     expect(buffer.update("已经播放。还剩尾句。", { final: true })).toEqual(["还剩尾句。"]);
     expect(buffer.update("已经播放。还剩尾句。", { final: true })).toEqual([]);
   });
 
   it("recovers conservatively if a provider rewrites an unspoken suffix", () => {
-    const buffer = new StreamingSpeechBuffer();
+    const buffer = new StreamingSpeechBuffer({ preferredChars: 3, maxChars: 20 });
     expect(buffer.update("前句。旧的尾巴")).toEqual(["前句。"]);
     expect(buffer.update("前句。新的尾巴。", { final: true })).toEqual(["新的尾巴。"]);
   });

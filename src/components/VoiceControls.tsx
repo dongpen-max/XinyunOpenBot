@@ -177,8 +177,19 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
     void (async () => {
       try {
         while (alive.current && run === drainRun.current && queue.current.length > 0) {
-          const reply = queue.current.shift();
-          if (!reply) break;
+          const first = queue.current.shift();
+          if (!first) break;
+          const batch = [first];
+          while (queue.current.length > 0) {
+            const next = queue.current.shift();
+            if (next) batch.push(next);
+          }
+          const last = batch[batch.length - 1];
+          const reply = {
+            ...first,
+            text: batch.map((item) => item.text).join("\n"),
+            messageId: last.messageId,
+          };
           recorderRef.current?.cancel();
           recorderRef.current = null;
           setError(null);
@@ -393,7 +404,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
           <PhoneOff size={16} /> 挂断
         </button>
       </div>
-      <div className="text-[11.5px] text-ink-secondary/70">回复生成时按句播放 · 直接说话或空格打断 · Esc 挂断</div>
+      <div className="text-[11.5px] text-ink-secondary/70">回复生成时连续朗读 · 直接说话或空格打断 · Esc 挂断</div>
     </div>
   );
 }
