@@ -1,6 +1,6 @@
 // App-level settings shared by all bots. Per-bot identity, model, computer,
 // and voice tuning live in SettingsPanel.
-import { Check, Cloud, Cpu, Download, Link2, Palette, UserRound, X } from "lucide-react";
+import { Check, Cloud, Cpu, Download, Link2, Palette, Smartphone, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow, ProxyRow } from "./ApiKeys";
@@ -18,7 +18,70 @@ import {
   type AppThemePreference,
 } from "@/lib/theme";
 
-type SectionId = "appearance" | "engines" | "voice" | "profile" | "relay" | "connections" | "updates";
+type SectionId = "appearance" | "engines" | "voice" | "profile" | "mobile" | "relay" | "connections" | "updates";
+
+interface MobileSyncStatus {
+  configured: boolean;
+  connected: boolean;
+  gatewayUrl: string | null;
+}
+
+function MobileSyncSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const [status, setStatus] = useState<MobileSyncStatus | null>(null);
+  const [gatewayUrl, setGatewayUrl] = useState("http://127.0.0.1:8788");
+  const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => void fetch("/api/mobile-sync")
+    .then((response) => response.json())
+    .then((next: MobileSyncStatus) => { setStatus(next); if (next.gatewayUrl) setGatewayUrl(next.gatewayUrl); })
+    .catch(() => setStatus({ configured: false, connected: false, gatewayUrl: null }));
+  useEffect(refresh, []);
+
+  const createPairing = async () => {
+    setBusy(true); setError(null); setPairing(null);
+    try {
+      const response = await fetch("/api/mobile-sync/pairing", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ gatewayUrl }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "生成配对码失败");
+      setPairing(body); refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsDisclosure
+      icon={Smartphone}
+      title="iPhone 伴侣"
+      description="电脑主动连接同步服务，不会公开本机 8799 端口。"
+      summary={status?.connected ? "已实时连接" : status?.configured ? "等待重连" : "尚未配对"}
+      open={open}
+      onToggle={onToggle}
+    >
+      <div className="space-y-3">
+        <label className="block">
+          <span className="mb-1 block text-[12px] text-ink-secondary">Sync Gateway 地址</span>
+          <input value={gatewayUrl} onChange={(event) => setGatewayUrl(event.target.value)} placeholder="https://sync.example.com" className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:border-hairline focus:outline-none" />
+        </label>
+        <button type="button" disabled={busy || !gatewayUrl.trim()} onClick={() => void createPairing()} className="rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white disabled:opacity-40">
+          {busy ? "正在生成…" : "生成新的配对码"}
+        </button>
+        {pairing && (
+          <div className="rounded-xl border border-accent-border/40 bg-accent/10 p-3 text-center">
+            <div className="text-[11px] text-ink-secondary">在 iPhone 中输入（10 分钟内有效）</div>
+            <div className="mt-1 select-all font-mono text-[24px] font-bold tracking-[0.18em] text-ink">{pairing.code}</div>
+          </div>
+        )}
+        {error && <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+        <div className="text-[11px] leading-5 text-ink-secondary">手机只保存设备访问令牌；Claude、Codex、Grok、Box 等密钥始终保留在电脑端。</div>
+      </div>
+    </SettingsDisclosure>
+  );
+}
 
 function AppearanceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [preference, setPreference] = useState<AppThemePreference>(() => readAppTheme());
@@ -238,6 +301,7 @@ export function AppSettingsPanel() {
           <AppearanceSettings open={openSection === "appearance"} onToggle={() => toggle("appearance")} />
           <EngineHealthSection open={openSection === "engines"} onToggle={() => toggle("engines")} />
           <VoiceSettings open={openSection === "voice"} onToggle={() => toggle("voice")} />
+          <MobileSyncSettings open={openSection === "mobile"} onToggle={() => toggle("mobile")} />
 
           <SettingsDisclosure
             icon={UserRound}
