@@ -174,6 +174,268 @@ body {
   50% { opacity: 1; }
 }
 
+/* Composer reasoning control. The native range remains the semantic and
+   keyboard-operable input; these layers provide the discrete rail and the
+   single signature moment reserved for the maximum supported effort. */
+.reasoning-effort-popover {
+  transform-origin: 32px 100%;
+}
+
+.reasoning-slider__shell {
+  position: relative;
+  height: 38px;
+  padding: 0 14px;
+}
+
+.reasoning-slider__rail {
+  position: relative;
+  top: 50%;
+  display: flex;
+  height: 13px;
+  transform: translateY(-50%);
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-raised) 84%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-hairline) 72%, transparent);
+}
+
+.reasoning-slider__fill,
+.reasoning-slider__sheen {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--reasoning-progress);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.reasoning-slider__fill {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-accent) 82%, #69b8ff),
+    var(--color-accent),
+    color-mix(in srgb, var(--color-accent-border) 78%, #9bd7ff)
+  );
+  box-shadow: 0 0 17px color-mix(in srgb, var(--color-accent) 38%, transparent);
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1), background 220ms ease, box-shadow 220ms ease;
+}
+
+.reasoning-slider__sheen {
+  overflow: hidden;
+}
+
+.reasoning-slider__sheen::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  opacity: 0.42;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.68) 48%, transparent 100%);
+  transform: translateX(-110%);
+  animation: reasoning-flow-sheen 3s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.reasoning-slider__tick {
+  position: relative;
+  z-index: 2;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink-secondary) 58%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-panel) 30%, transparent);
+  transition: background-color 180ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.reasoning-slider__tick[data-active="true"] {
+  background: color-mix(in srgb, white 82%, var(--color-accent));
+  transform: scale(1.18);
+}
+
+.reasoning-slider__thumb {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: var(--reasoning-progress);
+  display: grid;
+  width: 30px;
+  height: 30px;
+  transform: translate(-50%, -50%);
+  place-items: center;
+  pointer-events: none;
+  transition: left 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.reasoning-slider__thumb-core {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent-border) 55%, white);
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: var(--color-ink);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.34), 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  transition: color 180ms ease, box-shadow 220ms ease, transform 120ms ease-out;
+}
+
+.reasoning-slider__input {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.reasoning-slider__shell:focus-within .reasoning-slider__thumb-core {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.34), 0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.reasoning-slider__shell:has(.reasoning-slider__input:active) .reasoning-slider__thumb-core {
+  transform: scale(0.94);
+}
+
+.reasoning-slider[data-maximum="true"] .reasoning-slider__fill {
+  background: linear-gradient(90deg, #6658ff 0%, #963dff 42%, #d43cff 72%, #ff5fd2 100%);
+  box-shadow: 0 0 24px rgba(168, 85, 247, 0.66), 0 0 10px rgba(236, 72, 153, 0.48);
+}
+
+.reasoning-slider[data-maximum="true"] .reasoning-slider__sheen::after {
+  opacity: 0.84;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.9) 42%, rgba(242, 196, 255, 0.78) 52%, transparent 100%);
+  animation: reasoning-max-sheen 1.55s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.reasoning-slider[data-maximum="true"] .reasoning-slider__thumb-core {
+  border-color: rgba(233, 213, 255, 0.92);
+  color: #e9d5ff;
+  background: radial-gradient(circle at 35% 28%, #b56cff 0 20%, #7928d8 58%, #35105f 100%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.36), 0 0 0 4px rgba(168, 85, 247, 0.24), 0 0 26px rgba(217, 70, 239, 0.86);
+}
+
+.reasoning-slider__aura,
+.reasoning-slider__orbit {
+  position: absolute;
+  inset: -5px;
+  z-index: 1;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.reasoning-slider__aura {
+  background: radial-gradient(circle, rgba(217, 70, 239, 0.5) 0 30%, rgba(139, 92, 246, 0.24) 48%, transparent 70%);
+  animation: reasoning-max-aura 1.65s ease-in-out infinite;
+}
+
+.reasoning-slider__orbit {
+  border: 1px solid rgba(233, 213, 255, 0.76);
+  box-shadow: 0 0 10px rgba(192, 132, 252, 0.45);
+  animation: reasoning-max-orbit 1.8s linear infinite;
+}
+
+.reasoning-slider__spark {
+  position: absolute;
+  z-index: 5;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #f5d0fe;
+  box-shadow: 0 0 8px #d946ef, 0 0 13px #8b5cf6;
+  opacity: 0;
+}
+
+.reasoning-slider__spark--one { animation: reasoning-max-spark-one 560ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.reasoning-slider__spark--two { animation: reasoning-max-spark-two 620ms 40ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.reasoning-slider__spark--three { animation: reasoning-max-spark-three 680ms 80ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+.reasoning-effort-control[data-maximum="true"] .reasoning-effort-trigger {
+  border-color: rgba(192, 132, 252, 0.62);
+  color: var(--color-ink);
+  background: linear-gradient(110deg, rgba(109, 40, 217, 0.18), rgba(217, 70, 239, 0.12));
+  box-shadow: 0 0 14px rgba(168, 85, 247, 0.26);
+}
+
+.reasoning-effort-badge--maximum {
+  border-color: rgba(216, 180, 254, 0.58);
+  color: #e9d5ff;
+  background: linear-gradient(110deg, rgba(109, 40, 217, 0.34), rgba(217, 70, 239, 0.24));
+  box-shadow: inset 0 0 12px rgba(192, 132, 252, 0.12), 0 0 14px rgba(168, 85, 247, 0.2);
+}
+
+.reasoning-effort-trigger__max-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #e879f9;
+  box-shadow: 0 0 8px #d946ef;
+  animation: reasoning-max-dot 1.8s ease-in-out infinite;
+}
+
+@keyframes reasoning-flow-sheen {
+  0%, 26% { transform: translateX(-110%); opacity: 0; }
+  40% { opacity: 0.44; }
+  70%, 100% { transform: translateX(110%); opacity: 0; }
+}
+
+@keyframes reasoning-max-sheen {
+  0%, 18% { transform: translateX(-110%); opacity: 0; }
+  35% { opacity: 0.72; }
+  68%, 100% { transform: translateX(110%); opacity: 0; }
+}
+
+@keyframes reasoning-max-aura {
+  0%, 100% { transform: scale(0.88); opacity: 0.48; }
+  50% { transform: scale(1.22); opacity: 0.9; }
+}
+
+@keyframes reasoning-max-orbit {
+  from { transform: rotate(0deg) scale(0.94); opacity: 0.28; }
+  50% { opacity: 0.78; }
+  to { transform: rotate(360deg) scale(1.16); opacity: 0.28; }
+}
+
+@keyframes reasoning-max-spark-one {
+  from { transform: translate(0, 0) scale(0.4); opacity: 0; }
+  24% { opacity: 1; }
+  to { transform: translate(-16px, -15px) scale(0.9); opacity: 0; }
+}
+
+@keyframes reasoning-max-spark-two {
+  from { transform: translate(0, 0) scale(0.4); opacity: 0; }
+  24% { opacity: 1; }
+  to { transform: translate(17px, -11px) scale(0.75); opacity: 0; }
+}
+
+@keyframes reasoning-max-spark-three {
+  from { transform: translate(0, 0) scale(0.4); opacity: 0; }
+  24% { opacity: 1; }
+  to { transform: translate(14px, 15px) scale(0.65); opacity: 0; }
+}
+
+@keyframes reasoning-max-dot {
+  0%, 100% { transform: scale(0.82); opacity: 0.62; }
+  50% { transform: scale(1.18); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-slider__fill,
+  .reasoning-slider__thumb,
+  .reasoning-slider__tick,
+  .reasoning-slider__thumb-core {
+    transition-duration: 0.01ms;
+  }
+  .reasoning-slider__sheen::after,
+  .reasoning-slider__aura,
+  .reasoning-slider__orbit,
+  .reasoning-slider__spark,
+  .reasoning-effort-trigger__max-dot {
+    animation: none !important;
+  }
+  .reasoning-slider__spark { display: none; }
+}
+
 /* SupaMaus vector motion. The fast horizontal compression is the edge-on
    moment of a turn; face parallax, surface lighting, and orbiting vector marks
    sell the 3D rotation without duplicate silhouettes, raster frames, or WebGL. */

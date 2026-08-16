@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, BrainCircuit, Clock, Loader2, Mic, Paperclip, Square, Users, X } from "lucide-react";
+import { ArrowUp, Clock, Loader2, Mic, Paperclip, Square, Users, X } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
@@ -10,8 +10,9 @@ import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "
 import { zhCN } from "@/locales/zh-CN";
 import { transcribeVoice, VoiceRecorder } from "@/lib/voice/recorder";
 import { attachmentsFromFiles, composeMessage, isLongPaste, pasteAttachment, type Attachment } from "@/lib/composer-attachments";
-import { useComposerDraft, useReasoningEffort, type ReasoningEffort } from "@/lib/drafts";
+import { useComposerDraft, useReasoningLevel, type ReasoningLevel } from "@/lib/drafts";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
+import { ReasoningEffortControl } from "./ReasoningEffortControl";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -57,7 +58,7 @@ export function Composer({
     ? (members?.find((b) => b.id === group.busyBotId)?.name ?? "A bot")
     : (bot?.name ?? "The bot");
   const [text, setText, attachments, setAttachments] = useComposerDraft(threadId);
-  const [reasoningEffort, setReasoningEffort] = useReasoningEffort(threadId);
+  const [reasoningLevel, setReasoningLevel] = useReasoningLevel(threadId);
   const addAttachments = useCallback(
     (next: Attachment[]) => setAttachments((previous) => [...previous, ...next]),
     [setAttachments],
@@ -131,22 +132,22 @@ export function Composer({
 
   // One message may be queued while the bot works; it auto-sends the moment
   // the turn settles. Enter during a turn queues instead of silently dying.
-  const [queued, setQueued] = useState<{ text: string; preview: string; reasoningEffort: ReasoningEffort } | null>(null);
+  const [queued, setQueued] = useState<{ text: string; preview: string; reasoningLevel: ReasoningLevel } | null>(null);
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
     const t = composeMessage(text, attachments);
     if (!t) return;
     if (busy) {
-      setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningEffort });
+      setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningLevel });
       setText("");
       setAttachments([]);
       return;
     }
     if (group) {
-      dispatch({ type: "sendGroup", groupId: group.id, text: t, reasoningEffort });
+      dispatch({ type: "sendGroup", groupId: group.id, text: t, reasoningLevel });
       track("message_sent", { room: true });
     } else if (bot) {
-      dispatch({ type: "send", botId: bot.id, text: t, reasoningEffort });
+      dispatch({ type: "send", botId: bot.id, text: t, reasoningLevel });
       track("message_sent", { driver: bot.modelSelection?.instanceId });
     }
     setText("");
@@ -154,8 +155,8 @@ export function Composer({
   };
   useEffect(() => {
     if (!busy && queued) {
-      if (group) dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningEffort: queued.reasoningEffort });
-      else if (bot) dispatch({ type: "send", botId: bot.id, text: queued.text, reasoningEffort: queued.reasoningEffort });
+      if (group) dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
+      else if (bot) dispatch({ type: "send", botId: bot.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
       track("message_sent", { queued: true });
       setQueued(null);
     }
@@ -307,32 +308,18 @@ export function Composer({
         >
           <Paperclip size={17} />
         </button>
-        <label
-          className={cn(
-            "mb-0.5 flex h-7 shrink-0 items-center gap-1 rounded-full border border-hairline/40 bg-panel/70 px-2 text-[11px] text-ink-secondary",
-            reasoningSupport.any ? "hover:border-hairline hover:text-ink" : "opacity-45",
-          )}
-          title={
+        <ReasoningEffortControl
+          value={reasoningLevel}
+          onChange={setReasoningLevel}
+          disabled={!reasoningSupport.any || Boolean(approval)}
+          helperText={
             reasoningSupport.all
-              ? "思考模式：低更快，高更深入且耗时更长"
+              ? "拖动滑杆调整本条消息的思考深度"
               : reasoningSupport.any
-                ? "支持的群成员会使用所选思考模式；其他成员使用模型默认值"
+                ? "支持的群成员使用所选强度，其他成员使用模型默认值"
                 : "当前模型暂不支持调整思考强度"
           }
-        >
-          <BrainCircuit size={13} />
-          <select
-            value={reasoningEffort}
-            onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
-            disabled={!reasoningSupport.any || Boolean(approval)}
-            aria-label="思考模式"
-            className="cursor-pointer bg-transparent text-[11px] font-medium text-inherit outline-none disabled:cursor-not-allowed"
-          >
-            <option value="low">低</option>
-            <option value="medium">中</option>
-            <option value="high">高</option>
-          </select>
-        </label>
+        />
         <textarea
           ref={inputRef}
           rows={1}

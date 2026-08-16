@@ -1,11 +1,12 @@
 import { useCallback, useState, type SetStateAction } from "react";
 import { isAttachment, type Attachment } from "./composer-attachments.js";
 
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "maximum";
 
 const TEXT_KEY = "xinyun-drafts";
 const ATTACHMENTS_KEY = "xinyun-draft-attachments";
-const EFFORT_KEY = "xinyun-reasoning-effort";
+const LEVEL_KEY = "xinyun-reasoning-level";
+const LEGACY_EFFORT_KEY = "xinyun-reasoning-effort";
 type Values = Record<string, unknown>;
 type Store = Pick<Storage, "getItem" | "setItem"> | undefined;
 
@@ -46,9 +47,20 @@ export function getDraftAttachments(store: Store, id: string): Attachment[] {
   return Array.isArray(value) ? value.filter(isAttachment) : [];
 }
 
-export function getReasoningEffort(store: Store, id: string): ReasoningEffort {
-  const value = read(store, EFFORT_KEY)[id];
-  return value === "low" || value === "high" || value === "medium" ? value : "medium";
+function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "maximum";
+}
+
+export function getReasoningLevel(store: Store, id: string): ReasoningLevel {
+  const value = read(store, LEVEL_KEY)[id];
+  if (isReasoningLevel(value)) return value;
+
+  // 0.1.29 stored three levels. Preserve the old top setting as the new
+  // visual maximum rather than silently lowering it to the fourth stop.
+  const legacy = read(store, LEGACY_EFFORT_KEY)[id];
+  if (legacy === "high") return "maximum";
+  if (legacy === "low" || legacy === "medium") return legacy;
+  return "medium";
 }
 
 export function useComposerDraft(
@@ -77,15 +89,15 @@ export function useComposerDraft(
   return [text, setText, attachments, setAttachments];
 }
 
-export function useReasoningEffort(id: string): [ReasoningEffort, (next: ReasoningEffort) => void] {
+export function useReasoningLevel(id: string): [ReasoningLevel, (next: ReasoningLevel) => void] {
   const store = getStore();
-  const [effort, setEffortState] = useState(() => getReasoningEffort(store, id));
-  const setEffort = useCallback(
-    (next: ReasoningEffort) => {
-      setEffortState(next);
-      write(store, EFFORT_KEY, id, next, true);
+  const [level, setLevelState] = useState(() => getReasoningLevel(store, id));
+  const setLevel = useCallback(
+    (next: ReasoningLevel) => {
+      setLevelState(next);
+      write(store, LEVEL_KEY, id, next, true);
     },
     [store, id],
   );
-  return [effort, setEffort];
+  return [level, setLevel];
 }

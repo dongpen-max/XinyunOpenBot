@@ -16,7 +16,8 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.js";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.js";
 import { resetPathCache } from "./env-path.js";
 import { discoverModels, saveDiscoveredModels } from "./models-discover.js";
-import { parseReasoningEffort } from "./reasoning.js";
+import { modelForReasoningLevel } from "./model-downgrade.js";
+import { parseReasoningRequest, reasoningEffortForLevel } from "./reasoning.js";
 import { shouldUseCloudComputer } from "./turn-computer.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
@@ -434,6 +435,8 @@ async function startTurn(botId, text, opts) {
     if (!instance) {
         throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
     }
+    const reasoningEffort = reasoningEffortForLevel(opts?.reasoningLevel);
+    const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, opts?.reasoningLevel);
     // an edit hands us its already-branched user message; a plain send appends
     let userMessage = opts?.userMessage;
     if (!userMessage) {
@@ -572,8 +575,8 @@ async function startTurn(botId, text, opts) {
             await instance.adapter.sendTurn({
                 threadId: bot.threadId,
                 text: turnText,
-                model: bot.modelSelection.model,
-                reasoningEffort: opts?.reasoningEffort,
+                model: turnModel,
+                reasoningEffort,
                 // a rewound thread never resumes the abandoned branch's session
                 // the active task's own session — another task's cursor would
                 // resume the wrong conversation and defeat the context bubble
@@ -640,7 +643,7 @@ function broadcastGroup(groupId) {
 async function runGroupMemberTurn(groupId, botId, hop, 
 // bots that already spoke for this user message — "@Scout ask @Pixel"
 // must not run Pixel twice (once chained, once as a direct responder)
-reasoningEffort, spoken = new Set()) {
+reasoningLevel, spoken = new Set()) {
     const group = store.group(groupId);
     const bot = store.bot(botId);
     if (!group || !bot)
@@ -658,6 +661,8 @@ reasoningEffort, spoken = new Set()) {
         broadcast({ kind: "message", threadId: group.threadId, message: failure });
         return;
     }
+    const reasoningEffort = reasoningEffortForLevel(reasoningLevel);
+    const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, reasoningLevel);
     store.patchGroup(group.id, { busyBotId: bot.id });
     broadcastGroup(group.id);
     groupSpeakers.set(group.threadId, { botId: bot.id, name: bot.name, color: bot.color });
@@ -700,7 +705,7 @@ reasoningEffort, spoken = new Set()) {
         });
         const timer = setTimeout(finish, 5 * 60_000);
         instance.adapter
-            .sendTurn({ threadId: group.threadId, text, system, model: bot.modelSelection.model, reasoningEffort })
+            .sendTurn({ threadId: group.threadId, text, system, model: turnModel, reasoningEffort })
             .catch((err) => {
             const failure = store.appendMessage(group.threadId, {
                 role: "bot",
@@ -723,11 +728,11 @@ reasoningEffort, spoken = new Set()) {
         for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
             if (spoken.has(next.id))
                 continue;
-            await runGroupMemberTurn(groupId, next.id, hop + 1, reasoningEffort, spoken);
+            await runGroupMemberTurn(groupId, next.id, hop + 1, reasoningLevel, spoken);
         }
     }
 }
-function startGroupTurn(groupId, text, reasoningEffort) {
+function startGroupTurn(groupId, text, reasoningLevel) {
     const group = store.group(groupId);
     if (!group)
         throw Object.assign(new Error("no such group"), { status: 404 });
@@ -753,7 +758,7 @@ function startGroupTurn(groupId, text, reasoningEffort) {
         for (const responder of responders) {
             if (spoken.has(responder.id))
                 continue;
-            await runGroupMemberTurn(groupId, responder.id, 0, reasoningEffort, spoken);
+            await runGroupMemberTurn(groupId, responder.id, 0, reasoningLevel, spoken);
         }
     });
     groupQueues.set(groupId, next.catch(() => { }));
@@ -1067,8 +1072,8 @@ const server = createServer(async (req, res) => {
             const text = String(body.text ?? "").trim();
             if (!text)
                 return json(res, 400, { error: "text required" });
-            const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
-            startGroupTurn(m[1], text, reasoningEffort);
+            const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
+            startGroupTurn(m[1], text, reasoningLevel);
             return json(res, 202, { ok: true });
         }
         m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
@@ -1222,8 +1227,8 @@ const server = createServer(async (req, res) => {
             const text = String(body.text ?? "").trim();
             if (!text)
                 return json(res, 400, { error: "text required" });
-            const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
-            await startTurn(m[1], text, { reasoningEffort });
+            const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
+            await startTurn(m[1], text, { reasoningLevel });
             return json(res, 202, { ok: true });
         }
         // edit a user message → fork the conversation there and rerun the turn.

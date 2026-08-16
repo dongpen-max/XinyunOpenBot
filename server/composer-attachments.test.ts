@@ -8,7 +8,7 @@ import {
   isLongPaste,
   pasteAttachment,
 } from "../src/lib/composer-attachments.ts";
-import { getDraft, getDraftAttachments, getReasoningEffort } from "../src/lib/drafts.ts";
+import { getDraft, getDraftAttachments, getReasoningLevel } from "../src/lib/drafts.ts";
 
 describe("composer attachments", () => {
   it("turns long paste and file paths into bounded prompt blocks", () => {
@@ -38,14 +38,20 @@ describe("composer draft decoding", () => {
   const values = new Map<string, string>([
     ["xinyun-drafts", JSON.stringify({ thread: "未发送内容" })],
     ["xinyun-draft-attachments", JSON.stringify({ thread: [pasteAttachment("draft")] })],
-    ["xinyun-reasoning-effort", JSON.stringify({ thread: "high" })],
+    ["xinyun-reasoning-level", JSON.stringify({ thread: "maximum" })],
+    ["xinyun-reasoning-effort", JSON.stringify({ legacyHigh: "high", legacyLow: "low" })],
   ]);
   const store = { getItem: (key: string) => values.get(key) ?? null, setItem: () => {} };
 
   it("restores text, attachment, and per-thread reasoning mode", () => {
     expect(getDraft(store, "thread")).toBe("未发送内容");
     expect(getDraftAttachments(store, "thread")).toHaveLength(1);
-    expect(getReasoningEffort(store, "thread")).toBe("high");
-    expect(getReasoningEffort(store, "missing")).toBe("medium");
+    expect(getReasoningLevel(store, "thread")).toBe("maximum");
+    expect(getReasoningLevel(store, "missing")).toBe("medium");
+  });
+
+  it("migrates the old three-stop storage without lowering the old maximum", () => {
+    expect(getReasoningLevel(store, "legacyHigh")).toBe("maximum");
+    expect(getReasoningLevel(store, "legacyLow")).toBe("low");
   });
 });

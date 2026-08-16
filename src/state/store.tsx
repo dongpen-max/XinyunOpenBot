@@ -18,6 +18,7 @@ import type { MausShape } from "@/components/Avatar";
 import { createRefreshGate } from "@/lib/engine-refresh";
 import type { VoiceInputStatus } from "@/lib/voice/voice-activity";
 import type { DomesticModelProviderId } from "@/lib/domestic-models";
+import type { ReasoningLevel } from "@/lib/drafts";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -219,8 +220,6 @@ export interface InstanceInfo {
   };
 }
 
-export type ReasoningEffort = "low" | "medium" | "high";
-
 export type ComputerActivityState =
   | "checking"
   | "reusing"
@@ -261,7 +260,7 @@ type Action =
   | { type: "groupPatched"; group: Partial<Group> & { id: string } }
   | { type: "groupDeleted"; groupId: string }
   | { type: "createGroup"; memberIds: string[]; name?: string }
-  | { type: "sendGroup"; groupId: string; text: string; reasoningEffort?: ReasoningEffort }
+  | { type: "sendGroup"; groupId: string; text: string; reasoningLevel?: ReasoningLevel }
   | {
       type: "patchGroup";
       groupId: string;
@@ -273,7 +272,7 @@ type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string; reasoningEffort?: ReasoningEffort }
+  | { type: "send"; botId: string; text: string; reasoningLevel?: ReasoningLevel }
   | { type: "editMessage"; botId: string; messageId: string; text: string }
   | { type: "switchBranch"; botId: string; messageId: string }
   | { type: "threadActive"; threadId: string; activeLeafId: string }
@@ -799,7 +798,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "send":
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, reasoningEffort: action.reasoningEffort }),
+            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel }),
           }).catch(showError);
           break;
         case "editMessage":
@@ -938,7 +937,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "sendGroup":
           api(`/api/groups/${action.groupId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, reasoningEffort: action.reasoningEffort }),
+            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel }),
           }).catch(showError);
           break;
         case "patchGroup":

@@ -16,9 +16,10 @@ import * as composio from "./composio.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { resetPathCache } from "./env-path.ts";
-import type { ReasoningEffort, RuntimeEvent } from "./contracts.ts";
+import type { RuntimeEvent } from "./contracts.ts";
 import { discoverModels, saveDiscoveredModels, type RelaySection } from "./models-discover.ts";
-import { parseReasoningEffort } from "./reasoning.ts";
+import { modelForReasoningLevel } from "./model-downgrade.ts";
+import { parseReasoningRequest, reasoningEffortForLevel, type ReasoningLevel } from "./reasoning.ts";
 import { shouldUseCloudComputer } from "./turn-computer.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -430,7 +431,7 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 async function startTurn(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; userMessage?: Message; reasoningEffort?: ReasoningEffort },
+  opts?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel },
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
@@ -446,6 +447,8 @@ async function startTurn(
       { status: 409 },
     );
   }
+  const reasoningEffort = reasoningEffortForLevel(opts?.reasoningLevel);
+  const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, opts?.reasoningLevel);
 
   // an edit hands us its already-branched user message; a plain send appends
   let userMessage = opts?.userMessage;
@@ -595,8 +598,8 @@ async function startTurn(
       await instance.adapter.sendTurn({
         threadId: bot.threadId,
         text: turnText,
-        model: bot.modelSelection.model,
-        reasoningEffort: opts?.reasoningEffort,
+        model: turnModel,
+        reasoningEffort,
         // a rewound thread never resumes the abandoned branch's session
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
@@ -667,7 +670,7 @@ async function runGroupMemberTurn(
   hop: number,
   // bots that already spoke for this user message — "@Scout ask @Pixel"
   // must not run Pixel twice (once chained, once as a direct responder)
-  reasoningEffort?: ReasoningEffort,
+  reasoningLevel?: ReasoningLevel,
   spoken: Set<string> = new Set(),
 ): Promise<void> {
   const group = store.group(groupId);
@@ -686,6 +689,8 @@ async function runGroupMemberTurn(
     broadcast({ kind: "message", threadId: group.threadId, message: failure });
     return;
   }
+  const reasoningEffort = reasoningEffortForLevel(reasoningLevel);
+  const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, reasoningLevel);
 
   store.patchGroup(group.id, { busyBotId: bot.id });
   broadcastGroup(group.id);
@@ -728,7 +733,7 @@ async function runGroupMemberTurn(
     });
     const timer = setTimeout(finish, 5 * 60_000);
     instance.adapter
-      .sendTurn({ threadId: group.threadId, text, system, model: bot.modelSelection.model, reasoningEffort })
+      .sendTurn({ threadId: group.threadId, text, system, model: turnModel, reasoningEffort })
       .catch((err) => {
         const failure = store.appendMessage(group.threadId, {
           role: "bot",
@@ -751,12 +756,12 @@ async function runGroupMemberTurn(
       .filter((b): b is NonNullable<typeof b> => Boolean(b) && b!.id !== bot.id);
     for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
       if (spoken.has(next.id)) continue;
-      await runGroupMemberTurn(groupId, next.id, hop + 1, reasoningEffort, spoken);
+      await runGroupMemberTurn(groupId, next.id, hop + 1, reasoningLevel, spoken);
     }
   }
 }
 
-function startGroupTurn(groupId: string, text: string, reasoningEffort?: ReasoningEffort) {
+function startGroupTurn(groupId: string, text: string, reasoningLevel?: ReasoningLevel) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
   const userMessage = store.appendMessage(group.threadId, { role: "user", kind: "text", text });
@@ -781,7 +786,7 @@ function startGroupTurn(groupId: string, text: string, reasoningEffort?: Reasoni
     const spoken = new Set<string>();
     for (const responder of responders) {
       if (spoken.has(responder.id)) continue;
-      await runGroupMemberTurn(groupId, responder.id, 0, reasoningEffort, spoken);
+      await runGroupMemberTurn(groupId, responder.id, 0, reasoningLevel, spoken);
     }
   });
   groupQueues.set(groupId, next.catch(() => {}));
@@ -1090,8 +1095,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
-      const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
-      startGroupTurn(m[1], text, reasoningEffort);
+      const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
+      startGroupTurn(m[1], text, reasoningLevel);
       return json(res, 202, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
@@ -1231,8 +1236,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
-      const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
-      await startTurn(m[1], text, { reasoningEffort });
+      const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
+      await startTurn(m[1], text, { reasoningLevel });
       return json(res, 202, { ok: true });
     }
 
