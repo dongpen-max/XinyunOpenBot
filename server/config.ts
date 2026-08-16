@@ -8,6 +8,17 @@ import { join } from "node:path";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { writeFileAtomic } from "./atomic.ts";
 
+export type VoiceSensitivity = "low" | "medium" | "high" | "custom";
+
+export interface VoiceInputProfileConfig {
+  sensitivity?: VoiceSensitivity;
+  minimumRms?: number;
+  noiseRatio?: number;
+  triggerFrames?: number;
+  calibratedNoiseFloor?: number;
+  calibratedAt?: string;
+}
+
 export interface AppConfig {
   xai?: { key?: string; url?: string };
   anthropic?: { key?: string; url?: string };
@@ -33,6 +44,10 @@ export interface AppConfig {
       speed?: number;
       gain?: number;
       sampleRate?: number;
+    };
+    input?: {
+      deviceId?: string;
+      profiles?: Record<string, VoiceInputProfileConfig>;
     };
     autoSpeak?: boolean;
   };
@@ -118,6 +133,15 @@ export function saveConfig(patch: Partial<AppConfig>): void {
       ...patch.voice,
       ...(patch.voice.stt ? { stt: { ...previous.stt, ...patch.voice.stt } } : {}),
       ...(patch.voice.tts ? { tts: { ...previous.tts, ...patch.voice.tts } } : {}),
+      ...(patch.voice.input ? {
+        input: {
+          ...previous.input,
+          ...patch.voice.input,
+          ...(patch.voice.input.profiles ? {
+            profiles: { ...previous.input?.profiles, ...patch.voice.input.profiles },
+          } : {}),
+        },
+      } : {}),
     };
   }
   mkdirSync(DATA_DIR, { recursive: true });

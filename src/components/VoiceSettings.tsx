@@ -4,9 +4,12 @@ import { useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { voiceSpeaker, useVoiceSpeech } from "@/lib/voice/speaker";
 import { OPENAI_VOICES, SILICONFLOW_MODEL, voiceOptions, type VoiceProvider } from "@/lib/voice/options";
+import { VOICE_ACTIVITY_PRESETS } from "@/lib/voice/voice-activity";
 import { SettingsDisclosure } from "./SettingsDisclosure";
+import { VoiceInputSettings, type VoiceInputDraft } from "./VoiceInputSettings";
 
 const SAMPLE = "你好，我是星云机器人。现在正在试听你选择的音色和语速。";
+const CALIBRATION_SAMPLE = "正在校准麦克风。请暂时保持安静，稍后可以直接说话测试抢断效果。";
 const inputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
 
@@ -27,6 +30,10 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
   const [gain, setGain] = useState(0);
   const [sampleRate, setSampleRate] = useState(44_100);
   const [autoSpeak, setAutoSpeak] = useState(false);
+  const [input, setInput] = useState<VoiceInputDraft>({
+    deviceId: "default",
+    profiles: { default: { ...VOICE_ACTIVITY_PRESETS.medium } },
+  });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +51,7 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
     setGain(status.tts.gain);
     setSampleRate(status.tts.sampleRate);
     setAutoSpeak(status.autoSpeak);
+    setInput({ deviceId: status.input.deviceId, profiles: status.input.profiles });
   }, [status]);
 
   const chooseProvider = (next: VoiceProvider) => {
@@ -81,7 +89,7 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
       const res = await fetch("/api/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ voice: { stt, tts, autoSpeak } }),
+        body: JSON.stringify({ voice: { stt, tts, input, autoSpeak } }),
       });
       const body = (await res.json().catch(() => ({}))) as ConfigStatus & { error?: string };
       if (!res.ok) throw new Error(body.error ?? `保存失败（HTTP ${res.status}）`);
@@ -104,6 +112,11 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
     if (await save()) await voiceSpeaker.speak(SAMPLE);
   };
 
+  const calibrationPlayback = async (): Promise<boolean> => {
+    if (!(await save())) return false;
+    return voiceSpeaker.speak(CALIBRATION_SAMPLE);
+  };
+
   const availableVoices = voiceOptions(provider);
 
   return (
@@ -123,6 +136,8 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
           <input className={inputClass} value={sttModel} onChange={(e) => setSttModel(e.target.value)} placeholder="whisper-1" aria-label="STT 模型" />
           <input className={inputClass} value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="zh" aria-label="识别语言" />
         </div>
+
+        <VoiceInputSettings value={input} onChange={setInput} onCalibrationPlayback={calibrationPlayback} />
 
         <div className="mt-1 flex items-center justify-between gap-3">
           <span className="text-[13px] font-medium text-ink">语音合成（TTS）</span>

@@ -1,3 +1,5 @@
+import { openVoiceMicrophone } from "./microphone";
+
 export interface RecordedVoice {
   blob: Blob;
   mime: string;
@@ -12,6 +14,8 @@ export interface RecorderOptions {
   maxDurationMs?: number;
   /** Stop an untouched call listen after this long and quietly retry. */
   noSpeechTimeoutMs?: number;
+  /** Preferred microphone configured in application voice settings. */
+  deviceId?: string;
 }
 
 function preferredMime(): string | undefined {
@@ -42,13 +46,7 @@ export class VoiceRecorder {
       throw new Error("当前环境不支持麦克风录音");
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    const stream = await openVoiceMicrophone(options.deviceId);
     this.stream = stream;
     this.chunks = [];
     this.startedAt = performance.now();

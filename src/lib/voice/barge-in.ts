@@ -1,4 +1,9 @@
-import { VoiceActivityGate } from "./voice-activity";
+import { openVoiceMicrophone } from "./microphone";
+import { VoiceActivityGate, voiceActivityOptions, type VoiceActivityProfile } from "./voice-activity";
+
+export interface VoiceBargeInSettings extends Partial<VoiceActivityProfile> {
+  deviceId?: string;
+}
 
 /** Lightweight, non-recording microphone monitor used for call barge-in.
  * Failure is silent because Space and the interrupt button remain available. */
@@ -8,14 +13,12 @@ export class VoiceBargeInDetector {
   private context: AudioContext | null = null;
   private timer: number | null = null;
 
-  async start(onVoice: () => void): Promise<void> {
+  async start(onVoice: () => void, settings: VoiceBargeInSettings = {}): Promise<void> {
     this.stop();
     const mine = this.generation;
     if (!navigator.mediaDevices?.getUserMedia) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      const stream = await openVoiceMicrophone(settings.deviceId);
       if (mine !== this.generation) {
         for (const track of stream.getTracks()) track.stop();
         return;
@@ -25,7 +28,7 @@ export class VoiceBargeInDetector {
       analyser.fftSize = 1024;
       context.createMediaStreamSource(stream).connect(analyser);
       const samples = new Uint8Array(analyser.fftSize);
-      const gate = new VoiceActivityGate();
+      const gate = new VoiceActivityGate(voiceActivityOptions(settings));
       this.stream = stream;
       this.context = context;
       this.timer = window.setInterval(() => {

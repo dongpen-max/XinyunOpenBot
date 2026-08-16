@@ -64,6 +64,21 @@ describe("voice provider", () => {
         gain: 0,
         sampleRate: 44_100,
       },
+      input: {
+        deviceId: "default",
+        sensitivity: "medium",
+        minimumRms: 0.055,
+        noiseRatio: 1.9,
+        triggerFrames: 4,
+        profiles: {
+          default: {
+            sensitivity: "medium",
+            minimumRms: 0.055,
+            noiseRatio: 1.9,
+            triggerFrames: 4,
+          },
+        },
+      },
       autoSpeak: true,
     });
     expect(JSON.stringify(status)).not.toContain("secret");
@@ -174,5 +189,33 @@ describe("voice provider", () => {
   it("requires configured endpoints before using voice", async () => {
     await expect(transcribe({}, new Uint8Array([1]))).rejects.toBeInstanceOf(VoiceConfigError);
     await expect(synthesize({}, "hello")).rejects.toBeInstanceOf(VoiceConfigError);
+  });
+
+  it("sanitizes per-device microphone activity profiles", () => {
+    const status = describeVoice({
+      voice: {
+        input: {
+          deviceId: "usb-mic",
+          profiles: {
+            "usb-mic": {
+              sensitivity: "custom",
+              minimumRms: 9,
+              noiseRatio: 0,
+              triggerFrames: 99,
+              calibratedNoiseFloor: 0.021,
+            },
+          },
+        },
+      },
+    }).input;
+    expect(status).toMatchObject({
+      deviceId: "usb-mic",
+      sensitivity: "custom",
+      minimumRms: 0.2,
+      noiseRatio: 1.1,
+      triggerFrames: 12,
+      calibratedNoiseFloor: 0.021,
+    });
+    expect(status.profiles["usb-mic"]).toEqual(expect.objectContaining({ sensitivity: "custom" }));
   });
 });

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { VoiceActivityGate } from "../src/lib/voice/voice-activity.ts";
+import {
+  calibrateVoiceActivity,
+  normalizeVoiceActivityProfile,
+  VOICE_ACTIVITY_PRESETS,
+  VoiceActivityGate,
+  voiceActivityOptions,
+} from "../src/lib/voice/voice-activity.ts";
 import { SpeechTurnQueue } from "../src/lib/voice/speech-queue.ts";
 
 describe("voice barge-in activity gate", () => {
@@ -21,6 +27,40 @@ describe("voice barge-in activity gate", () => {
     expect(gate.update(0.09)).toBe(false);
     expect(gate.update(0.09)).toBe(true);
   });
+
+  it("maps sensitivity presets to distinct thresholds and trigger delays", () => {
+    expect(VOICE_ACTIVITY_PRESETS.high.minimumRms).toBeLessThan(VOICE_ACTIVITY_PRESETS.medium.minimumRms);
+    expect(VOICE_ACTIVITY_PRESETS.medium.minimumRms).toBeLessThan(VOICE_ACTIVITY_PRESETS.low.minimumRms);
+    expect(VOICE_ACTIVITY_PRESETS.high.triggerFrames).toBeLessThan(VOICE_ACTIVITY_PRESETS.low.triggerFrames);
+    expect(voiceActivityOptions({ sensitivity: "high" })).toMatchObject({
+      minimumRms: 0.035,
+      noiseRatio: 1.5,
+      triggerFrames: 3,
+    });
+  });
+
+  it("calibrates above sustained speaker leakage without exceeding safe bounds", () => {
+    const leakage = [0.018, 0.021, 0.02, 0.024, 0.027, 0.025, 0.026, 0.03, 0.029, 0.028];
+    const result = calibrateVoiceActivity(leakage, VOICE_ACTIVITY_PRESETS.high);
+    expect(result.noiseFloor).toBeGreaterThan(0.02);
+    expect(result.minimumRms).toBeGreaterThan(result.peakRms);
+    expect(result.minimumRms).toBeLessThanOrEqual(0.2);
+  });
+
+  it("normalizes custom values and exposes the live threshold", () => {
+    const profile = normalizeVoiceActivityProfile({
+      sensitivity: "custom",
+      minimumRms: 0.08,
+      noiseRatio: 2.5,
+      triggerFrames: 5,
+    });
+    const gate = new VoiceActivityGate(voiceActivityOptions(profile));
+    for (let index = 0; index < 8; index += 1) gate.update(0.02);
+    gate.update(0.09);
+    expect(gate.diagnostics.threshold).toBe(0.08);
+    expect(gate.diagnostics.hotFrames).toBe(1);
+  });
+
 });
 
 describe("SpeechTurnQueue", () => {

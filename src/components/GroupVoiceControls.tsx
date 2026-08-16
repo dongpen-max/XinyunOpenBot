@@ -55,7 +55,7 @@ export function GroupCallOverlay({
   members: Bot[];
   onHangup: () => void;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const streaming = useStreaming().streaming[group.threadId] ?? "";
   const speech = useVoiceSpeech();
   const [phase, setPhaseState] = useState<GroupCallPhase>(group.busyBotId ? "thinking" : "listening");
@@ -122,7 +122,12 @@ export function GroupCallOverlay({
     setPhase("listening");
 
     try {
-      await recorder.start({ endpointMs: 1100, noSpeechTimeoutMs: 15_000, maxDurationMs: 90_000 });
+      await recorder.start({
+        endpointMs: 1100,
+        noSpeechTimeoutMs: 15_000,
+        maxDurationMs: 90_000,
+        deviceId: state.config?.voice?.input.deviceId,
+      });
       const recording = await recorder.waitForStop();
       if (!alive.current || mine !== generation.current || recorderRef.current !== recorder) return;
       recorderRef.current = null;
@@ -150,7 +155,7 @@ export function GroupCallOverlay({
       setError(cause instanceof Error ? cause.message : String(cause));
       setPhase("error");
     }
-  }, [clearSettleTimer, clearStreamIdleTimer, dispatch, group.id, setPhase]);
+  }, [clearSettleTimer, clearStreamIdleTimer, dispatch, group.id, setPhase, state.config?.voice?.input.deviceId]);
   listenRef.current = () => void listen();
 
   const scheduleListening = useCallback(() => {
@@ -190,7 +195,7 @@ export function GroupCallOverlay({
           const played = await voiceSpeaker.speak(reply.text, {
             botId: reply.botId,
             messageId: reply.messageId,
-            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current()),
+            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current(), state.config?.voice?.input),
             onPlaybackEnd: () => bargeIn.current.stop(),
           });
           if (!alive.current || run !== drainRun.current) return;
@@ -213,7 +218,7 @@ export function GroupCallOverlay({
         }
       }
     })();
-  }, [clearSettleTimer, scheduleListening, setPhase]);
+  }, [clearSettleTimer, scheduleListening, setPhase, state.config?.voice?.input]);
   drainRef.current = drainQueue;
 
   const enqueue = useCallback((items: GroupCallReply[], epoch = queue.current.epoch) => {

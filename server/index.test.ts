@@ -293,6 +293,19 @@ describe("harness HTTP API", () => {
       voice: {
         stt: { url, key: "stt_secret", model: "whisper-test", language: "zh" },
         tts: { url, key: "tts_secret", model: "tts-test", voice: "nova", provider: "openai", speed: 1.25 },
+        input: {
+          deviceId: "mic-test",
+          profiles: {
+            "mic-test": {
+              sensitivity: "custom",
+              minimumRms: 0.081,
+              noiseRatio: 2.4,
+              triggerFrames: 5,
+              calibratedNoiseFloor: 0.022,
+              calibratedAt: "2026-08-16T00:00:00.000Z",
+            },
+          },
+        },
         autoSpeak: true,
       },
     });
@@ -310,10 +323,35 @@ describe("harness HTTP API", () => {
         gain: 0,
         sampleRate: 44_100,
       },
+      input: {
+        deviceId: "mic-test",
+        sensitivity: "custom",
+        minimumRms: 0.081,
+        noiseRatio: 2.4,
+        triggerFrames: 5,
+        calibratedNoiseFloor: 0.022,
+      },
       autoSpeak: true,
     });
     expect(JSON.stringify(put.body)).not.toContain("stt_secret");
     expect(JSON.stringify(put.body)).not.toContain("tts_secret");
+
+    const secondMic = await api("PATCH", "/api/config", {
+      voice: {
+        input: {
+          deviceId: "mic-second",
+          profiles: {
+            "mic-second": { sensitivity: "high", minimumRms: 0.04, noiseRatio: 1.6, triggerFrames: 3 },
+          },
+        },
+      },
+    });
+    expect(secondMic.status).toBe(200);
+    expect(secondMic.body.voice.input.deviceId).toBe("mic-second");
+    expect(secondMic.body.voice.input.profiles).toMatchObject({
+      "mic-test": { sensitivity: "custom", minimumRms: 0.081 },
+      "mic-second": { sensitivity: "high", minimumRms: 0.04 },
+    });
 
     const transcript = await fetch(`${BASE}/api/voice/transcribe`, {
       method: "POST",

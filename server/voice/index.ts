@@ -1,4 +1,13 @@
-import type { AppConfig } from "../config.ts";
+import type { AppConfig, VoiceInputProfileConfig, VoiceSensitivity } from "../config.ts";
+
+export interface VoiceInputProfileStatus {
+  sensitivity: VoiceSensitivity;
+  minimumRms: number;
+  noiseRatio: number;
+  triggerFrames: number;
+  calibratedNoiseFloor?: number;
+  calibratedAt?: string;
+}
 
 export interface VoiceStatus {
   stt: {
@@ -18,6 +27,10 @@ export interface VoiceStatus {
     speed: number;
     gain: number;
     sampleRate: number;
+  };
+  input: VoiceInputProfileStatus & {
+    deviceId: string;
+    profiles: Record<string, VoiceInputProfileStatus>;
   };
   autoSpeak: boolean;
 }
@@ -43,6 +56,11 @@ const DEFAULT_TTS_VOICE = "alloy";
 const DEFAULT_TTS_SPEED = 1;
 const DEFAULT_TTS_GAIN = 0;
 const DEFAULT_TTS_SAMPLE_RATE = 44_100;
+const VOICE_INPUT_PRESETS: Record<Exclude<VoiceSensitivity, "custom">, VoiceInputProfileStatus> = {
+  low: { sensitivity: "low", minimumRms: 0.075, noiseRatio: 2.3, triggerFrames: 6 },
+  medium: { sensitivity: "medium", minimumRms: 0.055, noiseRatio: 1.9, triggerFrames: 4 },
+  high: { sensitivity: "high", minimumRms: 0.035, noiseRatio: 1.5, triggerFrames: 3 },
+};
 
 const clean = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
 const finite = (value: unknown, fallback: number): number =>
@@ -67,6 +85,34 @@ function endpoint(baseUrl: string, path: string): string {
 function headers(key?: string): Record<string, string> {
   const value = clean(key);
   return value ? { authorization: `Bearer ${value}` } : {};
+}
+
+function inputProfile(raw?: VoiceInputProfileConfig): VoiceInputProfileStatus {
+  const sensitivity: VoiceSensitivity = ["low", "medium", "high", "custom"].includes(String(raw?.sensitivity))
+    ? raw!.sensitivity!
+    : "medium";
+  const preset = sensitivity === "custom" ? VOICE_INPUT_PRESETS.medium : VOICE_INPUT_PRESETS[sensitivity];
+  const calibratedNoiseFloor = finite(raw?.calibratedNoiseFloor, Number.NaN);
+  return {
+    sensitivity,
+    minimumRms: clamp(finite(raw?.minimumRms, preset.minimumRms), 0.01, 0.2),
+    noiseRatio: clamp(finite(raw?.noiseRatio, preset.noiseRatio), 1.1, 4),
+    triggerFrames: Math.round(clamp(finite(raw?.triggerFrames, preset.triggerFrames), 2, 12)),
+    ...(Number.isFinite(calibratedNoiseFloor) ? { calibratedNoiseFloor: clamp(calibratedNoiseFloor, 0, 0.2) } : {}),
+    ...(typeof raw?.calibratedAt === "string" ? { calibratedAt: raw.calibratedAt } : {}),
+  };
+}
+
+function inputStatus(cfg: AppConfig): VoiceStatus["input"] {
+  const deviceId = clean(cfg.voice?.input?.deviceId) || "default";
+  const profiles: Record<string, VoiceInputProfileStatus> = {};
+  for (const [id, profile] of Object.entries(cfg.voice?.input?.profiles ?? {}).slice(0, 32)) {
+    const cleanId = clean(id);
+    if (cleanId) profiles[cleanId] = inputProfile(profile);
+  }
+  const active = profiles[deviceId] ?? inputProfile();
+  profiles[deviceId] ??= active;
+  return { deviceId, profiles, ...active };
 }
 
 async function providerError(res: Response, action: string): Promise<Error> {
@@ -109,6 +155,7 @@ export function describeVoice(cfg: AppConfig): VoiceStatus {
       gain: clamp(finite(cfg.voice?.tts?.gain, DEFAULT_TTS_GAIN), -10, 10),
       sampleRate: clamp(Math.round(finite(cfg.voice?.tts?.sampleRate, DEFAULT_TTS_SAMPLE_RATE)), 8_000, 48_000),
     },
+    input: inputStatus(cfg),
     autoSpeak: cfg.voice?.autoSpeak === true,
   };
 }

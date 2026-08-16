@@ -85,6 +85,15 @@ export function saveConfig(patch) {
             ...patch.voice,
             ...(patch.voice.stt ? { stt: { ...previous.stt, ...patch.voice.stt } } : {}),
             ...(patch.voice.tts ? { tts: { ...previous.tts, ...patch.voice.tts } } : {}),
+            ...(patch.voice.input ? {
+                input: {
+                    ...previous.input,
+                    ...patch.voice.input,
+                    ...(patch.voice.input.profiles ? {
+                        profiles: { ...previous.input?.profiles, ...patch.voice.input.profiles },
+                    } : {}),
+                },
+            } : {}),
         };
     }
     mkdirSync(DATA_DIR, { recursive: true });

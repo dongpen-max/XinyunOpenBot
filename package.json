@@ -1,7 +1,7 @@
 {
   "name": "xinyunopen-bot",
   "private": false,
-  "version": "0.1.26",
+  "version": "0.1.27",
   "type": "module",
   "main": "electron/main.mjs",
   "engines": {

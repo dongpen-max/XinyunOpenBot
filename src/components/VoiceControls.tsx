@@ -59,7 +59,7 @@ type CallPhase = "listening" | "transcribing" | "thinking" | "speaking" | "error
 type QueuedSpeech = { text: string; botId: string; messageId: string };
 
 export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const streaming = useStreaming().streaming[bot.threadId] ?? "";
   const speech = useVoiceSpeech();
   const [phase, setPhaseState] = useState<CallPhase>(bot.busy ? "thinking" : "listening");
@@ -117,7 +117,12 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
     setError(null);
     setPhase("listening");
     try {
-      await recorder.start({ endpointMs: 1100, noSpeechTimeoutMs: 15_000, maxDurationMs: 90_000 });
+      await recorder.start({
+        endpointMs: 1100,
+        noSpeechTimeoutMs: 15_000,
+        maxDurationMs: 90_000,
+        deviceId: state.config?.voice?.input.deviceId,
+      });
       const recording = await recorder.waitForStop();
       if (!alive.current || mine !== generation.current || recorderRef.current !== recorder) return;
       recorderRef.current = null;
@@ -143,7 +148,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
-  }, [bot.id, clearSettleTimer, clearStreamIdleTimer, dispatch, setPhase]);
+  }, [bot.id, clearSettleTimer, clearStreamIdleTimer, dispatch, setPhase, state.config?.voice?.input.deviceId]);
   listenRef.current = () => void listen();
 
   const scheduleListening = useCallback(() => {
@@ -181,7 +186,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
           const played = await voiceSpeaker.speak(reply.text, {
             botId: reply.botId,
             messageId: reply.messageId,
-            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current()),
+            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current(), state.config?.voice?.input),
             onPlaybackEnd: () => bargeIn.current.stop(),
           });
           if (!alive.current || run !== drainRun.current) return;
@@ -202,7 +207,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
         }
       }
     })();
-  }, [clearSettleTimer, scheduleListening, setPhase]);
+  }, [clearSettleTimer, scheduleListening, setPhase, state.config?.voice?.input]);
   drainRef.current = drainQueue;
 
   const enqueue = useCallback((items: QueuedSpeech[], epoch = queue.current.epoch) => {

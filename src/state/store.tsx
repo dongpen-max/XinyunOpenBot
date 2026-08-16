@@ -16,6 +16,7 @@ import {
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { MausShape } from "@/components/Avatar";
 import { createRefreshGate } from "@/lib/engine-refresh";
+import type { VoiceInputStatus } from "@/lib/voice/voice-activity";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -181,6 +182,7 @@ export interface ConfigStatus {
       gain: number;
       sampleRate: number;
     };
+    input: VoiceInputStatus;
     autoSpeak: boolean;
   };
   /** who's using the app — collected in onboarding, shown in the sidebar */
