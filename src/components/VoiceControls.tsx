@@ -1,8 +1,10 @@
 import { Loader2, Phone, PhoneOff, Square, Volume2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
+import { VoiceBargeInDetector } from "@/lib/voice/barge-in";
 import { VoiceRecorder, transcribeVoice } from "@/lib/voice/recorder";
 import { useVoiceSpeech, voiceSpeaker } from "@/lib/voice/speaker";
+import { SpeechTurnQueue } from "@/lib/voice/speech-queue";
 import { StreamingSpeechBuffer } from "@/lib/voice/streaming-speech";
 import { useStore, useStreaming, visibleMessages, type Bot } from "@/state/store";
 import { MausAvatar } from "./Avatar";
@@ -72,15 +74,18 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
   const settleTimerRef = useRef<number | null>(null);
   const streamIdleTimerRef = useRef<number | null>(null);
   const seenMessageIds = useRef(new Set(visibleMessages(bot).map((message) => message.id)));
-  const queue = useRef<QueuedSpeech[]>([]);
+  const queue = useRef(new SpeechTurnQueue<QueuedSpeech>());
   const draining = useRef(false);
   const drainRun = useRef(0);
+  const bargeIn = useRef(new VoiceBargeInDetector());
+  const interruptRef = useRef<() => void>(() => {});
   const busyRef = useRef(Boolean(bot.busy));
   const streamBuffer = useRef(new StreamingSpeechBuffer());
   const streamActive = useRef(false);
   const streamText = useRef("");
   const streamEpoch = useRef(0);
   const streamSequence = useRef(0);
+  const streamQueueEpoch = useRef(queue.current.epoch);
   const suppressCurrentStream = useRef(false);
 
   busyRef.current = Boolean(bot.busy);
@@ -125,6 +130,11 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       if (!alive.current || mine !== generation.current) return;
       setHeard(transcript);
       setPhase("thinking");
+      queue.current.invalidate();
+      clearStreamIdleTimer();
+      streamActive.current = false;
+      streamText.current = "";
+      streamBuffer.current.reset();
       suppressCurrentStream.current = false;
       dispatch({ type: "send", botId: bot.id, text: transcript });
     } catch (e) {
@@ -133,7 +143,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
-  }, [bot.id, clearSettleTimer, dispatch, setPhase]);
+  }, [bot.id, clearSettleTimer, clearStreamIdleTimer, dispatch, setPhase]);
   listenRef.current = () => void listen();
 
   const scheduleListening = useCallback(() => {
@@ -171,10 +181,12 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
           const played = await voiceSpeaker.speak(reply.text, {
             botId: reply.botId,
             messageId: reply.messageId,
+            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current()),
+            onPlaybackEnd: () => bargeIn.current.stop(),
           });
           if (!alive.current || run !== drainRun.current) return;
           if (!played) {
-            queue.current = [];
+            queue.current.invalidate();
             setError(voiceSpeaker.state.error ?? "语音播放已中断，请重试");
             setPhase("error");
             return;
@@ -193,10 +205,10 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
   }, [clearSettleTimer, scheduleListening, setPhase]);
   drainRef.current = drainQueue;
 
-  const enqueue = useCallback((items: QueuedSpeech[]) => {
+  const enqueue = useCallback((items: QueuedSpeech[], epoch = queue.current.epoch) => {
     const speakable = items.filter((item) => item.text.trim());
     if (speakable.length === 0) return;
-    queue.current.push(...speakable);
+    if (!queue.current.enqueue(speakable, epoch)) return;
     recorderRef.current?.cancel();
     recorderRef.current = null;
     drainRef.current();
@@ -224,7 +236,8 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       alive.current = false;
       generation.current += 1;
       drainRun.current += 1;
-      queue.current = [];
+      queue.current.invalidate();
+      bargeIn.current.stop();
       recorderRef.current?.cancel();
       recorderRef.current = null;
       voiceSpeaker.stop();
@@ -242,19 +255,21 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       streamBuffer.current.reset();
       streamEpoch.current += 1;
       streamSequence.current = 0;
+      streamQueueEpoch.current = queue.current.epoch;
     }
     streamText.current = streaming;
-    enqueue(streamItems(streamBuffer.current.update(streaming)));
+    enqueue(streamItems(streamBuffer.current.update(streaming)), streamQueueEpoch.current);
     streamIdleTimerRef.current = window.setTimeout(() => {
       streamIdleTimerRef.current = null;
       if (!alive.current || !streamActive.current) return;
-      enqueue(streamItems(streamBuffer.current.update(streamText.current, { idle: true })));
+      enqueue(streamItems(streamBuffer.current.update(streamText.current, { idle: true })), streamQueueEpoch.current);
     }, 500);
     return clearStreamIdleTimer;
   }, [clearStreamIdleTimer, enqueue, streamItems, streaming]);
 
   useEffect(() => {
     const replies: QueuedSpeech[] = [];
+    let repliesEpoch = queue.current.epoch;
     for (const message of messages) {
       if (seenMessageIds.current.has(message.id)) continue;
       seenMessageIds.current.add(message.id);
@@ -271,6 +286,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       }
 
       if (streamActive.current) {
+        repliesEpoch = streamQueueEpoch.current;
         clearStreamIdleTimer();
         replies.push(...streamItems(streamBuffer.current.update(text, { final: true }), message.id));
         streamActive.current = false;
@@ -279,7 +295,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
         replies.push({ text, botId: bot.id, messageId: message.id });
       }
     }
-    enqueue(replies);
+    enqueue(replies, repliesEpoch);
   }, [bot.id, clearStreamIdleTimer, enqueue, messages, streamItems]);
 
   useEffect(() => {
@@ -298,14 +314,18 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
     if (phaseRef.current !== "speaking") return;
     drainRun.current += 1;
     draining.current = false;
-    queue.current = [];
+    queue.current.invalidate();
     clearStreamIdleTimer();
     suppressCurrentStream.current = streamActive.current;
     streamActive.current = false;
+    streamText.current = "";
     streamBuffer.current.reset();
+    bargeIn.current.stop();
     voiceSpeaker.stop();
+    setError(null);
     listenRef.current();
   }, [clearStreamIdleTimer]);
+  interruptRef.current = interruptSpeech;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -368,7 +388,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
           <PhoneOff size={16} /> 挂断
         </button>
       </div>
-      <div className="text-[11.5px] text-ink-secondary/70">回复生成时按句播放 · 空格打断 · Esc 挂断</div>
+      <div className="text-[11.5px] text-ink-secondary/70">回复生成时按句播放 · 直接说话或空格打断 · Esc 挂断</div>
     </div>
   );
 }

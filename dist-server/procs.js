@@ -62,6 +62,16 @@ export function killCliTree(child) {
     }
     try {
         process.kill(-pid, "SIGTERM");
+        const timer = setTimeout(() => {
+            try {
+                process.kill(-pid, 0);
+                process.kill(-pid, "SIGKILL");
+            }
+            catch {
+                /* the group exited during the grace period */
+            }
+        }, 1_500);
+        timer.unref?.();
     }
     catch {
         try {

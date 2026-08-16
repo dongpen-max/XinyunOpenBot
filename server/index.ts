@@ -1539,8 +1539,40 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
 });
 
+let shutdownPromise: Promise<void> | null = null;
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    for (const controller of pendingCloudLeaseByThread.values()) controller.abort();
+    pendingCloudLeaseByThread.clear();
+    for (const release of cloudLeaseByThread.values()) release();
+    cloudLeaseByThread.clear();
+    await registry.disposeAll();
+    for (const client of sseClients) {
+      try { client.end(); } catch {}
+    }
+    sseClients.clear();
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        server.closeAllConnections?.();
+        finish();
+      }, 3_000);
+      timer.unref?.();
+      server.close(finish);
+    });
+  })();
+  return shutdownPromise;
+}
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => {
-    void registry.disposeAll().finally(() => process.exit(0));
+  process.once(signal, () => {
+    void shutdown().finally(() => process.exit(0));
   });
 }

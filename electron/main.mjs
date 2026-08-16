@@ -109,6 +109,31 @@ async function startServerPackaged() {
   return false;
 }
 
+function stopServerPackaged() {
+  const proc = serverProc;
+  serverProc = null;
+  if (!proc) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, 5_000);
+    timer.unref?.();
+    proc.once("exit", finish);
+    try {
+      // The harness handles SIGTERM by disposing every provider. Waiting for
+      // its exit prevents detached CLI/MCP workers surviving an app quit.
+      proc.kill();
+    } catch {
+      finish();
+    }
+  });
+}
+
 const ERROR_PAGE =
   "data:text/html;charset=utf-8," +
   encodeURIComponent(
@@ -258,10 +283,8 @@ let cuaCleanedUp = false;
 app.on("before-quit", (e) => {
   if (cuaCleanedUp) return;
   e.preventDefault();
-  try {
-    serverProc?.kill();
-  } catch {}
-  stopCua().finally(() => {
+  stopSpeech();
+  Promise.allSettled([stopServerPackaged(), stopCua()]).finally(() => {
     cuaCleanedUp = true;
     app.quit();
   });

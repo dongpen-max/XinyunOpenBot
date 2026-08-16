@@ -18,6 +18,8 @@ export interface SpeakOptions {
     speed?: number;
     gain?: number;
   };
+  onPlaybackStart?: () => void;
+  onPlaybackEnd?: () => void;
 }
 
 const IDLE: SpeechSnapshot = { status: "idle" };
@@ -86,7 +88,12 @@ export class VoiceSpeaker {
           messageId: options.messageId,
           caption: utterances[index],
         });
-        if (!(await this.play(rendered.blob, live)) || !live()) return false;
+        try {
+          options.onPlaybackStart?.();
+          if (!(await this.play(rendered.blob, live)) || !live()) return false;
+        } finally {
+          options.onPlaybackEnd?.();
+        }
       }
       if (live()) this.set(IDLE);
       return live();

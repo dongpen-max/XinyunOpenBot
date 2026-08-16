@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { MausShape } from "@/components/Avatar";
+import { createRefreshGate } from "@/lib/engine-refresh";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -760,6 +761,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     rawDispatch({ type: "instances", instances: next });
     return next;
   }, []);
+  const focusRefresh = useMemo(() => createRefreshGate(refreshInstances), [refreshInstances]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void focusRefresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [focusRefresh]);
 
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {

@@ -2,8 +2,10 @@ import { Loader2, Phone, PhoneOff, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { type GroupCallReply } from "@/lib/voice/group-call";
+import { VoiceBargeInDetector } from "@/lib/voice/barge-in";
 import { VoiceRecorder, transcribeVoice } from "@/lib/voice/recorder";
 import { useVoiceSpeech, voiceSpeaker } from "@/lib/voice/speaker";
+import { SpeechTurnQueue } from "@/lib/voice/speech-queue";
 import { StreamingSpeechBuffer } from "@/lib/voice/streaming-speech";
 import { useStore, useStreaming, type Bot, type Group } from "@/state/store";
 import { MausAvatar } from "./Avatar";
@@ -70,9 +72,11 @@ export function GroupCallOverlay({
   const settleTimerRef = useRef<number | null>(null);
   const streamIdleTimerRef = useRef<number | null>(null);
   const seenMessageIds = useRef(new Set(group.messages.map((message) => message.id)));
-  const queue = useRef<GroupCallReply[]>([]);
+  const queue = useRef(new SpeechTurnQueue<GroupCallReply>());
   const draining = useRef(false);
   const drainRun = useRef(0);
+  const bargeIn = useRef(new VoiceBargeInDetector());
+  const interruptRef = useRef<() => void>(() => {});
   const busyRef = useRef(Boolean(group.busyBotId));
   const membersRef = useRef(members);
   const lastBusyBotId = useRef<string | null>(group.busyBotId ?? null);
@@ -82,6 +86,7 @@ export function GroupCallOverlay({
   const streamText = useRef("");
   const streamEpoch = useRef(0);
   const streamSequence = useRef(0);
+  const streamQueueEpoch = useRef(queue.current.epoch);
   const suppressCurrentStream = useRef(false);
 
   membersRef.current = members;
@@ -131,6 +136,12 @@ export function GroupCallOverlay({
       if (!alive.current || mine !== generation.current) return;
       setHeard(transcript);
       setPhase("thinking");
+      queue.current.invalidate();
+      clearStreamIdleTimer();
+      streamActive.current = false;
+      streamBotId.current = null;
+      streamText.current = "";
+      streamBuffer.current.reset();
       suppressCurrentStream.current = false;
       dispatch({ type: "sendGroup", groupId: group.id, text: transcript });
     } catch (cause) {
@@ -139,7 +150,7 @@ export function GroupCallOverlay({
       setError(cause instanceof Error ? cause.message : String(cause));
       setPhase("error");
     }
-  }, [clearSettleTimer, dispatch, group.id, setPhase]);
+  }, [clearSettleTimer, clearStreamIdleTimer, dispatch, group.id, setPhase]);
   listenRef.current = () => void listen();
 
   const scheduleListening = useCallback(() => {
@@ -179,10 +190,12 @@ export function GroupCallOverlay({
           const played = await voiceSpeaker.speak(reply.text, {
             botId: reply.botId,
             messageId: reply.messageId,
+            onPlaybackStart: () => void bargeIn.current.start(() => interruptRef.current()),
+            onPlaybackEnd: () => bargeIn.current.stop(),
           });
           if (!alive.current || run !== drainRun.current) return;
           if (!played) {
-            queue.current = [];
+            queue.current.invalidate();
             setSpeakingBotId(null);
             setError(voiceSpeaker.state.error ?? "语音播放已中断，请重试");
             setPhase("error");
@@ -203,6 +216,14 @@ export function GroupCallOverlay({
   }, [clearSettleTimer, scheduleListening, setPhase]);
   drainRef.current = drainQueue;
 
+  const enqueue = useCallback((items: GroupCallReply[], epoch = queue.current.epoch) => {
+    const speakable = items.filter((item) => item.text.trim());
+    if (!queue.current.enqueue(speakable, epoch)) return;
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    drainRef.current();
+  }, []);
+
   useEffect(() => {
     alive.current = true;
     const timer = window.setTimeout(() => {
@@ -217,7 +238,8 @@ export function GroupCallOverlay({
       alive.current = false;
       generation.current += 1;
       drainRun.current += 1;
-      queue.current = [];
+      queue.current.invalidate();
+      bargeIn.current.stop();
       streamActive.current = false;
       streamBuffer.current.reset();
       recorderRef.current?.cancel();
@@ -230,6 +252,7 @@ export function GroupCallOverlay({
 
   useEffect(() => {
     const replies: GroupCallReply[] = [];
+    let repliesEpoch = queue.current.epoch;
     for (const message of group.messages) {
       if (seenMessageIds.current.has(message.id)) continue;
       seenMessageIds.current.add(message.id);
@@ -248,6 +271,7 @@ export function GroupCallOverlay({
       }
 
       if (streamActive.current) {
+        repliesEpoch = streamQueueEpoch.current;
         clearStreamIdleTimer();
         for (const chunk of streamBuffer.current.update(text, { final: true })) {
           replies.push({
@@ -264,11 +288,8 @@ export function GroupCallOverlay({
       }
     }
     if (replies.length === 0) return;
-    queue.current.push(...replies);
-    recorderRef.current?.cancel();
-    recorderRef.current = null;
-    drainRef.current();
-  }, [clearStreamIdleTimer, group.messages]);
+    enqueue(replies, repliesEpoch);
+  }, [clearStreamIdleTimer, enqueue, group.messages]);
 
   useEffect(() => {
     clearStreamIdleTimer();
@@ -279,6 +300,7 @@ export function GroupCallOverlay({
       streamBuffer.current.reset();
       streamEpoch.current += 1;
       streamSequence.current = 0;
+      streamQueueEpoch.current = queue.current.epoch;
     } else if (!streamBotId.current && group.busyBotId) {
       streamBotId.current = group.busyBotId;
     }
@@ -292,10 +314,7 @@ export function GroupCallOverlay({
         messageId: `stream:${group.threadId}:${streamEpoch.current}:${streamSequence.current++}`,
       }));
       if (replies.length > 0) {
-        queue.current.push(...replies);
-        recorderRef.current?.cancel();
-        recorderRef.current = null;
-        drainRef.current();
+        enqueue(replies, streamQueueEpoch.current);
       }
     }
 
@@ -309,14 +328,11 @@ export function GroupCallOverlay({
         messageId: `stream:${group.threadId}:${streamEpoch.current}:${streamSequence.current++}`,
       }));
       if (replies.length > 0) {
-        queue.current.push(...replies);
-        recorderRef.current?.cancel();
-        recorderRef.current = null;
-        drainRef.current();
+        enqueue(replies, streamQueueEpoch.current);
       }
     }, 500);
     return clearStreamIdleTimer;
-  }, [clearStreamIdleTimer, group.busyBotId, group.threadId, streaming]);
+  }, [clearStreamIdleTimer, enqueue, group.busyBotId, group.threadId, streaming]);
 
   useEffect(() => {
     busyRef.current = Boolean(group.busyBotId);
@@ -334,17 +350,20 @@ export function GroupCallOverlay({
     if (phaseRef.current !== "speaking") return;
     drainRun.current += 1;
     draining.current = false;
-    queue.current = [];
+    queue.current.invalidate();
     clearStreamIdleTimer();
     suppressCurrentStream.current = streamActive.current;
     streamActive.current = false;
     streamBotId.current = null;
     streamText.current = "";
     streamBuffer.current.reset();
+    bargeIn.current.stop();
     voiceSpeaker.stop();
     setSpeakingBotId(null);
+    setError(null);
     listenRef.current();
   }, [clearStreamIdleTimer]);
+  interruptRef.current = interruptSpeech;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -467,7 +486,7 @@ export function GroupCallOverlay({
         </button>
       </div>
 
-      <div className="text-center text-[11.5px] text-ink-secondary/70">机器人边生成边按顺序发言 · 空格打断 · Esc 挂断</div>
+      <div className="text-center text-[11.5px] text-ink-secondary/70">机器人边生成边按顺序发言 · 直接说话或空格打断 · Esc 挂断</div>
     </div>
   );
 }
