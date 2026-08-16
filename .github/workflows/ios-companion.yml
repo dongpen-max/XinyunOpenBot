@@ -37,9 +37,9 @@ jobs:
           if not apps:
               raise SystemExit('No Xcode installation found under /Applications')
 
-          compatible = [app for app in apps if version(app) >= (26, 0) and version(app) < (26, 1)]
+          compatible = [app for app in apps if version(app) >= (26, 2) and version(app) < (26, 3)]
           if not compatible:
-              raise SystemExit('Xcode 26.0.x with Swift 6.2 was not found under /Applications')
+              raise SystemExit('Xcode 26.2.x with Swift 6.2 was not found under /Applications')
 
           selected = max(compatible, key=version)
           print('Installed Xcodes:', *sorted(apps), sep='\n- ', file=sys.stderr)
