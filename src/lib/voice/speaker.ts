@@ -64,7 +64,11 @@ export class VoiceSpeaker {
 
     try {
       const utterances = await this.prepare(text, controller.signal);
-      if (!live() || !utterances.length) return false;
+      if (!live()) return false;
+      if (!utterances.length) {
+        this.set(IDLE);
+        return true;
+      }
       type Rendered = { blob: Blob } | { error: unknown };
       const render = (utterance: string): Promise<Rendered> =>
         this.render(utterance, controller.signal, options).then((blob) => ({ blob }), (error) => ({ error }));

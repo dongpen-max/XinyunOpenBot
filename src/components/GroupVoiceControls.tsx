@@ -1,10 +1,11 @@
 import { Loader2, Phone, PhoneOff, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { collectGroupCallReplies, type GroupCallReply } from "@/lib/voice/group-call";
+import { type GroupCallReply } from "@/lib/voice/group-call";
 import { VoiceRecorder, transcribeVoice } from "@/lib/voice/recorder";
 import { useVoiceSpeech, voiceSpeaker } from "@/lib/voice/speaker";
-import { useStore, type Bot, type Group } from "@/state/store";
+import { StreamingSpeechBuffer } from "@/lib/voice/streaming-speech";
+import { useStore, useStreaming, type Bot, type Group } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 
 export function GroupCallButton({
@@ -53,6 +54,7 @@ export function GroupCallOverlay({
   onHangup: () => void;
 }) {
   const { dispatch } = useStore();
+  const streaming = useStreaming().streaming[group.threadId] ?? "";
   const speech = useVoiceSpeech();
   const [phase, setPhaseState] = useState<GroupCallPhase>(group.busyBotId ? "thinking" : "listening");
   const [heard, setHeard] = useState("");
@@ -66,15 +68,25 @@ export function GroupCallOverlay({
   const listenRef = useRef<() => void>(() => {});
   const drainRef = useRef<() => void>(() => {});
   const settleTimerRef = useRef<number | null>(null);
+  const streamIdleTimerRef = useRef<number | null>(null);
   const seenMessageIds = useRef(new Set(group.messages.map((message) => message.id)));
   const queue = useRef<GroupCallReply[]>([]);
   const draining = useRef(false);
   const drainRun = useRef(0);
   const busyRef = useRef(Boolean(group.busyBotId));
   const membersRef = useRef(members);
+  const lastBusyBotId = useRef<string | null>(group.busyBotId ?? null);
+  const streamBuffer = useRef(new StreamingSpeechBuffer());
+  const streamActive = useRef(false);
+  const streamBotId = useRef<string | null>(null);
+  const streamText = useRef("");
+  const streamEpoch = useRef(0);
+  const streamSequence = useRef(0);
+  const suppressCurrentStream = useRef(false);
 
   membersRef.current = members;
   busyRef.current = Boolean(group.busyBotId);
+  if (group.busyBotId) lastBusyBotId.current = group.busyBotId;
 
   const setPhase = useCallback((next: GroupCallPhase) => {
     phaseRef.current = next;
@@ -84,6 +96,11 @@ export function GroupCallOverlay({
   const clearSettleTimer = useCallback(() => {
     if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = null;
+  }, []);
+
+  const clearStreamIdleTimer = useCallback(() => {
+    if (streamIdleTimerRef.current !== null) window.clearTimeout(streamIdleTimerRef.current);
+    streamIdleTimerRef.current = null;
   }, []);
 
   const listen = useCallback(async () => {
@@ -114,6 +131,7 @@ export function GroupCallOverlay({
       if (!alive.current || mine !== generation.current) return;
       setHeard(transcript);
       setPhase("thinking");
+      suppressCurrentStream.current = false;
       dispatch({ type: "sendGroup", groupId: group.id, text: transcript });
     } catch (cause) {
       if (!alive.current || mine !== generation.current) return;
@@ -195,10 +213,13 @@ export function GroupCallOverlay({
     return () => {
       window.clearTimeout(timer);
       clearSettleTimer();
+      clearStreamIdleTimer();
       alive.current = false;
       generation.current += 1;
       drainRun.current += 1;
       queue.current = [];
+      streamActive.current = false;
+      streamBuffer.current.reset();
       recorderRef.current?.cancel();
       recorderRef.current = null;
       voiceSpeaker.stop();
@@ -208,14 +229,94 @@ export function GroupCallOverlay({
   }, []);
 
   useEffect(() => {
-    const collected = collectGroupCallReplies(group.messages, seenMessageIds.current);
-    seenMessageIds.current = collected.seenMessageIds;
-    if (collected.replies.length === 0) return;
-    queue.current.push(...collected.replies);
+    const replies: GroupCallReply[] = [];
+    for (const message of group.messages) {
+      if (seenMessageIds.current.has(message.id)) continue;
+      seenMessageIds.current.add(message.id);
+      const text = message.text?.trim();
+      const botId = message.from?.botId;
+      if (message.role !== "bot" || message.kind !== "text" || !text || !botId) continue;
+
+      if (suppressCurrentStream.current) {
+        clearStreamIdleTimer();
+        suppressCurrentStream.current = false;
+        streamActive.current = false;
+        streamBotId.current = null;
+        streamText.current = "";
+        streamBuffer.current.reset();
+        continue;
+      }
+
+      if (streamActive.current) {
+        clearStreamIdleTimer();
+        for (const chunk of streamBuffer.current.update(text, { final: true })) {
+          replies.push({
+            text: chunk,
+            botId,
+            messageId: `${message.id}:voice:${streamSequence.current++}`,
+          });
+        }
+        streamActive.current = false;
+        streamBotId.current = null;
+        streamText.current = "";
+      } else {
+        replies.push({ text, botId, messageId: message.id });
+      }
+    }
+    if (replies.length === 0) return;
+    queue.current.push(...replies);
     recorderRef.current?.cancel();
     recorderRef.current = null;
     drainRef.current();
-  }, [group.messages]);
+  }, [clearStreamIdleTimer, group.messages]);
+
+  useEffect(() => {
+    clearStreamIdleTimer();
+    if (!streaming || suppressCurrentStream.current) return;
+    if (!streamActive.current) {
+      streamActive.current = true;
+      streamBotId.current = group.busyBotId ?? lastBusyBotId.current;
+      streamBuffer.current.reset();
+      streamEpoch.current += 1;
+      streamSequence.current = 0;
+    } else if (!streamBotId.current && group.busyBotId) {
+      streamBotId.current = group.busyBotId;
+    }
+
+    streamText.current = streaming;
+    const botId = streamBotId.current;
+    if (botId) {
+      const replies = streamBuffer.current.update(streaming).map((text) => ({
+        text,
+        botId,
+        messageId: `stream:${group.threadId}:${streamEpoch.current}:${streamSequence.current++}`,
+      }));
+      if (replies.length > 0) {
+        queue.current.push(...replies);
+        recorderRef.current?.cancel();
+        recorderRef.current = null;
+        drainRef.current();
+      }
+    }
+
+    streamIdleTimerRef.current = window.setTimeout(() => {
+      streamIdleTimerRef.current = null;
+      const idleBotId = streamBotId.current;
+      if (!alive.current || !streamActive.current || !idleBotId || suppressCurrentStream.current) return;
+      const replies = streamBuffer.current.update(streamText.current, { idle: true }).map((text) => ({
+        text,
+        botId: idleBotId,
+        messageId: `stream:${group.threadId}:${streamEpoch.current}:${streamSequence.current++}`,
+      }));
+      if (replies.length > 0) {
+        queue.current.push(...replies);
+        recorderRef.current?.cancel();
+        recorderRef.current = null;
+        drainRef.current();
+      }
+    }, 500);
+    return clearStreamIdleTimer;
+  }, [clearStreamIdleTimer, group.busyBotId, group.threadId, streaming]);
 
   useEffect(() => {
     busyRef.current = Boolean(group.busyBotId);
@@ -234,10 +335,16 @@ export function GroupCallOverlay({
     drainRun.current += 1;
     draining.current = false;
     queue.current = [];
+    clearStreamIdleTimer();
+    suppressCurrentStream.current = streamActive.current;
+    streamActive.current = false;
+    streamBotId.current = null;
+    streamText.current = "";
+    streamBuffer.current.reset();
     voiceSpeaker.stop();
     setSpeakingBotId(null);
     listenRef.current();
-  }, []);
+  }, [clearStreamIdleTimer]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -360,7 +467,7 @@ export function GroupCallOverlay({
         </button>
       </div>
 
-      <div className="text-center text-[11.5px] text-ink-secondary/70">机器人按消息顺序依次发言 · 空格打断 · Esc 挂断</div>
+      <div className="text-center text-[11.5px] text-ink-secondary/70">机器人边生成边按顺序发言 · 空格打断 · Esc 挂断</div>
     </div>
   );
 }
