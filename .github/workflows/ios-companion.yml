@@ -1,0 +1,68 @@
+name: iOS Companion
+
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - "packages/**"
+      - "services/sync-gateway/**"
+      - "server/mobile-sync/**"
+      - ".github/workflows/ios-companion.yml"
+  workflow_dispatch:
+
+jobs:
+  ios-simulator-build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Select Swift 6.2 Xcode
+        run: |
+          XCODE_APP=$(python3 - <<'PY'
+          import glob, os, re, sys
+
+          apps = glob.glob('/Applications/Xcode*.app')
+
+          def version(path):
+              match = re.fullmatch(r'Xcode[_-]([0-9]+(?:\.[0-9]+)*)\.app', os.path.basename(path))
+              return tuple(int(part) for part in match.group(1).split('.')) if match else (0,)
+
+          if not apps:
+              raise SystemExit('No Xcode installation found under /Applications')
+
+          compatible = [app for app in apps if version(app) >= (26, 4) and version(app) < (26, 5)]
+          if not compatible:
+              raise SystemExit('Xcode 26.4.x was not found under /Applications')
+
+          selected = max(compatible, key=version)
+          print('Installed Xcodes:', *sorted(apps), sep='\n- ', file=sys.stderr)
+          print(f'Selected Xcode: {selected}', file=sys.stderr)
+          print(selected)
+          PY
+          )
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          swift --version
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @xinyun/mobile typecheck
+      - run: pnpm dlx expo-doctor@latest apps/mobile
+      - run: pnpm --filter @xinyun/mobile exec expo export --platform ios --output-dir dist-ios
+      - name: Generate native iOS project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install --clean
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install --repo-update
+      - name: Build unsigned iOS Simulator app
+        working-directory: apps/mobile
+        run: |
+          WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build

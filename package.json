@@ -21,7 +21,13 @@
     "build:speech": "swiftc -O electron/resources/speech-helper.swift -o electron/resources/speech-helper",
     "build:updater": "node scripts/bundle-updater.mjs",
     "package": "pnpm build && pnpm build:server && pnpm build:speech && pnpm build:updater && electron-builder --mac --publish never",
-    "package:win": "pnpm build && pnpm build:server && pnpm build:updater && electron-builder --win --publish never"
+    "package:win": "pnpm build && pnpm build:server && pnpm build:updater && electron-builder --win --publish never",
+    "build:workspaces": "pnpm -r --if-present run build",
+    "test:workspaces": "pnpm -r --if-present run test",
+    "typecheck:workspaces": "pnpm -r --if-present run typecheck",
+    "dev:gateway": "pnpm --filter @xinyun/sync-gateway dev",
+    "dev:mobile": "pnpm --filter @xinyun/mobile start",
+    "test:mobile-sync:e2e": "node scripts/test-mobile-sync-e2e.mjs"
   },
   "dependencies": {
     "@trycua/cua-driver": "^0.19.3",
@@ -44,6 +50,7 @@
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "electron-updater": "^6.8.9",
+    "eas-cli": "22.0.0",
     "esbuild": "^0.28.2",
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",

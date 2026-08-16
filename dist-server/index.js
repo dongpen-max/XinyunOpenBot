@@ -24,6 +24,7 @@ import { ProviderRegistry } from "./harness/registry.js";
 import { mentionedBots, roomResponders, Store } from "./store.js";
 import { describeVoice, synthesize, transcribe } from "./voice/index.js";
 import { toUtterances } from "./voice/speech-text.js";
+import { DesktopMobileSync } from "./mobile-sync/client.js";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
 const MIME = {
@@ -114,6 +115,41 @@ let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+const mobileSync = new DesktopMobileSync({
+    localBaseUrl: `http://127.0.0.1:${PORT}`,
+    deviceName: process.env.COMPUTERNAME || process.env.HOSTNAME || "XinyunOpen Bot PC",
+    snapshot: (workspaceId) => {
+        const messagesByThread = {};
+        for (const bot of store.bots)
+            messagesByThread[bot.threadId] = store.messagesFor(bot.threadId);
+        for (const group of store.groups)
+            messagesByThread[group.threadId] = store.messagesFor(group.threadId);
+        return {
+            workspaceId,
+            bots: store.bots.filter((bot) => !bot.hidden).map((bot) => ({
+                id: bot.id,
+                threadId: bot.threadId,
+                name: bot.name,
+                title: bot.title,
+                description: bot.description,
+                color: bot.color,
+                unread: bot.unread,
+                busy: bot.busy,
+                hidden: bot.hidden,
+            })),
+            groups: store.groups.map((group) => ({
+                id: group.id,
+                threadId: group.threadId,
+                name: group.name,
+                memberIds: group.memberIds,
+                unread: group.unread,
+                busyBotId: group.busyBotId,
+            })),
+            messagesByThread,
+            generatedAt: Date.now(),
+        };
+    },
+});
 // ── SSE fan-out to clients ─────────────────────────────────────────────
 const sseClients = new Set();
 function broadcast(payload) {
@@ -126,6 +162,9 @@ function broadcast(payload) {
             sseClients.delete(res);
         }
     }
+    // The mobile bridge is best-effort and outbound-only. A gateway outage
+    // never blocks or changes the desktop SSE path.
+    mobileSync.publishDesktopBroadcast(payload);
 }
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
 // The canonical stream is the source of truth; the persisted transcript
@@ -978,6 +1017,18 @@ const server = createServer(async (req, res) => {
             });
             return;
         }
+        // ── iOS companion pairing (loopback only; provider secrets never leave PC) ──
+        if (method === "GET" && path === "/api/mobile-sync") {
+            return json(res, 200, mobileSync.status());
+        }
+        if (method === "POST" && path === "/api/mobile-sync/pairing") {
+            const body = await readBody(req);
+            const gatewayUrl = String(body.gatewayUrl ?? "").trim();
+            if (!gatewayUrl)
+                return json(res, 400, { error: "gatewayUrl required" });
+            const pairing = await mobileSync.createPairing(gatewayUrl);
+            return json(res, 201, pairing);
+        }
         // ── bots ──
         if (method === "GET" && path === "/api/bots") {
             return json(res, 200, {
@@ -1542,9 +1593,11 @@ const server = createServer(async (req, res) => {
 });
 server.listen(PORT, "127.0.0.1", () => {
     console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+    mobileSync.start();
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => {
+        mobileSync.stop();
         void registry.disposeAll().finally(() => process.exit(0));
     });
 }
