@@ -10,9 +10,9 @@
 // on this machine, plus (async, best-effort) whatever PATH the user's
 // real login shell reports.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, readdirSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, readSync, statSync, readdirSync, } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, extname, join } from "node:path";
+import { basename, delimiter, dirname, extname, join, posix } from "node:path";
 /** nvm keeps every node version's bin dir separately; newest first so a
  * CLI installed under the latest node wins. */
 function nvmBinDirs() {
@@ -27,20 +27,29 @@ function nvmBinDirs() {
         return [];
     }
 }
-function knownDirs() {
-    const home = homedir();
+export function posixKnownDirs(home = homedir(), env = process.env, platform = process.platform) {
+    const npmPrefix = env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX;
+    const pathJoin = platform === "darwin" || platform === "linux" ? posix.join : join;
     return [
-        join(home, ".local", "bin"), // claude installer default
-        join(home, ".claude", "local"), // claude "local install"
-        "/opt/homebrew/bin", // brew, Apple silicon
-        "/usr/local/bin", // brew Intel / classic installs
-        join(home, ".volta", "bin"),
-        join(home, ".bun", "bin"),
-        join(home, ".asdf", "shims"),
-        join(home, ".deno", "bin"),
-        join(home, "bin"),
-        ...nvmBinDirs(),
-    ];
+        env.PNPM_HOME,
+        npmPrefix ? pathJoin(npmPrefix, "bin") : undefined,
+        pathJoin(home, ".local", "bin"), // claude installer default
+        pathJoin(home, ".claude", "local"), // claude "local install"
+        ...(platform === "darwin"
+            ? [
+                "/opt/homebrew/bin", // Homebrew, Apple Silicon
+                "/usr/local/bin", // Homebrew, Intel / classic npm prefix
+                "/usr/bin",
+                pathJoin(home, "Library", "pnpm"),
+            ]
+            : ["/usr/local/bin", "/usr/bin"]),
+        pathJoin(home, ".volta", "bin"),
+        pathJoin(home, ".bun", "bin"),
+        pathJoin(home, ".asdf", "shims"),
+        pathJoin(home, ".deno", "bin"),
+        pathJoin(home, "bin"),
+        ...(home === homedir() ? nvmBinDirs() : []),
+    ].filter((value) => Boolean(value));
 }
 /** Windows equivalents of knownDirs. A GUI app inherits the user PATH at
  * launch, but only at launch: a CLI installed while the app is running is
@@ -81,7 +90,7 @@ export function augmentedPath() {
             // Both platforms scan their standard install locations; only the
             // login-shell probe below stays unix-only, since Windows has no
             // equivalent rc file to source.
-            ...(process.platform === "win32" ? windowsKnownDirs() : knownDirs()).filter((d) => existsSync(d)),
+            ...(process.platform === "win32" ? windowsKnownDirs() : posixKnownDirs()).filter((d) => existsSync(d)),
         ]);
     }
     // belt-and-braces: fold in the login shell's PATH once, in the
@@ -121,6 +130,31 @@ function isFile(p) {
     catch {
         return false;
     }
+}
+function isExecutableFile(p) {
+    if (!isFile(p))
+        return false;
+    try {
+        accessSync(p, constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/** POSIX `which` with executable-bit validation. Exported for path tests and
+ * for callers that need a concrete absolute CLI path in GUI launches. */
+export function resolvePosixExecutable(cli, pathValue = augmentedPath()) {
+    if (/[\\/]/.test(cli))
+        return isExecutableFile(cli) ? cli : null;
+    for (const dir of pathValue.split(delimiter)) {
+        if (!dir)
+            continue;
+        const candidate = join(dir, cli);
+        if (isExecutableFile(candidate))
+            return candidate;
+    }
+    return null;
 }
 /** PATHEXT-aware `which`. A path-ish cli is probed where it points. */
 function whichWin(cli) {
@@ -222,8 +256,9 @@ function parseNodeShebang(file) {
  * everywhere but win32 — POSIX already resolves PATH and #! itself.
  */
 export function resolveCliSpawn(cli, args) {
-    if (process.platform !== "win32")
-        return { command: cli, args };
+    if (process.platform !== "win32") {
+        return { command: resolvePosixExecutable(cli) ?? cli, args };
+    }
     const file = whichWin(cli);
     // not found: hand back the name so spawn reports its own ENOENT
     if (!file)

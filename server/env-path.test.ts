@@ -7,7 +7,13 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { augmentedPath, resetPathCacheForTests, resolveCliSpawn } from "./env-path.ts";
+import {
+  augmentedPath,
+  posixKnownDirs,
+  resetPathCacheForTests,
+  resolveCliSpawn,
+  resolvePosixExecutable,
+} from "./env-path.ts";
 
 const posixIt = it.skipIf(process.platform === "win32");
 const windowsIt = it.skipIf(process.platform !== "win32");
@@ -75,6 +81,47 @@ describe("augmentedPath", () => {
     const parts = augmentedPath().split(delimiter);
     // temp home: .volta was never created, so it must not appear
     expect(parts).not.toContain(join(homedir(), ".volta", "bin"));
+  });
+});
+
+describe("macOS CLI locations", () => {
+  it("covers Apple Silicon and Intel Homebrew", () => {
+    const dirs = posixKnownDirs("/Users/tester", {}, "darwin");
+    expect(dirs).toContain("/opt/homebrew/bin");
+    expect(dirs).toContain("/usr/local/bin");
+  });
+
+  it("covers npm and pnpm global bins without hardcoding a user name", () => {
+    const dirs = posixKnownDirs(
+      "/Users/tester",
+      { NPM_CONFIG_PREFIX: "/Volumes/Tools With Spaces/npm", PNPM_HOME: "/Volumes/Tools With Spaces/pnpm" },
+      "darwin",
+    );
+    expect(dirs).toContain("/Volumes/Tools With Spaces/npm/bin");
+    expect(dirs).toContain("/Volumes/Tools With Spaces/pnpm");
+    expect(dirs).toContain("/Users/tester/Library/pnpm");
+  });
+
+  posixIt("resolves an executable from a PATH containing spaces", () => {
+    const bin = join(homedir(), "CLI Tools", "bin");
+    mkdirSync(bin, { recursive: true });
+    const cli = join(bin, "claude");
+    writeFileSync(cli, "#!/bin/sh\nexit 0\n");
+    chmodSync(cli, 0o755);
+    expect(resolvePosixExecutable("claude", bin)).toBe(cli);
+  });
+
+  posixIt("returns null when a CLI is absent", () => {
+    expect(resolvePosixExecutable("definitely-not-installed", join(homedir(), "empty-bin"))).toBeNull();
+  });
+
+  posixIt("rejects a non-executable file", () => {
+    const bin = join(homedir(), "not-executable", "bin");
+    mkdirSync(bin, { recursive: true });
+    const cli = join(bin, "codex");
+    writeFileSync(cli, "#!/bin/sh\nexit 0\n");
+    chmodSync(cli, 0o644);
+    expect(resolvePosixExecutable("codex", bin)).toBeNull();
   });
 });
 

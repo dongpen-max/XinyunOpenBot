@@ -25,11 +25,16 @@ directories:
 # ELECTRON_RUN_AS_NODE (the agentcal-hq pattern).
 files:
   - electron/**
+  - "!electron/**/*.test.*"
   - "!electron/resources/speech-helper"
+  - "!electron/resources/speech-helper.swift"
+  - "!electron/resources/speech-helper-Info.plist"
+  - "!electron/resources/XinyunOpen Bot Speech.app/**"
   - "!**/node_modules/**"
   - package.json
 
 asar: true
+afterSign: scripts/notarize.cjs
 
 extraResources:
   - from: dist
@@ -38,14 +43,17 @@ extraResources:
     to: server
 
 mac:
+  minimumSystemVersion: 13.0.0
   extraResources:
-    - from: electron/resources/speech-helper
-      to: speech-helper
+    - from: electron/resources/XinyunOpen Bot Speech.app
+      to: XinyunOpen Bot Speech.app
+    - from: dist-native/cua-driver
+      to: cua-driver
+    - from: dist-native/cua-sdk
+      to: cua-sdk
   target:
-    - target: dmg
-      arch: arm64
-    - target: zip
-      arch: arm64
+    - dmg
+    - zip
   icon: build/icon.icns
   category: public.app-category.productivity
   hardenedRuntime: true
@@ -53,15 +61,25 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    NSMicrophoneUsageDescription: XinyunOpen Bot uses the microphone for voice dictation into the composer.
-    NSSpeechRecognitionUsageDescription: XinyunOpen Bot transcribes your voice on-device to type messages for you.
-  # Notarization runs manually after the build (notarytool + staple),
-  # mirroring the BlueyLite ship_release.sh flow.
+    NSMicrophoneUsageDescription: XinyunOpen Bot 需要使用麦克风进行语音输入和语音通话。
+    NSSpeechRecognitionUsageDescription: XinyunOpen Bot 需要使用语音识别将您的语音转换为文字。
+    NSAccessibilityUsageDescription: XinyunOpen Bot 仅在您启用本地电脑工具时使用辅助功能来执行操作。
+    NSScreenCaptureUsageDescription: XinyunOpen Bot 仅在您启用本地电脑工具时读取屏幕内容。
   notarize: false
 
 dmg:
   sign: true
   artifactName: XinyunOpen-Bot-${version}.dmg
+  window:
+    width: 660
+    height: 440
+  contents:
+    - x: 180
+      y: 220
+    - x: 480
+      y: 220
+      type: link
+      path: /Applications
 
 win:
   target:

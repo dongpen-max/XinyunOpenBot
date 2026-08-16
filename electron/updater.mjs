@@ -8,13 +8,14 @@
 // electron-updater is vendored (electron/vendor/electron-updater.cjs) because
 // the packaged app ships no node_modules.
 import { app, ipcMain } from "electron";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
 let autoUpdater = null;
 let win = null;
-// status: idle | checking | available | downloading | downloaded | error
+// status: idle | checking | available | downloading | downloaded | disabled | error
 let state = { status: "idle" };
 // Whether the in-flight check came from the user's button. Background checks
 // fail for reasons that are none of the user's business — no feed published
@@ -47,6 +48,16 @@ function reportError(e) {
   setState({ status: "error", message: String(e?.message ?? e) });
 }
 
+function hasDeveloperIdSignature() {
+  if (process.platform !== "darwin") return true;
+  const result = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=4", process.execPath], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const details = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return /Authority=Developer ID Application:/i.test(details);
+}
+
 export function registerUpdaterIpc() {
   ipcMain.handle("update:get-state", () => state);
   ipcMain.handle("update:check", () => check(true));
@@ -69,9 +80,27 @@ export function registerUpdaterIpc() {
 
 export function startUpdater(mainWindow) {
   win = mainWindow;
-  // dev / unsigned builds can't auto-update — leave the banner dormant
+  if (autoUpdater) {
+    setState(state);
+    return;
+  }
+  // Development never checks the release feed. macOS test/ad-hoc builds are
+  // also disabled explicitly: Sparkle/electron-updater requires a stable code
+  // signing identity for replacement and signature validation. Windows keeps
+  // its existing unsigned-update behavior until publisherName is configured.
   if (!app.isPackaged) {
     setState({ status: "idle" });
+    return;
+  }
+  if (process.env.OMB_DISABLE_UPDATES === "1") {
+    setState({ status: "disabled", message: "自动更新已由当前运行环境停用。" });
+    return;
+  }
+  if (process.platform === "darwin" && !hasDeveloperIdSignature()) {
+    setState({
+      status: "disabled",
+      message: "此 macOS 测试版未使用正式 Developer ID 签名，自动更新已停用。",
+    });
     return;
   }
   try {

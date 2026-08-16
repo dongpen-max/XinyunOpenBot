@@ -409,10 +409,15 @@ function userDataRoot(): string {
 // %APPDATA% on Windows — <dir>/cua-connection.json). Read fresh each turn —
 // Electron may restart or permissions may change.
 function readCuaConnection(): { command: string; args: string[]; env: Record<string, string> } | null {
+  const candidates = process.env.OMB_USER_DATA
+    ? [process.env.OMB_USER_DATA]
+    : ["XinyunOpen Bot", "openmausbot", "OpenGrokBot", "opengrokbot"].map((dir) =>
+        join(userDataRoot(), dir),
+      );
   // new name first; pre-rename desktop builds used the old directory
-  for (const dir of ["XinyunOpen Bot", "openmausbot", "OpenGrokBot", "opengrokbot"]) {
+  for (const dir of candidates) {
     try {
-      const p = join(userDataRoot(), dir, "cua-connection.json");
+      const p = join(dir, "cua-connection.json");
       const conn = JSON.parse(readFileSync(p, "utf8"));
       if (!conn || conn.mode === "unavailable" || !conn.mcpCommand) continue;
       return { command: conn.mcpCommand, args: conn.mcpArgs ?? ["mcp"], env: conn.mcpEnv ?? {} };

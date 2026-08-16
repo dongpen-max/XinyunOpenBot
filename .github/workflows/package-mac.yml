@@ -1,0 +1,139 @@
+name: Package macOS
+
+on:
+  push:
+    branches: [codex/macos-port]
+  workflow_dispatch:
+    inputs:
+      build_x64:
+        description: Build the optional Intel x64 artifacts
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64:
+    name: macOS 15 arm64 package + smoke
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:electron
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm build:speech
+      - name: Configure signing when secrets are present
+        shell: bash
+        run: |
+          if [[ -z "$MACOS_CERTIFICATE" ]]; then
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+            echo "SIGNING_MODE=unsigned" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          CERTIFICATE_PATH="$RUNNER_TEMP/xinyun-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/xinyun-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE" | /usr/bin/base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "CSC_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
+      - run: pnpm package:mac:arm64
+      - run: node scripts/verify-mac-artifacts.mjs
+      - name: Install from DMG and smoke-test lifecycle
+        shell: bash
+        run: |
+          DMG="$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          MOUNT="$RUNNER_TEMP/xinyun-dmg"
+          INSTALLED="$RUNNER_TEMP/Applications/XinyunOpen Bot.app"
+          mkdir -p "$MOUNT" "$(dirname "$INSTALLED")"
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT"
+          ditto "$MOUNT/XinyunOpen Bot.app" "$INSTALLED"
+          hdiutil detach "$MOUNT"
+          node scripts/smoke-mac-package.mjs "$INSTALLED"
+      - name: Verify formal signing and Gatekeeper
+        if: env.SIGNING_MODE == 'developer-id' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != ''
+        shell: bash
+        run: |
+          codesign --verify --deep --strict --verbose=2 "release/mac-arm64/XinyunOpen Bot.app"
+          xcrun stapler validate "release/mac-arm64/XinyunOpen Bot.app"
+          spctl --assess --type execute --verbose=4 "release/mac-arm64/XinyunOpen Bot.app"
+          spctl --assess --type open --context context:primary-signature --verbose=4 release/*.dmg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xinyunopen-bot-macos-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Delete temporary signing keychain
+        if: always() && env.CSC_KEYCHAIN != ''
+        shell: bash
+        run: security delete-keychain "$CSC_KEYCHAIN" || true
+
+  x64:
+    name: macOS 15 Intel x64 package
+    if: github.event_name == 'workflow_dispatch' && inputs.build_x64
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:electron
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build:speech
+      - name: Build unsigned Intel test artifacts
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm package:mac:x64
+      - run: node scripts/verify-mac-artifacts.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xinyunopen-bot-macos-x64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

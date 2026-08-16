@@ -131,7 +131,9 @@ function UpdatesContent() {
   if (!window.ogb?.updater) return <div className="text-[12px] text-ink-secondary">开发模式下不提供自动更新。</div>;
   const updater = window.ogb.updater;
   const label =
-    state?.status === "checking"
+    state?.status === "disabled"
+      ? state.message ?? "当前构建未启用自动更新。"
+      : state?.status === "checking"
       ? "正在检查…"
       : state?.status === "available"
         ? `发现新版本 ${state.version}`
@@ -146,7 +148,7 @@ function UpdatesContent() {
     <div>
       <div className="text-[13px] text-ink-secondary">{label}</div>
       <div className="mt-3 flex gap-2">
-        {state?.status === "available" ? (
+        {state?.status === "disabled" ? null : state?.status === "available" ? (
           <button onClick={() => void updater.download()} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white">下载更新</button>
         ) : state?.status === "downloaded" ? (
           <button onClick={() => void updater.install()} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white">重启并更新</button>

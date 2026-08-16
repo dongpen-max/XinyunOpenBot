@@ -3,16 +3,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
-import { startSpeech, stopSpeech } from "./speech.mjs";
+import { finishSpeech, startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
+import capabilitiesModule from "./capabilities.cjs";
+
+const { desktopCapabilities } = capabilitiesModule;
 
 app.setName("XinyunOpen Bot");
 // Keep the existing OpenMausBot user-data directory so upgrading the branded
 // build preserves local CUA state, window data and updater state.
-const COMPAT_USER_DATA = path.join(app.getPath("appData"), "openmausbot");
+const COMPAT_USER_DATA = process.env.OMB_USER_DATA
+  ? path.resolve(process.env.OMB_USER_DATA)
+  : path.join(app.getPath("appData"), "openmausbot");
 fs.mkdirSync(COMPAT_USER_DATA, { recursive: true });
 app.setPath("userData", COMPAT_USER_DATA);
 if (process.platform === "win32") app.setAppUserModelId("com.dongpen.xinyunopenbot");
+
+if (!app.requestSingleInstanceLock()) app.exit(0);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -29,6 +36,7 @@ const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 // our API shape, not just a 200).
 let serverProc = null;
 let serverReady = true;
+let cuaReady = Promise.resolve({ mode: "unavailable", reason: "not-started" });
 
 // The packaged app has no terminal: everything about the server child's life
 // goes to server.log in the OS log dir (~/Library/Logs/XinyunOpen Bot on macOS,
@@ -57,6 +65,7 @@ async function startServerOn(port) {
       ...process.env,
       OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
       OMB_PORT: String(port),
+      OMB_USER_DATA: app.getPath("userData"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -166,6 +175,7 @@ ipcMain.handle("appearance:title-bar-color", (event, color) => {
 // "This Mac" screen preview — served from the main process so the Screen
 // Recording permission prompt attributes to the app, never the server
 ipcMain.handle("screen:frame", async () => {
+  if (process.platform !== "darwin") return null;
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
     thumbnailSize: { width: 1280, height: 800 },
@@ -188,9 +198,13 @@ ipcMain.handle("screen:frame", async () => {
 // prompts then, attributed correctly, at the moment of actual use. The
 // perm:open-settings deep link stays as the repair path for denials.
 ipcMain.handle("perm:status", () => ({
-  mic: systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown",
+  mic:
+    process.platform === "darwin"
+      ? systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown"
+      : "unsupported",
 }));
 ipcMain.handle("perm:request-mic", async () => {
+  if (process.platform !== "darwin") return false;
   try {
     return await systemPreferences.askForMediaAccess("microphone");
   } catch {
@@ -201,21 +215,33 @@ ipcMain.handle("perm:request-mic", async () => {
 // macOS never re-prompts a denied permission — the only path is System
 // Settings; deep-link straight to the right privacy pane.
 ipcMain.handle("perm:open-settings", (_event, pane) => {
+  if (process.platform !== "darwin") return false;
   const panes = {
     mic: "Privacy_Microphone",
     screen: "Privacy_ScreenCapture",
     speech: "Privacy_SpeechRecognition",
   };
-  return shell.openExternal(
-    `x-apple.systempreferences:com.apple.preference.security?${panes[pane] ?? "Privacy"}`,
-  );
+  const anchor = Object.hasOwn(panes, pane) ? panes[pane] : "Privacy";
+  return shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
 });
 
-ipcMain.handle("speech:start", (event) => {
+ipcMain.handle("speech:start", (event, options) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (win) startSpeech(win);
+  if (win) startSpeech(win, options);
 });
-ipcMain.handle("speech:stop", () => stopSpeech());
+ipcMain.handle("speech:stop", () => {
+  if (process.platform === "darwin") stopSpeech();
+});
+ipcMain.handle("speech:finish", () => {
+  if (process.platform === "darwin") finishSpeech();
+});
+ipcMain.handle("desktop:capabilities", async () =>
+  desktopCapabilities({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    localConnection: await cuaReady,
+  }),
+);
 
 app.whenReady().then(async () => {
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
@@ -223,29 +249,46 @@ app.whenReady().then(async () => {
   // inside the app's own processes — the one capture path macOS reliably
   // attributes to the app (registers it in the Screen Recording pane and
   // prompts). Used by the onboarding "Enable screen preview" button.
-  session.defaultSession.setDisplayMediaRequestHandler(
-    (_request, callback) => {
-      desktopCapturer
-        .getSources({ types: ["screen"] })
-        .then((sources) => callback(sources[0] ? { video: sources[0] } : {}))
-        .catch(() => callback({}));
-    },
-    { useSystemPicker: false },
-  );
+  if (process.platform === "darwin") {
+    session.defaultSession.setDisplayMediaRequestHandler(
+      (_request, callback) => {
+        desktopCapturer
+          .getSources({ types: ["screen"] })
+          .then((sources) => callback(sources[0] ? { video: sources[0] } : {}))
+          .catch(() => callback({}));
+      },
+      { useSystemPicker: false },
+    );
+  }
   registerCuaIpc();
   registerUpdaterIpc();
   // Start the CUA daemon before the window so the harness can pick up the
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
-  startCua().catch((e) => console.error("[cua] start failed:", e));
+  cuaReady =
+    process.platform === "darwin" && process.env.OMB_DISABLE_LOCAL_CUA !== "1"
+      ? startCua().catch((e) => ({ mode: "unavailable", reason: String(e) }))
+      : Promise.resolve({ mode: "unavailable", reason: "unsupported-or-disabled" });
   if (app.isPackaged) serverReady = await startServerPackaged();
   const win = createWindow();
   // in-app auto-update (packaged only) — checks GitHub releases, downloads on
   // the user's click, installs on "Restart to update"
   startUpdater(win);
+  const smokeQuitMs = Number(process.env.OMB_SMOKE_QUIT_AFTER_MS);
+  if (Number.isFinite(smokeQuitMs) && smokeQuitMs > 0) {
+    setTimeout(() => app.quit(), Math.max(1000, smokeQuitMs)).unref?.();
+  }
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) startUpdater(createWindow());
   });
+});
+
+app.on("second-instance", () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 });
 
 app.on("window-all-closed", () => {
@@ -254,6 +297,7 @@ app.on("window-all-closed", () => {
 
 // EMBEDDING.md lifecycle rule: defer the first quit until the embedded
 // daemon's async cleanup completes — it can't run after the host exits.
+const CUA_STOP_TIMEOUT_MS = 2500;
 let cuaCleanedUp = false;
 app.on("before-quit", (e) => {
   if (cuaCleanedUp) return;
@@ -261,7 +305,14 @@ app.on("before-quit", (e) => {
   try {
     serverProc?.kill();
   } catch {}
-  stopCua().finally(() => {
+  stopSpeech();
+  Promise.race([
+    stopCua().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, CUA_STOP_TIMEOUT_MS).unref()),
+  ]).finally(() => {
+    try {
+      logStream?.end();
+    } catch {}
     cuaCleanedUp = true;
     app.quit();
   });

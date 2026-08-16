@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const INSTALLED_DRIVER = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
 const STANDALONE_SOCKET = path.join(
@@ -55,9 +56,20 @@ function socketAlive(sockPath) {
 }
 
 async function startEmbedded(binary) {
-  // Dynamic import: the SDK ships a native FFI lib; keep dev startup
-  // resilient if it fails to load on this machine.
-  const { EmbeddedCuaDriverHost } = await import("@trycua/cua-driver/embedded");
+  let EmbeddedCuaDriverHost;
+  if (app.isPackaged) {
+    process.env.XINYUN_CUA_SDK_LIBRARY = path.join(
+      process.resourcesPath,
+      "cua-sdk",
+      "native",
+      "libcua_driver_sdk.dylib",
+    );
+    ({ EmbeddedCuaDriverHost } = await import(
+      pathToFileURL(path.join(process.resourcesPath, "cua-sdk", "cua-sdk.mjs")).href
+    ));
+  } else {
+    ({ EmbeddedCuaDriverHost } = await import("@trycua/cua-driver/embedded"));
+  }
   embeddedHost = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   const conn = await embeddedHost.start();
   return {

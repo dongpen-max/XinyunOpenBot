@@ -5,12 +5,14 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("ogb", {
   /** Host platform ("darwin" | "win32" | "linux") — for platform-aware UI. */
   platform: process.platform,
+  getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   /** Keep Windows caption buttons aligned with the selected app background. */
   setTitleBarColor: (color) => ipcRenderer.invoke("appearance:title-bar-color", color),
   /** One frame of this Mac's screen as a data: URL (Screen Recording TCC). */
   screenFrame: () => ipcRenderer.invoke("screen:frame"),
-  speechStart: () => ipcRenderer.invoke("speech:start"),
+  speechStart: (options) => ipcRenderer.invoke("speech:start", options),
   speechStop: () => ipcRenderer.invoke("speech:stop"),
+  speechFinish: () => ipcRenderer.invoke("speech:finish"),
   onSpeechTranscript: (cb) => {
     const handler = (_event, line) => cb(line);
     ipcRenderer.on("speech:transcript", handler);
@@ -31,7 +33,7 @@ contextBridge.exposeInMainWorld("ogb", {
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
 
   /** In-app auto-update. State object:
-   *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
+   *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"disabled"|"error",
    *    version?, percent?, message? }. onState fires immediately with the
    *    current state, then on every transition. Dormant in dev (no bridge). */
   updater: {

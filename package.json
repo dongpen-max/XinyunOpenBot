@@ -16,15 +16,21 @@
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check:electron": "node --check electron/main.mjs && node --check electron/preload.cjs && node --check electron/capabilities.cjs && node --check electron/build-speech-helper.mjs && node --check electron/cua.mjs && node --check electron/speech.mjs && node --check electron/updater.mjs && node --check scripts/notarize.cjs && node --check scripts/prepare-cua.mjs && node --check scripts/smoke-mac-package.mjs && node --check scripts/verify-mac-artifacts.mjs",
     "preview": "vite preview",
     "build:server": "tsc -p tsconfig.server.build.json",
-    "build:speech": "swiftc -O electron/resources/speech-helper.swift -o electron/resources/speech-helper",
+    "build:speech": "node electron/build-speech-helper.mjs",
+    "build:cua": "node scripts/prepare-cua.mjs",
     "build:updater": "node scripts/bundle-updater.mjs",
-    "package": "pnpm build && pnpm build:server && pnpm build:speech && pnpm build:updater && electron-builder --mac --publish never",
-    "package:win": "pnpm build && pnpm build:server && pnpm build:updater && electron-builder --win --publish never"
+    "package:prepare": "pnpm build && pnpm build:server && pnpm build:updater",
+    "package:mac": "pnpm package:mac:arm64",
+    "package:mac:arm64": "pnpm package:prepare && pnpm build:speech && pnpm build:cua && electron-builder --mac dmg zip --arm64 --publish never",
+    "package:mac:x64": "pnpm package:prepare && pnpm build:speech && pnpm build:cua && electron-builder --mac dmg zip --x64 --publish never",
+    "package:win": "pnpm package:prepare && electron-builder --win --publish never",
+    "package": "pnpm package:mac"
   },
   "dependencies": {
-    "@trycua/cua-driver": "^0.19.3",
+    "@trycua/cua-driver": "0.19.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.539.0",
     "posthog-js": "^1.415.6",
@@ -34,6 +40,10 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.4.3",
     "tailwind-merge": "^3.3.1"
+  },
+  "optionalDependencies": {
+    "@trycua/cua-driver-darwin-arm64": "0.19.3",
+    "@trycua/cua-driver-darwin-x64": "0.19.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",

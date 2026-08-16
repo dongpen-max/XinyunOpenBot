@@ -60,7 +60,7 @@ function UpdateButton() {
     const timer = setTimeout(() => setCheckedAt(0), 3000);
     return () => clearTimeout(timer);
   }, [upToDate]);
-  if (!updater) return null;
+  if (!updater || s?.status === "disabled") return null;
 
   const status = s?.status ?? "idle";
   const working = status === "checking" || status === "downloading";

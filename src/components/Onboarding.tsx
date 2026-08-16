@@ -17,6 +17,7 @@ type InstanceRow = {
 };
 
 const isElectron = navigator.userAgent.includes("Electron");
+const isMacElectron = isElectron && window.ogb?.platform === "darwin";
 
 function StatusRow({
   ok,
@@ -53,6 +54,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [instances, setInstances] = useState<InstanceRow[] | null>(null);
   const [perms, setPerms] = useState<{ mic: string } | null>(null);
   const valid = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
+  const micPermissionDetail =
+    perms?.mic === "granted"
+      ? "麦克风权限已授权，可以使用语音输入和语音通话。"
+      : perms?.mic === "denied" || perms?.mic === "restricted"
+        ? "麦克风权限已被拒绝，请在系统设置中允许 XinyunOpen Bot 使用麦克风。"
+        : perms?.mic === "not-determined"
+          ? "尚未请求麦克风权限，点击启用后 macOS 会显示系统授权窗口。"
+          : zhCN.onboarding.micPermissionDesc;
 
   const saveProfile = () => {
     identifyEmail(email.trim().toLowerCase());
@@ -74,7 +83,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         .then((d) => setInstances(d.instances ?? []))
         .catch(() => setInstances([]));
     }
-    if (step === 2 && isElectron) {
+    if (step === 2 && isMacElectron) {
       const poll = () => window.ogb?.permStatus?.().then(setPerms).catch(() => {});
       poll();
       // keep polling — the user may grant in System Settings and come back
@@ -219,7 +228,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               )}
             </div>
             <button
-              onClick={() => (isElectron ? setStep(2) : finish())}
+              onClick={() => (isMacElectron ? setStep(2) : finish())}
               className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white"
             >
               {zhCN.onboarding.continue}
@@ -240,7 +249,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                   <div>
                     <div className="text-[14px] font-medium text-ink">{zhCN.onboarding.micPermission}</div>
                     <div className="mt-0.5 text-[12.5px] text-ink-secondary">
-                      {zhCN.onboarding.micPermissionDesc}
+                      {micPermissionDetail}
                     </div>
                   </div>
                 </div>

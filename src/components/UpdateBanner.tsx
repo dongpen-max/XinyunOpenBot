@@ -24,7 +24,7 @@ export function UpdateBanner() {
   // dismissal is per status+version, so the popup returns for the next
   // update (and when an available one finishes downloading)
   const [dismissed, setDismissed] = useState<string | null>(null);
-  if (!s || s.status === "idle" || s.status === "checking") return null;
+  if (!s || s.status === "idle" || s.status === "checking" || s.status === "disabled") return null;
   const key = `${s.status}:${s.version ?? ""}`;
   if (dismissed === key) return null;
   const updater = window.ogb!.updater!;
