@@ -105,6 +105,11 @@ export function ReasoningEffortControl({
               <div className="reasoning-slider__rail">
                 <div className="reasoning-slider__fill" />
                 <div className="reasoning-slider__sheen" aria-hidden="true" />
+                <div className="reasoning-slider__particles" aria-hidden="true">
+                  {Array.from({ length: 6 }, (_, particleIndex) => (
+                    <span key={particleIndex} className="reasoning-slider__particle" />
+                  ))}
+                </div>
                 {REASONING_LEVELS.map((candidate, candidateIndex) => (
                   <span
                     key={candidate.value}
