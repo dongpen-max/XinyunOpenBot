@@ -20,6 +20,7 @@ import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { cn } from "@/lib/cn";
 import { SpeakButton } from "./VoiceControls";
+import { GroupCallButton, GroupCallOverlay } from "./GroupVoiceControls";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -202,6 +203,7 @@ export function GroupView({ group }: { group: Group }) {
   const touchY = useRef(0);
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [bulletinDraft, setBulletinDraft] = useState(group.bulletin);
+  const [callOpen, setCallOpen] = useState(false);
 
   const members = useMemo(
     () => group.memberIds.map((id) => state.bots.find((b) => b.id === id)).filter((b): b is Bot => Boolean(b)),
@@ -210,6 +212,7 @@ export function GroupView({ group }: { group: Group }) {
   const speaker = members.find((b) => b.id === group.busyBotId);
 
   useEffect(() => setFollow(true), [group.id]);
+  useEffect(() => setCallOpen(false), [group.id]);
   useEffect(() => setBulletinDraft(group.bulletin), [group.id, group.bulletin]);
   useEffect(() => {
     if (follow) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -238,6 +241,7 @@ export function GroupView({ group }: { group: Group }) {
         <span className="text-[15px] font-semibold text-ink">{group.name}</span>
         <div className="flex items-center gap-1.5" style={noDrag}>
           {!group.dm && <DefaultResponderSelect group={group} members={members} />}
+          {!group.dm && <GroupCallButton group={group} active={callOpen} onToggle={() => setCallOpen((open) => !open)} />}
           {members.map((b) => (
             <span
               key={b.id}
@@ -379,6 +383,7 @@ export function GroupView({ group }: { group: Group }) {
       )}
 
       <Composer key={group.id} group={group} members={members} />
+      {callOpen && !group.dm && <GroupCallOverlay group={group} members={members} onHangup={() => setCallOpen(false)} />}
     </main>
   );
 }
