@@ -41,4 +41,50 @@ describe("instanceConfigs", () => {
     expect(first.claude?.environment?.XAI_API_KEY).toBe("xai-first");
     expect(second.claude?.environment?.XAI_API_KEY).toBeUndefined();
   });
+
+  it("adds configured domestic OpenAI-compatible providers without changing the default fleet", () => {
+    const map = instanceConfigs({
+      domestic: {
+        deepseek: { key: "deepseek-secret" },
+        zhipu: { key: "glm-secret", url: "https://glm.example/v4/" },
+      },
+    });
+
+    for (const id of DEFAULT_IDS) expect(map[id]).toBeDefined();
+    expect(map.deepseek).toMatchObject({
+      driver: "grok",
+      displayName: "DeepSeek",
+      environment: { DEEPSEEK_API_KEY: "deepseek-secret" },
+      config: {
+        url: "https://api.deepseek.com/v1",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        reasoningEffort: true,
+        computerTools: true,
+        agentTools: true,
+      },
+    });
+    expect(map.zhipu).toMatchObject({
+      driver: "grok",
+      displayName: "智谱 GLM",
+      environment: { ZHIPU_API_KEY: "glm-secret" },
+      config: { url: "https://glm.example/v4", reasoningEffort: true },
+    });
+    expect(map.dashscope).toBeUndefined();
+    expect(map.moonshot).toBeUndefined();
+  });
+
+  it("lets an explicit instance override a domestic preset", () => {
+    const map = instanceConfigs({
+      domestic: { deepseek: { key: "deepseek-secret" } },
+      instances: { deepseek: { driver: "grok", displayName: "自定义 DeepSeek", config: { url: "https://relay.example/v1" } } },
+    });
+    expect(map.deepseek?.displayName).toBe("自定义 DeepSeek");
+    expect(map.deepseek?.config).toMatchObject({
+      url: "https://relay.example/v1",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      reasoningEffort: true,
+      computerTools: true,
+      agentTools: true,
+    });
+  });
 });

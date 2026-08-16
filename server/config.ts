@@ -6,6 +6,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { InstanceConfigMap } from "./contracts.ts";
+import {
+  DOMESTIC_PROVIDER_IDS,
+  DOMESTIC_PROVIDER_PRESETS,
+  type DomesticProviderConfig,
+  type DomesticProviderId,
+} from "./domestic-models.ts";
 import { writeFileAtomic } from "./atomic.ts";
 
 export type VoiceSensitivity = "low" | "medium" | "high" | "custom";
@@ -23,6 +29,7 @@ export interface AppConfig {
   xai?: { key?: string; url?: string };
   anthropic?: { key?: string; url?: string };
   openai?: { key?: string; url?: string };
+  domestic?: Partial<Record<DomesticProviderId, DomesticProviderConfig>>;
   /** key = ck_… Connect consumer key (connections + agent tools);
    * apiKey = ak_… project API key — optional, unlocks the full toolkit
    * catalog with official logos in the plugins marketplace. */
@@ -85,6 +92,12 @@ export function loadConfig(): AppConfig {
   cfg.xai = { key: process.env.XAI_API_KEY, url: process.env.XAI_BASE_URL, ...cfg.xai };
   cfg.anthropic = { key: process.env.ANTHROPIC_API_KEY, url: process.env.ANTHROPIC_BASE_URL, ...cfg.anthropic };
   cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
+  cfg.domestic = {
+    deepseek: { key: process.env.DEEPSEEK_API_KEY, url: process.env.DEEPSEEK_BASE_URL, ...cfg.domestic?.deepseek },
+    zhipu: { key: process.env.ZHIPU_API_KEY, url: process.env.ZHIPU_BASE_URL, ...cfg.domestic?.zhipu },
+    dashscope: { key: process.env.DASHSCOPE_API_KEY, url: process.env.DASHSCOPE_BASE_URL, ...cfg.domestic?.dashscope },
+    moonshot: { key: process.env.MOONSHOT_API_KEY, url: process.env.MOONSHOT_BASE_URL, ...cfg.domestic?.moonshot },
+  };
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
   cfg.voice = {
@@ -125,6 +138,17 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
+  }
+  if (patch.domestic && typeof patch.domestic === "object") {
+    const previous = (disk.domestic ?? {}) as Record<string, DomesticProviderConfig>;
+    const next = { ...previous };
+    for (const providerId of DOMESTIC_PROVIDER_IDS) {
+      const providerPatch = patch.domestic[providerId];
+      if (providerPatch && typeof providerPatch === "object") {
+        next[providerId] = { ...previous[providerId], ...providerPatch };
+      }
+    }
+    disk.domestic = next;
   }
   if (patch.voice && typeof patch.voice === "object") {
     const previous = (disk.voice ?? {}) as NonNullable<AppConfig["voice"]>;
@@ -176,9 +200,41 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     antigravity: { driver: "antigravityAgent" },
     computer: { driver: "boxAgent" },
   };
-  // Apply custom instances (additive merge)
+  for (const providerId of DOMESTIC_PROVIDER_IDS) {
+    const provider = cfg.domestic?.[providerId];
+    const key = provider?.key?.trim();
+    const url = provider?.url?.trim();
+    if (!key && !url) continue;
+    const preset = DOMESTIC_PROVIDER_PRESETS[providerId];
+    map[preset.instanceId] = {
+      driver: "grok",
+      displayName: preset.displayName,
+      config: {
+        url: (url || preset.defaultUrl).replace(/\/+$/, ""),
+        apiKeyEnv: preset.apiKeyEnv,
+        models: preset.models,
+        computerTools: true,
+        agentTools: true,
+        reasoningEffort: preset.reasoningEffort,
+      },
+      environment: key ? { [preset.apiKeyEnv]: key } : {},
+    };
+  }
+  // Apply custom instances additively. Config/environment need their own
+  // merge so a discovered model catalog does not erase a preset provider's
+  // URL, API-key binding, tool flags, or reasoning capability.
   for (const [instanceId, entry] of Object.entries(cfg.instances ?? {})) {
-    map[instanceId] = { ...map[instanceId], ...entry };
+    const previous = map[instanceId];
+    map[instanceId] = {
+      ...previous,
+      ...entry,
+      ...(previous?.config && entry.config
+        ? { config: { ...(previous.config as object), ...(entry.config as object) } }
+        : {}),
+      ...(previous?.environment && entry.environment
+        ? { environment: { ...previous.environment, ...entry.environment } }
+        : {}),
+    };
   }
   // Remove explicitly disabled instances
   for (const [instanceId, entry] of Object.entries(map)) {

@@ -160,6 +160,10 @@ describe("OpenAI-compatible API tools", () => {
       computerTools: false,
       agentTools: true,
     });
+    expect(GrokDriver.decodeConfig({ reasoningEffort: false, url: "https://relay.example/v1/" })).toMatchObject({
+      reasoningEffort: false,
+      url: "https://relay.example/v1",
+    });
   });
 
   it("uses relay-compatible cloud screenshots without changing local computer integrations", () => {

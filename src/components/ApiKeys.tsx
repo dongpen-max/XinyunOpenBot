@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import type { DomesticModelProviderId } from "@/lib/domestic-models";
 
 // ── simple single-value sections (Composio, Box) ──────────────────────────
 
@@ -95,26 +96,50 @@ export function ApiKeyRow({
 
 // ── proxy sections (Claude / Codex / Grok): key + base URL pair ───────────
 
-export type ProxySection = "anthropic" | "openai" | "xai";
+export type ProxySection = "anthropic" | "openai" | "xai" | DomesticModelProviderId;
+
+const fields = (key: string, url: string, clear: boolean) =>
+  clear
+    ? { key: "", url: "" }
+    : {
+        ...(key ? { key } : {}),
+        ...(url ? { url } : {}),
+      };
 
 const PROXY_SECTIONS: Record<
   ProxySection,
   {
-    body: (key: string, url: string) => unknown;
+    body: (key: string, url: string, clear: boolean) => unknown;
     flag: (config: ConfigStatus) => boolean;
   }
 > = {
   anthropic: {
-    body: (k, u) => ({ anthropic: { key: k || undefined, url: u || undefined } }),
+    body: (k, u, clear) => ({ anthropic: fields(k, u, clear) }),
     flag: (c) => c.anthropic?.configured ?? false,
   },
   openai: {
-    body: (k, u) => ({ openai: { key: k || undefined, url: u || undefined } }),
+    body: (k, u, clear) => ({ openai: fields(k, u, clear) }),
     flag: (c) => c.openai?.configured ?? false,
   },
   xai: {
-    body: (k, u) => ({ xai: { key: k || undefined, url: u || undefined } }),
+    body: (k, u, clear) => ({ xai: fields(k, u, clear) }),
     flag: (c) => c.xai?.configured ?? false,
+  },
+  deepseek: {
+    body: (k, u, clear) => ({ domestic: { deepseek: fields(k, u, clear) } }),
+    flag: (c) => c.domestic?.deepseek.configured ?? false,
+  },
+  zhipu: {
+    body: (k, u, clear) => ({ domestic: { zhipu: fields(k, u, clear) } }),
+    flag: (c) => c.domestic?.zhipu.configured ?? false,
+  },
+  dashscope: {
+    body: (k, u, clear) => ({ domestic: { dashscope: fields(k, u, clear) } }),
+    flag: (c) => c.domestic?.dashscope.configured ?? false,
+  },
+  moonshot: {
+    body: (k, u, clear) => ({ domestic: { moonshot: fields(k, u, clear) } }),
+    flag: (c) => c.domestic?.moonshot.configured ?? false,
   },
 };
 
@@ -139,7 +164,8 @@ export function ProxyRow({
   const [discoverResult, setDiscoverResult] = useState<{ ok: boolean; count?: number; error?: string } | null>(null);
 
   const configured = state.config ? PROXY_SECTIONS[section].flag(state.config) : false;
-  const canSave = key.trim() || url.trim();
+  const clearing = configured && !key.trim() && !url.trim();
+  const canSave = Boolean(key.trim() || url.trim() || clearing);
 
   const save = () => {
     if (saving || !canSave) return;
@@ -148,7 +174,7 @@ export function ProxyRow({
     setError(null);
     api("/api/config", {
       method: "PUT",
-      body: JSON.stringify(PROXY_SECTIONS[section].body(key.trim(), url.trim())),
+      body: JSON.stringify(PROXY_SECTIONS[section].body(key.trim(), url.trim(), clearing)),
     })
       .then((status: ConfigStatus) => {
         dispatch({ type: "configStatus", config: status });
@@ -210,13 +236,17 @@ export function ProxyRow({
             disabled={saving || !canSave}
             className={cn(
               "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
-              "bg-raised text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50",
+              clearing ? "bg-raised text-danger hover:bg-raised-hover" : "bg-raised text-ink hover:bg-raised-hover",
+              "disabled:cursor-not-allowed disabled:opacity-50",
             )}
+            title={clearing ? "清除该服务的 URL 与 API Key" : "保存"}
           >
             {saving ? (
               <Loader2 size={13} className="animate-spin" />
             ) : saved ? (
               <><Check size={13} className="text-success" />已存</>
+            ) : clearing ? (
+              "清除"
             ) : (
               <><Check size={13} />保存</>
             )}

@@ -21,6 +21,7 @@ import { shouldUseCloudComputer } from "./turn-computer.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
 import { ProviderRegistry } from "./harness/registry.js";
+import { DOMESTIC_PROVIDER_IDS } from "./domestic-models.js";
 import { mentionedBots, roomResponders, Store } from "./store.js";
 import { describeVoice, synthesize, transcribe } from "./voice/index.js";
 import { toUtterances } from "./voice/speech-text.js";
@@ -762,6 +763,10 @@ function configStatus() {
         xai: { configured: Boolean(cfg.xai?.key) },
         anthropic: { configured: Boolean(cfg.anthropic?.key) },
         openai: { configured: Boolean(cfg.openai?.key) },
+        domestic: Object.fromEntries(DOMESTIC_PROVIDER_IDS.map((providerId) => [
+            providerId,
+            { configured: Boolean(cfg.domestic?.[providerId]?.key) },
+        ])),
         composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
         box: { configured: Boolean(cfg.box?.token) },
         voice: describeVoice(cfg),
@@ -1394,7 +1399,7 @@ const server = createServer(async (req, res) => {
         if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
             const body = await readBody(req);
             const patch = {};
-            for (const key of ["xai", "anthropic", "openai", "composio", "box", "profile", "voice"]) {
+            for (const key of ["xai", "anthropic", "openai", "domestic", "composio", "box", "profile", "voice"]) {
                 if (body[key] && typeof body[key] === "object")
                     patch[key] = body[key];
             }
@@ -1453,7 +1458,7 @@ const server = createServer(async (req, res) => {
             return res.end(audio.bytes);
         }
         // ── discover relay models ──
-        m = path.match(/^\/api\/relay\/(anthropic|openai|xai)\/discover-models$/);
+        m = path.match(/^\/api\/relay\/(anthropic|openai|xai|deepseek|zhipu|dashscope|moonshot)\/discover-models$/);
         if (m && method === "POST") {
             const section = m[1];
             try {

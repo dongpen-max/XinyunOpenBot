@@ -80,6 +80,13 @@ beforeAll(async () => {
         res.writeHead(ok ? 200 : 401, { "content-type": ok ? "audio/mpeg" : "application/json" });
         return res.end(ok ? Buffer.from([0x49, 0x44, 0x33, 0x04]) : JSON.stringify({ error: { message: "bad tts key" } }));
       }
+      if (req.url === "/v1/models") {
+        const ok = req.headers.authorization === "Bearer domestic_secret";
+        res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
+        return res.end(JSON.stringify(ok
+          ? { data: [{ id: "deepseek-v4-pro" }, { id: "deepseek-v4-flash" }, { id: "bad model id" }] }
+          : { error: { message: "bad domestic key" } }));
+      }
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "not found" }));
     });
@@ -285,6 +292,37 @@ describe("harness HTTP API", () => {
 
     const after = await api("GET", "/api/config");
     expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+  });
+
+  it("configures a domestic provider write-only and discovers its model catalog", async () => {
+    const url = `http://127.0.0.1:${voiceStubPort}/v1`;
+    const put = await api("PUT", "/api/config", {
+      domestic: { deepseek: { key: "domestic_secret", url } },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.domestic.deepseek).toEqual({ configured: true });
+    expect(JSON.stringify(put.body)).not.toContain("domestic_secret");
+
+    const discovered = await api("POST", "/api/relay/deepseek/discover-models");
+    expect(discovered).toMatchObject({
+      status: 200,
+      body: { ok: true, instanceId: "deepseek", count: 2 },
+    });
+
+    const instances = await api("GET", "/api/instances");
+    const deepseek = instances.body.instances.find((instance: { instanceId: string }) => instance.instanceId === "deepseek");
+    expect(deepseek).toMatchObject({
+      displayName: "DeepSeek",
+      snapshot: { state: "available", authenticated: true },
+      models: {
+        default: "deepseek-v4-flash",
+        options: [
+          { id: "deepseek-v4-flash", label: "deepseek-v4-flash" },
+          { id: "deepseek-v4-pro", label: "deepseek-v4-pro" },
+        ],
+      },
+      capabilities: { computerTools: true, agentTools: true, reasoningEffort: true },
+    });
   });
 
   it("saves voice config write-only and serves STT, preparation, and TTS", async () => {

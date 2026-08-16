@@ -50,17 +50,21 @@ export interface GrokConfig {
   computerTools: boolean;
   /** API models may coordinate peer bots through the agents MCP bridge. */
   agentTools: boolean;
+  /** Only advertise/send the OpenAI `reasoning_effort` parameter when the
+   * selected provider implements it. */
+  reasoningEffort?: boolean;
 }
 
 function decodeConfig(raw: unknown): GrokConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   const computerTools = o.computerTools !== false;
   return {
-    url: typeof o.url === "string" ? o.url : DEFAULT_URL,
+    url: (typeof o.url === "string" ? o.url : DEFAULT_URL).replace(/\/+$/, ""),
     apiKeyEnv: typeof o.apiKeyEnv === "string" ? o.apiKeyEnv : "XAI_API_KEY",
     models: decodeModelCatalog(o.models, MODELS),
     computerTools,
     agentTools: typeof o.agentTools === "boolean" ? o.agentTools : computerTools,
+    reasoningEffort: o.reasoningEffort !== false,
   };
 }
 
@@ -129,6 +133,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
   async create(input: DriverCreateInput<GrokConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
     const apiKey = input.environment[config.apiKeyEnv] ?? process.env[config.apiKeyEnv] ?? "";
+    const providerLabel = input.displayName ?? "OpenAI-compatible API";
+    const supportsReasoningEffort = config.reasoningEffort !== false;
     // An explicit per-instance relay URL must win over a global XAI_BASE_URL.
     // The environment remains the fallback for the default xAI configuration.
     const environmentBaseUrl = input.environment["XAI_BASE_URL"] ?? process.env["XAI_BASE_URL"];
@@ -161,7 +167,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        throw new Error(`xAI HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        throw new Error(`${providerLabel} HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
       }
       if (!opts.stream) {
         const json: any = await res.json();
@@ -209,7 +215,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (!apiKey) throw new Error(`no xAI key — set ${config.apiKeyEnv} or config.json xai.key`);
+      if (!apiKey) throw new Error(`未配置 ${providerLabel} API Key（${config.apiKeyEnv}）`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       const abort = new AbortController();
@@ -238,7 +244,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           const { text, usage } = await runOpenAICompatibleToolLoop({
             model: turn.model || models.default,
             messages,
-            reasoningEffort: turn.reasoningEffort,
+            reasoningEffort: supportsReasoningEffort ? turn.reasoningEffort : undefined,
             signal: abort.signal,
             toolProvider,
             request: async (body, signal) => {
@@ -250,16 +256,16 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               });
               if (!res.ok) {
                 const responseBody = await res.text().catch(() => "");
-                throw new Error(`xAI HTTP ${res.status}${responseBody ? `: ${responseBody.slice(0, 200)}` : ""}`);
+                throw new Error(`${providerLabel} HTTP ${res.status}${responseBody ? `: ${responseBody.slice(0, 200)}` : ""}`);
               }
               return res;
             },
             onRequest: (body) =>
-              appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: nativeRequest(body) }),
+              appendNative(threadId, { dir: "out", source: "openai-compatible.chat.completions", msg: nativeRequest(body) }),
             onRound: (round) =>
               appendNative(threadId, {
                 dir: "in",
-                source: "xai.chat.completions",
+                source: "openai-compatible.chat.completions",
                 msg: {
                   text: round.text,
                   finishReason: round.finishReason,
@@ -318,7 +324,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       if (!apiKey) {
         return {
           state: "unavailable",
-          reason: `no xAI API key — add {"xai":{"key":"xai-…"}} to ~/.openmausbot/config.json or set ${config.apiKeyEnv}`,
+          reason: `未配置 ${providerLabel} API Key（${config.apiKeyEnv}）`,
         };
       }
       return { state: "available", authenticated: true, version: null };
@@ -335,7 +341,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         provider: DRIVER_KIND,
         capabilities: {
           sessionModelSwitch: "in-session",
-          reasoningEffort: true,
+          reasoningEffort: supportsReasoningEffort,
           computerMcp: config.computerTools,
           agentsMcp: config.agentTools,
           ...(config.computerTools ? { computerMode: "mcp" as const } : {}),

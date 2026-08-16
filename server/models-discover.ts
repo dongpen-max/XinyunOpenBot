@@ -1,6 +1,6 @@
 // Model discovery for relay gateways ("中转站"). A relay speaks the
 // OpenAI-compatible `GET {base}/models` shape, so one probe covers all
-// three proxy sections — Anthropic-style relays answer it too, since
+// proxy sections — Anthropic-style relays answer it too, since
 // nearly every gateway fronts an OpenAI-shaped router.
 //
 // The catalog is written into cfg.instances[<id>].config.models so the
@@ -12,12 +12,17 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR, type AppConfig } from "./config.ts";
+import { DOMESTIC_PROVIDER_PRESETS, isDomesticProviderId } from "./domestic-models.ts";
 
 /** Proxy section → the instance whose catalog it feeds. */
 export const RELAY_TARGETS = {
   anthropic: { instanceId: "claude", label: "Claude (Anthropic)" },
   openai: { instanceId: "codex", label: "Codex (OpenAI)" },
   xai: { instanceId: "grokApi", label: "Grok (xAI)" },
+  deepseek: { instanceId: "deepseek", label: DOMESTIC_PROVIDER_PRESETS.deepseek.displayName },
+  zhipu: { instanceId: "zhipu", label: DOMESTIC_PROVIDER_PRESETS.zhipu.displayName },
+  dashscope: { instanceId: "dashscope", label: DOMESTIC_PROVIDER_PRESETS.dashscope.displayName },
+  moonshot: { instanceId: "moonshot", label: DOMESTIC_PROVIDER_PRESETS.moonshot.displayName },
 } as const;
 
 export type RelaySection = keyof typeof RELAY_TARGETS;
@@ -53,8 +58,11 @@ function modelsUrl(base: string) {
  * throws a message meant for the settings panel on failure.
  */
 export async function discoverModels(cfg: AppConfig, section: RelaySection): Promise<string[]> {
-  const entry = (cfg as any)[section] as { key?: string; url?: string } | undefined;
-  const base = entry?.url?.trim();
+  const entry = isDomesticProviderId(section)
+    ? cfg.domestic?.[section]
+    : (cfg as Record<string, { key?: string; url?: string } | undefined>)[section];
+  const base = entry?.url?.trim()
+    || (isDomesticProviderId(section) ? DOMESTIC_PROVIDER_PRESETS[section].defaultUrl : "");
   const key = entry?.key?.trim();
   if (!base) throw new Error("先填写并保存中转站 URL");
   if (!key) throw new Error("先填写并保存中转站密钥");

@@ -4,6 +4,7 @@
 import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DOMESTIC_PROVIDER_IDS, DOMESTIC_PROVIDER_PRESETS, } from "./domestic-models.js";
 import { writeFileAtomic } from "./atomic.js";
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
 export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbot");
@@ -37,6 +38,12 @@ export function loadConfig() {
     cfg.xai = { key: process.env.XAI_API_KEY, url: process.env.XAI_BASE_URL, ...cfg.xai };
     cfg.anthropic = { key: process.env.ANTHROPIC_API_KEY, url: process.env.ANTHROPIC_BASE_URL, ...cfg.anthropic };
     cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
+    cfg.domestic = {
+        deepseek: { key: process.env.DEEPSEEK_API_KEY, url: process.env.DEEPSEEK_BASE_URL, ...cfg.domestic?.deepseek },
+        zhipu: { key: process.env.ZHIPU_API_KEY, url: process.env.ZHIPU_BASE_URL, ...cfg.domestic?.zhipu },
+        dashscope: { key: process.env.DASHSCOPE_API_KEY, url: process.env.DASHSCOPE_BASE_URL, ...cfg.domestic?.dashscope },
+        moonshot: { key: process.env.MOONSHOT_API_KEY, url: process.env.MOONSHOT_BASE_URL, ...cfg.domestic?.moonshot },
+    };
     cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
     cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
     cfg.voice = {
@@ -77,6 +84,17 @@ export function saveConfig(patch) {
         if (patch[key] && typeof patch[key] === "object") {
             disk[key] = { ...disk[key], ...patch[key] };
         }
+    }
+    if (patch.domestic && typeof patch.domestic === "object") {
+        const previous = (disk.domestic ?? {});
+        const next = { ...previous };
+        for (const providerId of DOMESTIC_PROVIDER_IDS) {
+            const providerPatch = patch.domestic[providerId];
+            if (providerPatch && typeof providerPatch === "object") {
+                next[providerId] = { ...previous[providerId], ...providerPatch };
+            }
+        }
+        disk.domestic = next;
     }
     if (patch.voice && typeof patch.voice === "object") {
         const previous = (disk.voice ?? {});
@@ -127,9 +145,42 @@ export function instanceConfigs(cfg) {
         antigravity: { driver: "antigravityAgent" },
         computer: { driver: "boxAgent" },
     };
-    // Apply custom instances (additive merge)
+    for (const providerId of DOMESTIC_PROVIDER_IDS) {
+        const provider = cfg.domestic?.[providerId];
+        const key = provider?.key?.trim();
+        const url = provider?.url?.trim();
+        if (!key && !url)
+            continue;
+        const preset = DOMESTIC_PROVIDER_PRESETS[providerId];
+        map[preset.instanceId] = {
+            driver: "grok",
+            displayName: preset.displayName,
+            config: {
+                url: (url || preset.defaultUrl).replace(/\/+$/, ""),
+                apiKeyEnv: preset.apiKeyEnv,
+                models: preset.models,
+                computerTools: true,
+                agentTools: true,
+                reasoningEffort: preset.reasoningEffort,
+            },
+            environment: key ? { [preset.apiKeyEnv]: key } : {},
+        };
+    }
+    // Apply custom instances additively. Config/environment need their own
+    // merge so a discovered model catalog does not erase a preset provider's
+    // URL, API-key binding, tool flags, or reasoning capability.
     for (const [instanceId, entry] of Object.entries(cfg.instances ?? {})) {
-        map[instanceId] = { ...map[instanceId], ...entry };
+        const previous = map[instanceId];
+        map[instanceId] = {
+            ...previous,
+            ...entry,
+            ...(previous?.config && entry.config
+                ? { config: { ...previous.config, ...entry.config } }
+                : {}),
+            ...(previous?.environment && entry.environment
+                ? { environment: { ...previous.environment, ...entry.environment } }
+                : {}),
+        };
     }
     // Remove explicitly disabled instances
     for (const [instanceId, entry] of Object.entries(map)) {

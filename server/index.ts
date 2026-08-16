@@ -24,6 +24,7 @@ import { shouldUseCloudComputer } from "./turn-computer.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { DOMESTIC_PROVIDER_IDS } from "./domestic-models.ts";
 import { mentionedBots, roomResponders, Store, type GroupDefaultResponder, type Message } from "./store.ts";
 import { describeVoice, synthesize, transcribe } from "./voice/index.ts";
 import { toUtterances } from "./voice/speech-text.ts";
@@ -791,6 +792,12 @@ function configStatus() {
     xai: { configured: Boolean(cfg.xai?.key) },
     anthropic: { configured: Boolean(cfg.anthropic?.key) },
     openai: { configured: Boolean(cfg.openai?.key) },
+    domestic: Object.fromEntries(
+      DOMESTIC_PROVIDER_IDS.map((providerId) => [
+        providerId,
+        { configured: Boolean(cfg.domestic?.[providerId]?.key) },
+      ]),
+    ),
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     box: { configured: Boolean(cfg.box?.token) },
     voice: describeVoice(cfg),
@@ -1390,7 +1397,7 @@ const server = createServer(async (req, res) => {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "anthropic", "openai", "composio", "box", "profile", "voice"] as const) {
+      for (const key of ["xai", "anthropic", "openai", "domestic", "composio", "box", "profile", "voice"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
@@ -1446,7 +1453,7 @@ const server = createServer(async (req, res) => {
     }
 
     // ── discover relay models ──
-    m = path.match(/^\/api\/relay\/(anthropic|openai|xai)\/discover-models$/);
+    m = path.match(/^\/api\/relay\/(anthropic|openai|xai|deepseek|zhipu|dashscope|moonshot)\/discover-models$/);
     if (m && method === "POST") {
       const section = m[1] as RelaySection;
       try {

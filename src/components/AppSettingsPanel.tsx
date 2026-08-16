@@ -1,6 +1,6 @@
 // App-level settings shared by all bots. Per-bot identity, model, computer,
 // and voice tuning live in SettingsPanel.
-import { Check, Cloud, Cpu, Download, Link2, Palette, UserRound, X } from "lucide-react";
+import { BrainCircuit, Check, Cloud, Cpu, Download, Link2, Palette, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow, ProxyRow } from "./ApiKeys";
@@ -10,6 +10,7 @@ import { zhCN } from "@/locales/zh-CN";
 import { cn } from "@/lib/cn";
 import { VoiceSettings } from "./VoiceSettings";
 import { SettingsDisclosure } from "./SettingsDisclosure";
+import { DOMESTIC_MODEL_PROVIDERS } from "@/lib/domestic-models";
 import {
   APP_THEME_OPTIONS,
   applyAppTheme,
@@ -18,7 +19,7 @@ import {
   type AppThemePreference,
 } from "@/lib/theme";
 
-type SectionId = "appearance" | "engines" | "voice" | "profile" | "relay" | "connections" | "updates";
+type SectionId = "appearance" | "engines" | "voice" | "profile" | "domestic" | "relay" | "connections" | "updates";
 
 function AppearanceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [preference, setPreference] = useState<AppThemePreference>(() => readAppTheme());
@@ -251,9 +252,32 @@ export function AppSettingsPanel() {
           </SettingsDisclosure>
 
           <SettingsDisclosure
+            icon={BrainCircuit}
+            title="国产模型 API"
+            description="直接连接 DeepSeek、智谱 GLM、通义千问和 Kimi。"
+            summary="4 个服务预设"
+            open={openSection === "domestic"}
+            onToggle={() => toggle("domestic")}
+          >
+            <div className="divide-y divide-hairline/30">
+              {DOMESTIC_MODEL_PROVIDERS.map((provider) => (
+                <div key={provider.id} className="py-3 first:pt-0 last:pb-0">
+                  <div className="mb-2 text-[11px] text-ink-secondary">{provider.description}</div>
+                  <ProxyRow
+                    section={provider.id}
+                    label={provider.label}
+                    keyPlaceholder="sk-… API Key"
+                    urlPlaceholder={provider.url}
+                  />
+                </div>
+              ))}
+            </div>
+          </SettingsDisclosure>
+
+          <SettingsDisclosure
             icon={Cloud}
             title="AI 中转站配置"
-            description="配置 Claude、Codex 和 Grok 的兼容 API。"
+            description="配置 Claude、Codex 和 Grok 的兼容中转站。"
             summary="3 个服务"
             open={openSection === "relay"}
             onToggle={() => toggle("relay")}

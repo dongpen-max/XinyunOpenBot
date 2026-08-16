@@ -1,6 +1,6 @@
 // Model discovery for relay gateways ("中转站"). A relay speaks the
 // OpenAI-compatible `GET {base}/models` shape, so one probe covers all
-// three proxy sections — Anthropic-style relays answer it too, since
+// proxy sections — Anthropic-style relays answer it too, since
 // nearly every gateway fronts an OpenAI-shaped router.
 //
 // The catalog is written into cfg.instances[<id>].config.models so the
@@ -11,11 +11,16 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.js";
+import { DOMESTIC_PROVIDER_PRESETS, isDomesticProviderId } from "./domestic-models.js";
 /** Proxy section → the instance whose catalog it feeds. */
 export const RELAY_TARGETS = {
     anthropic: { instanceId: "claude", label: "Claude (Anthropic)" },
     openai: { instanceId: "codex", label: "Codex (OpenAI)" },
     xai: { instanceId: "grokApi", label: "Grok (xAI)" },
+    deepseek: { instanceId: "deepseek", label: DOMESTIC_PROVIDER_PRESETS.deepseek.displayName },
+    zhipu: { instanceId: "zhipu", label: DOMESTIC_PROVIDER_PRESETS.zhipu.displayName },
+    dashscope: { instanceId: "dashscope", label: DOMESTIC_PROVIDER_PRESETS.dashscope.displayName },
+    moonshot: { instanceId: "moonshot", label: DOMESTIC_PROVIDER_PRESETS.moonshot.displayName },
 };
 const MAX_MODELS = 200;
 const ID_OK = /^[A-Za-z0-9._:\/-]{1,120}$/;
@@ -47,8 +52,11 @@ function modelsUrl(base) {
  * throws a message meant for the settings panel on failure.
  */
 export async function discoverModels(cfg, section) {
-    const entry = cfg[section];
-    const base = entry?.url?.trim();
+    const entry = isDomesticProviderId(section)
+        ? cfg.domestic?.[section]
+        : cfg[section];
+    const base = entry?.url?.trim()
+        || (isDomesticProviderId(section) ? DOMESTIC_PROVIDER_PRESETS[section].defaultUrl : "");
     const key = entry?.key?.trim();
     if (!base)
         throw new Error("先填写并保存中转站 URL");
