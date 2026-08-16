@@ -20,6 +20,7 @@ const child = spawn(executable, [], {
 });
 child.stdout.on("data", (data) => process.stdout.write(data));
 child.stderr.on("data", (data) => process.stderr.write(data));
+const childExited = new Promise((resolve) => child.once("exit", resolve));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let health = null;
@@ -47,8 +48,11 @@ try {
 } finally {
   for (let attempt = 0; attempt < 40 && child.exitCode === null; attempt++) await sleep(250);
   if (child.exitCode === null) child.kill("SIGTERM");
-  for (let attempt = 0; attempt < 20 && child.exitCode === null; attempt++) await sleep(250);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  await Promise.race([childExited, sleep(5000)]);
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await Promise.race([childExited, sleep(5000)]);
+  }
   let portClosed = false;
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
@@ -59,6 +63,6 @@ try {
     }
     await sleep(250);
   }
-  rmSync(userData, { recursive: true, force: true });
+  rmSync(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   if (!portClosed) throw new Error("server still listens after the app exits");
 }
