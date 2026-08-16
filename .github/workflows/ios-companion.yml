@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - name: Select newest installed Xcode
+      - name: Select Swift 6.2 Xcode
         run: |
           XCODE_APP=$(python3 - <<'PY'
           import glob, os, re, sys
@@ -37,7 +37,11 @@ jobs:
           if not apps:
               raise SystemExit('No Xcode installation found under /Applications')
 
-          selected = max(apps, key=version)
+          compatible = [app for app in apps if version(app) >= (26, 0) and version(app) < (26, 1)]
+          if not compatible:
+              raise SystemExit('Xcode 26.0.x with Swift 6.2 was not found under /Applications')
+
+          selected = max(compatible, key=version)
           print('Installed Xcodes:', *sorted(apps), sep='\n- ', file=sys.stderr)
           print(f'Selected Xcode: {selected}', file=sys.stderr)
           print(selected)
