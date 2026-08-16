@@ -182,9 +182,14 @@ function createWindow() {
 
 ipcMain.handle("appearance:title-bar-color", (event, color) => {
   if (process.platform !== "win32" || !/^#[0-9a-f]{6}$/i.test(color)) return;
+  const rgb = Number.parseInt(color.slice(1), 16);
+  const red = (rgb >> 16) & 255;
+  const green = (rgb >> 8) & 255;
+  const blue = rgb & 255;
+  const symbolColor = (red * 299 + green * 587 + blue * 114) / 1000 > 170 ? "#172033" : "#d4e2f4";
   BrowserWindow.fromWebContents(event.sender)?.setTitleBarOverlay({
     color,
-    symbolColor: "#d4e2f4",
+    symbolColor,
     height: 46,
   });
 });

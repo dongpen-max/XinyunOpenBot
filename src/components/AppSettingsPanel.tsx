@@ -57,10 +57,13 @@ function AppearanceSettings({ open, onToggle }: { open: boolean; onToggle: () =>
               )}
             >
               <span
-                className="flex size-7 shrink-0 items-center justify-center rounded-full border border-white/15 shadow-inner"
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full border shadow-inner",
+                  theme.id === "white" ? "border-black/15" : "border-white/15",
+                )}
                 style={{ backgroundColor: theme.preview }}
               >
-                {selected && <Check size={14} className="text-white drop-shadow" />}
+                {selected && <Check size={14} className={theme.id === "white" ? "text-slate-700" : "text-white drop-shadow"} />}
               </span>
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium">{theme.label}</span>

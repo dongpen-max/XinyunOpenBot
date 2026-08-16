@@ -1,6 +1,6 @@
 export const APP_THEME_STORAGE_KEY = "xinyunopen-app-theme";
 
-export type AppThemeId = "midnight" | "black" | "slate" | "violet" | "forest" | "custom";
+export type AppThemeId = "midnight" | "black" | "slate" | "violet" | "forest" | "white" | "custom";
 
 export interface AppThemePreference {
   id: AppThemeId;
@@ -20,6 +20,7 @@ export const APP_THEME_OPTIONS: AppThemeOption[] = [
   { id: "slate", label: "雾霭灰", description: "中性柔和", preview: "#10151d" },
   { id: "violet", label: "星夜紫", description: "沉静紫调", preview: "#161126" },
   { id: "forest", label: "松林绿", description: "低饱和绿", preview: "#0c1815" },
+  { id: "white", label: "纯净白", description: "明亮简洁", preview: "#ffffff" },
 ];
 
 const DEFAULT_PREFERENCE: AppThemePreference = { id: "midnight", customColor: "#315f9b" };
@@ -28,7 +29,7 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 function normalizePreference(value: unknown): AppThemePreference {
   if (!value || typeof value !== "object") return DEFAULT_PREFERENCE;
   const input = value as Partial<AppThemePreference>;
-  const ids: AppThemeId[] = ["midnight", "black", "slate", "violet", "forest", "custom"];
+  const ids: AppThemeId[] = ["midnight", "black", "slate", "violet", "forest", "white", "custom"];
   const id = ids.includes(input.id as AppThemeId) ? (input.id as AppThemeId) : DEFAULT_PREFERENCE.id;
   const customColor = typeof input.customColor === "string" && HEX_COLOR.test(input.customColor)
     ? input.customColor.toLowerCase()

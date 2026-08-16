@@ -107,6 +107,21 @@
   --color-bubble-user: #3b675a;
 }
 
+:root[data-app-theme="white"] {
+  --color-app: #ffffff;
+  --color-panel: #f7f8fa;
+  --color-raised: #e9edf3;
+  --color-raised-hover: #dfe5ec;
+  --color-card: #ffffff;
+  --color-inset: #f1f3f6;
+  --color-hairline: #c8d0dc;
+  --color-ink: #172033;
+  --color-ink-secondary: #526174;
+  --color-accent: #1769d2;
+  --color-accent-border: #5b8fd9;
+  --color-bubble-user: #e5eefb;
+}
+
 :root[data-app-theme="custom"] {
   --color-ink: #f7faff;
   --color-ink-secondary: #d4e2f4a6;
