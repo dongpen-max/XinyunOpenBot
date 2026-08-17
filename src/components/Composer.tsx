@@ -212,11 +212,11 @@ export function Composer({
   return (
     <div className={cn("pt-2", compact ? "px-3 pb-3" : "px-5 pb-5")}>
       {speechError && (
-        <div className="mx-auto mb-2 max-w-[900px] rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
+        <div className="conversation-content mx-auto mb-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}
         </div>
       )}
-      <div className="relative mx-auto max-w-[900px]">
+      <div className="conversation-content relative mx-auto">
         {queued && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
@@ -285,7 +285,7 @@ export function Composer({
           </div>
         )}
         <ComposerAttachments items={attachments} onAdd={addAttachments} onRemove={removeAttachment} />
-        <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2">
+        <div className="flex items-end gap-2 rounded-[26px] border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2 shadow-[0_1px_2px_rgb(0_0_0/0.08)] transition-[border-color,background-color,box-shadow] duration-150 focus-within:border-hairline/70 focus-within:bg-raised/75 focus-within:shadow-[0_4px_18px_rgb(0_0_0/0.12)]">
         <input
           ref={fileInputRef}
           type="file"
@@ -310,18 +310,6 @@ export function Composer({
         >
           <Paperclip size={17} />
         </button>
-        <ReasoningEffortControl
-          value={reasoningLevel}
-          onChange={setReasoningLevel}
-          disabled={!reasoningSupport.any || Boolean(approval)}
-          helperText={
-            reasoningSupport.all
-              ? "拖动滑杆调整本条消息的思考深度"
-              : reasoningSupport.any
-                ? "支持的群成员使用所选强度，其他成员使用模型默认值"
-                : "当前模型暂不支持调整思考强度"
-          }
-        />
         <textarea
           ref={inputRef}
           rows={1}
@@ -398,6 +386,18 @@ export function Composer({
           }
           aria-label={`Message ${group ? group.name : (bot?.name ?? "")}`}
           className="max-h-40 w-full resize-none self-center bg-transparent py-1 text-[15px] leading-6 text-ink placeholder:text-ink-secondary focus:outline-none"
+        />
+        <ReasoningEffortControl
+          value={reasoningLevel}
+          onChange={setReasoningLevel}
+          disabled={!reasoningSupport.any || Boolean(approval)}
+          helperText={
+            reasoningSupport.all
+              ? "拖动滑杆调整本条消息的思考深度"
+              : reasoningSupport.any
+                ? "支持的群成员使用所选强度，其他成员使用模型默认值"
+                : "当前模型暂不支持调整思考强度"
+          }
         />
         {busy && (
           <button

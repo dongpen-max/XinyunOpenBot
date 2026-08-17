@@ -1,7 +1,7 @@
 // Config + data dirs. One file, ~/.openmausbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { chmodSync, readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,22 @@ export interface VoiceInputProfileConfig {
   calibratedAt?: string;
 }
 
+/** A user-managed remote MCP endpoint. Secrets stay in `auth.token` and
+ * are never returned from the HTTP API. */
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  enabled?: boolean;
+  auth?: {
+    type: "bearer" | "apiKey";
+    /** API-key header name; Bearer always uses Authorization. */
+    header?: string;
+    token?: string;
+  };
+  /** Empty/absent means every tool advertised by this endpoint. */
+  allowedTools?: string[];
+}
+
 export interface AppConfig {
   xai?: { key?: string; url?: string };
   anthropic?: { key?: string; url?: string };
@@ -34,7 +50,8 @@ export interface AppConfig {
    * apiKey = ak_… project API key — optional, unlocks the full toolkit
    * catalog with official logos in the plugins marketplace. */
   composio?: { key?: string; apiKey?: string; url?: string };
-  box?: { token?: string };
+  mcp?: { servers?: Record<string, McpServerConfig> };
+  box?: { token?: string; type?: "small" | "default" | "large"; autoCreate?: boolean };
   /** The person using the app (collected in onboarding, shown in the
    * sidebar). Not a secret — echoed back by GET /api/config. */
   profile?: { name?: string; email?: string };
@@ -169,7 +186,31 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     };
   }
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(p, JSON.stringify(disk, null, 2));
+  writeConfigFile(p, disk);
+}
+
+function writeConfigFile(path: string, disk: Record<string, unknown>): void {
+  writeFileAtomic(path, JSON.stringify(disk, null, 2), 0o600);
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Best effort on platforms/filesystems without POSIX mode semantics.
+  }
+}
+
+/** Replace the complete MCP registry so removing a service really removes its
+ * stored token too. Other config sections are preserved untouched. */
+export function replaceMcpServers(servers: Record<string, McpServerConfig>): void {
+  const p = join(DATA_DIR, "config.json");
+  let disk: Record<string, unknown> = {};
+  try {
+    disk = JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    /* first write */
+  }
+  disk.mcp = { servers };
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeConfigFile(p, disk);
 }
 
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {

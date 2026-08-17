@@ -70,6 +70,7 @@ function customPalette(color: string): Record<string, string> {
     "--color-raised": mixHex(color, "#172235", 0.45),
     "--color-raised-hover": mixHex(color, "#24334b", 0.34),
     "--color-hairline": mixHex(color, "#4a5870", 0.38),
+    "--color-bubble-assistant": mixHex(color, "#0b1422", 0.55),
     "--color-bubble-user": mixHex(color, "#657590", 0.30),
     "--color-accent": mixHex(color, "#8bc4ff", 0.42),
     "--color-accent-border": mixHex(color, "#c0dcff", 0.58),

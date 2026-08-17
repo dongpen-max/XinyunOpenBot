@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
@@ -31,6 +31,13 @@ import {
   type PaneWidths,
 } from "@/lib/pane-layout";
 
+const StableSidebar = memo(Sidebar);
+const StableChatView = memo(ChatView);
+const StableGroupView = memo(GroupView);
+const StableSettingsPanel = memo(SettingsPanel);
+const StableComputerPanel = memo(ComputerPanel);
+const StableAppSettingsPanel = memo(AppSettingsPanel);
+
 function savedPaneWidths(): Partial<PaneWidths> {
   try {
     const value = JSON.parse(localStorage.getItem(PANE_LAYOUT_STORAGE_KEY) ?? "null");
@@ -56,9 +63,42 @@ function Shell() {
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() =>
     normalizePaneWidths(savedPaneWidths(), window.innerWidth, rightOpen),
   );
+  const livePaneWidthsRef = useRef(paneWidths);
+  const [compactSidebar, setCompactSidebar] = useState(() => isCompactLeftPane(paneWidths.left));
+  const [compactCenterHeader, setCompactCenterHeader] = useState(() => {
+    const centerWidth = window.innerWidth
+      - paneWidths.left
+      - PANE_DIVIDER_WIDTH
+      - (rightOpen ? paneWidths.right + PANE_DIVIDER_WIDTH : 0);
+    return centerWidth < 520;
+  });
+
+  const syncResponsiveModes = useCallback((widths: PaneWidths, width: number, isRightOpen: boolean) => {
+    const centerWidth = width
+      - widths.left
+      - PANE_DIVIDER_WIDTH
+      - (isRightOpen ? widths.right + PANE_DIVIDER_WIDTH : 0);
+    const nextCompactSidebar = isCompactLeftPane(widths.left);
+    const nextCompactCenterHeader = centerWidth < 520;
+    setCompactSidebar((current) => current === nextCompactSidebar ? current : nextCompactSidebar);
+    setCompactCenterHeader((current) => current === nextCompactCenterHeader ? current : nextCompactCenterHeader);
+  }, []);
+
+  useLayoutEffect(() => {
+    livePaneWidthsRef.current = paneWidths;
+    const element = layoutRef.current;
+    if (element) {
+      element.style.setProperty("--left-pane-width", `${paneWidths.left}px`);
+      element.style.setProperty("--right-pane-width", `${paneWidths.right}px`);
+    }
+    syncResponsiveModes(paneWidths, layoutWidth, rightOpen);
+  }, [layoutWidth, paneWidths, rightOpen, syncResponsiveModes]);
 
   useEffect(() => {
-    localStorage.setItem(PANE_LAYOUT_STORAGE_KEY, JSON.stringify(paneWidths));
+    const timer = window.setTimeout(() => {
+      localStorage.setItem(PANE_LAYOUT_STORAGE_KEY, JSON.stringify(paneWidths));
+    }, 180);
+    return () => window.clearTimeout(timer);
   }, [paneWidths]);
 
   useEffect(() => {
@@ -93,6 +133,20 @@ function Shell() {
     }));
   }, [layoutWidth]);
 
+  const previewLeft = useCallback((left: number) => {
+    const widths = { ...livePaneWidthsRef.current, left };
+    livePaneWidthsRef.current = widths;
+    layoutRef.current?.style.setProperty("--left-pane-width", `${left}px`);
+    syncResponsiveModes(widths, layoutWidth, rightOpen);
+  }, [layoutWidth, rightOpen, syncResponsiveModes]);
+
+  const previewRight = useCallback((right: number) => {
+    const widths = { ...livePaneWidthsRef.current, right };
+    livePaneWidthsRef.current = widths;
+    layoutRef.current?.style.setProperty("--right-pane-width", `${right}px`);
+    syncResponsiveModes(widths, layoutWidth, rightOpen);
+  }, [layoutWidth, rightOpen, syncResponsiveModes]);
+
   const leftMax = Math.min(
     LEFT_PANE_MAX_WIDTH,
     layoutWidth - CENTER_PANE_MIN_WIDTH - (rightOpen ? paneWidths.right : 0) - PANE_DIVIDER_WIDTH * (rightOpen ? 2 : 1),
@@ -101,13 +155,6 @@ function Shell() {
     RIGHT_PANE_MAX_WIDTH,
     layoutWidth - CENTER_PANE_MIN_WIDTH - paneWidths.left - PANE_DIVIDER_WIDTH * 2,
   );
-  const centerWidth = layoutWidth
-    - paneWidths.left
-    - PANE_DIVIDER_WIDTH
-    - (rightOpen ? paneWidths.right + PANE_DIVIDER_WIDTH : 0);
-  const compactCenterHeader = centerWidth < 520;
-  const compactSidebar = isCompactLeftPane(paneWidths.left);
-
   // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next.
   // Kept deliberately small; every panel already closes on Esc.
   useEffect(() => {
@@ -141,15 +188,16 @@ function Shell() {
     <div className="flex h-full flex-col bg-app">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
-      <div ref={layoutRef} className="relative flex min-h-0 flex-1 overflow-hidden">
-        <div className="h-full min-w-0 shrink-0" style={{ width: paneWidths.left }}>
-          <Sidebar compact={compactSidebar} />
+      <div ref={layoutRef} className="pane-layout relative flex min-h-0 flex-1 overflow-hidden">
+        <div className="pane-layout__left h-full min-w-0 shrink-0">
+          <StableSidebar compact={compactSidebar} />
         </div>
         <PaneResizeHandle
           label="调整左侧机器人列表宽度"
           value={paneWidths.left}
           min={LEFT_PANE_MIN_WIDTH}
           max={leftMax}
+          onResizePreview={previewLeft}
           onResize={resizeLeft}
           onReset={() => resizeLeft(LEFT_PANE_DEFAULT_WIDTH - paneWidths.left)}
         />
@@ -158,14 +206,14 @@ function Shell() {
           {noEngines ? (
             <NoEngines />
           ) : group ? (
-            <GroupView
+            <StableGroupView
               key={group.id}
               group={group}
               reserveWindowControls={!rightOpen}
               compactHeader={compactCenterHeader}
             />
           ) : bot ? (
-            <ChatView
+            <StableChatView
               bot={bot}
               reserveWindowControls={!rightOpen}
               compactHeader={compactCenterHeader}
@@ -193,16 +241,17 @@ function Shell() {
               min={RIGHT_PANE_MIN_WIDTH}
               max={rightMax}
               direction={-1}
+              onResizePreview={previewRight}
               onResize={resizeRight}
               onReset={() => resizeRight(RIGHT_PANE_DEFAULT_WIDTH - paneWidths.right)}
             />
-            <div className="h-full min-w-0 shrink-0" style={{ width: paneWidths.right }}>
+            <div className="pane-layout__right h-full min-w-0 shrink-0">
               {state.settingsOpen && bot ? (
-                <SettingsPanel bot={bot} />
+                <StableSettingsPanel bot={bot} />
               ) : state.computerOpen && bot ? (
-                <ComputerPanel bot={bot} />
+                <StableComputerPanel bot={bot} />
               ) : state.appSettingsOpen ? (
-                <AppSettingsPanel />
+                <StableAppSettingsPanel />
               ) : null}
             </div>
           </>

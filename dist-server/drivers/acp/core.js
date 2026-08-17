@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.js";
 import { newEventId, newId } from "../../contracts.js";
 import { augmentedPath } from "../../env-path.js";
+import { mcpStdioConfigs } from "../../mcp.js";
 // the computer proxy entry: .ts in dev (node type stripping), .js in the
 // compiled dist-server the packaged app ships
 const COMPUTER_PROXY_PATH = (() => {
@@ -111,6 +112,10 @@ export function createAcpDriver(support) {
                         args: local.args,
                         env: acpEnv(local.env ?? {}),
                     });
+                }
+                for (const [index, remote] of mcpStdioConfigs(turn.integrations?.mcp).entries()) {
+                    const name = turn.integrations.mcp[index].id;
+                    servers.push({ name, command: remote.command, args: remote.args, env: acpEnv(remote.env ?? {}) });
                 }
                 return servers;
             };

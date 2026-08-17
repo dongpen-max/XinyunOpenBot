@@ -2,11 +2,12 @@
 // from /api/connectors/catalog — the full toolkit list with logos when a
 // Composio API key is configured, a curated set otherwise. Icons resolve
 // logo → favicon → monogram.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { zhCN } from "@/locales/zh-CN";
+import { serviceBrand } from "@/lib/service-brand";
 
 interface ToolkitCard {
   slug: string;
@@ -17,45 +18,70 @@ interface ToolkitCard {
 }
 
 function ServiceIcon({ card }: { card: ToolkitCard }) {
-  // 0 = official logo, 1 = favicon by domain, 2 = monogram
-  const [stage, setStage] = useState(card.logo ? 0 : card.domain ? 1 : 2);
-  if (stage === 0 && card.logo) {
-    return <img src={card.logo} alt="" className="size-8 rounded-md" onError={() => setStage(1)} />;
-  }
-  if (stage === 1 && card.domain) {
-    return (
-      <img
-        src={`https://www.google.com/s2/favicons?domain=${card.domain}&sz=64`}
-        alt=""
-        className="size-8 rounded-md"
-        onError={() => setStage(2)}
-      />
-    );
-  }
+  const sources = [card.logo, card.domain ? `https://www.google.com/s2/favicons?domain=${card.domain}&sz=64` : null]
+    .filter((source): source is string => Boolean(source));
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const brand = serviceBrand(card.slug, card.label);
+  const source = sources[sourceIndex];
+
+  useEffect(() => {
+    setSourceIndex(0);
+    setLoaded(false);
+  }, [card.logo, card.domain]);
+
   return (
-    <div className="flex size-8 items-center justify-center rounded-md bg-raised text-[13px] font-semibold text-ink-secondary">
-      {card.label.slice(0, 1).toUpperCase()}
+    <div
+      className="relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-hairline/35 text-[11px] font-bold tracking-tight"
+      style={{ background: brand.background, color: brand.foreground }}
+      aria-hidden="true"
+    >
+      <span>{brand.monogram}</span>
+      {source && (
+        <img
+          key={source}
+          src={source}
+          alt=""
+          referrerPolicy="no-referrer"
+          className={cn(
+            "absolute inset-0 size-full bg-white object-contain p-0.5 transition-opacity",
+            loaded ? "opacity-100" : "opacity-0",
+          )}
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            setLoaded(false);
+            setSourceIndex((current) => current + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
+
+type ConnectorStatus = Record<string, { connected: boolean }>;
 
 export function PluginsPanel() {
   const { dispatch } = useStore();
   const [cards, setCards] = useState<ToolkitCard[] | null>(null);
   const [source, setSource] = useState<"api" | "curated">("curated");
   const [configured, setConfigured] = useState(true);
-  const [status, setStatus] = useState<Record<string, { connected: boolean }>>({});
+  const [status, setStatus] = useState<ConnectorStatus>({});
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const pollTimers = useRef(new Set<number>());
 
-  const refreshStatus = useCallback((slugs: string[]) => {
-    if (!slugs.length) return Promise.resolve();
+  const refreshStatus = useCallback((slugs: string[]): Promise<ConnectorStatus> => {
+    if (!slugs.length) return Promise.resolve({});
     setRefreshing(true);
     return api(`/api/connectors?services=${slugs.join(",")}`)
-      .then((r) => setStatus(r.services ?? {}))
-      .catch(() => {})
+      .then((r) => {
+        const services = r.services ?? {};
+        setStatus(services);
+        return services as ConnectorStatus;
+      })
+      .catch(() => ({} as ConnectorStatus))
       .finally(() => setRefreshing(false));
   }, []);
 
@@ -72,6 +98,8 @@ export function PluginsPanel() {
       .catch((e) => alive && setError(e.message));
     return () => {
       alive = false;
+      for (const timer of pollTimers.current) window.clearInterval(timer);
+      pollTimers.current.clear();
     };
   }, [refreshStatus]);
 
@@ -83,10 +111,15 @@ export function PluginsPanel() {
         window.open(url);
         // the user finishes OAuth in the browser; poll a few times to catch it
         let tries = 0;
-        const timer = setInterval(() => {
-          void refreshStatus([slug]);
-          if (++tries >= 6 || status[slug]?.connected) clearInterval(timer);
+        const timer = window.setInterval(() => {
+          void refreshStatus([slug]).then((services) => {
+            if (++tries >= 6 || services[slug]?.connected) {
+              window.clearInterval(timer);
+              pollTimers.current.delete(timer);
+            }
+          });
         }, 5000);
+        pollTimers.current.add(timer);
       })
       .catch((e) => setError(e.message))
       .finally(() => setBusySlug(null));
@@ -95,7 +128,9 @@ export function PluginsPanel() {
   const disconnect = (slug: string) => {
     setBusySlug(slug);
     api(`/api/connectors/${slug}`, { method: "DELETE" })
-      .then(() => refreshStatus([slug]))
+      .then(() => {
+        void refreshStatus([slug]);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setBusySlug(null));
   };

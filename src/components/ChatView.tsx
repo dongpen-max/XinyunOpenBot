@@ -158,7 +158,7 @@ class MessageBoundary extends Component<{ children: ReactNode; fallbackText: str
   render() {
     if (this.state.failed) {
       return (
-        <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
+        <div className="assistant-message-surface assistant-message-width rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
           {this.props.fallbackText}
         </div>
       );
@@ -288,7 +288,7 @@ function Bubble({
             "rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
             user
               ? "user-message-width whitespace-pre-wrap bg-bubble-user text-ink"
-              : "assistant-message-width bg-card text-ink",
+              : "assistant-message-surface assistant-message-width text-ink",
           )}
           title={new Date(message.at).toLocaleString()}
         >
@@ -432,7 +432,7 @@ function StreamingBubble({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
   return (
     <div className="flex w-full justify-start">
-      <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="assistant-message-surface assistant-message-width rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <MessageBoundary fallbackText={deferred}>
           <ChatMarkdown text={deferred} streaming />
         </MessageBoundary>
@@ -729,7 +729,7 @@ export function ChatView({
 
       {/* Error banner */}
       {state.error && (
-        <div className={cn("mx-auto w-full max-w-[900px]", compactHeader ? "px-3" : "px-5")}>
+        <div className={cn("conversation-content mx-auto w-full", compactHeader ? "px-3" : "px-5")}>
           <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
             <div className="font-medium">{globalError?.summary}</div>
             <div className="mt-0.5 text-[12px] text-danger/85">{globalError?.hint}</div>
@@ -756,7 +756,7 @@ export function ChatView({
         }}
       >
         <div
-          className="mx-auto flex max-w-[900px] flex-col gap-3 pb-4"
+          className="conversation-content mx-auto flex flex-col gap-3 pb-4"
           role="log"
           aria-live="polite"
             aria-label={`与 ${bot.name} 的对话`}

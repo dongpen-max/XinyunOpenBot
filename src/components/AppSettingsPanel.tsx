@@ -1,6 +1,6 @@
 // App-level settings shared by all bots. Per-bot identity, model, computer,
 // and voice tuning live in SettingsPanel.
-import { BrainCircuit, Check, Cloud, Cpu, Download, Link2, Palette, UserRound, X } from "lucide-react";
+import { BrainCircuit, Check, Cloud, Cpu, Download, Link2, Palette, PlugZap, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow, ProxyRow } from "./ApiKeys";
@@ -11,6 +11,7 @@ import { cn } from "@/lib/cn";
 import { VoiceSettings } from "./VoiceSettings";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { DOMESTIC_MODEL_PROVIDERS } from "@/lib/domestic-models";
+import { McpServersSettings } from "./McpServersSettings";
 import {
   APP_THEME_OPTIONS,
   applyAppTheme,
@@ -19,7 +20,7 @@ import {
   type AppThemePreference,
 } from "@/lib/theme";
 
-type SectionId = "appearance" | "engines" | "voice" | "profile" | "domestic" | "relay" | "connections" | "updates";
+type SectionId = "appearance" | "engines" | "voice" | "profile" | "domestic" | "relay" | "connections" | "mcp" | "updates";
 
 function AppearanceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [preference, setPreference] = useState<AppThemePreference>(() => readAppTheme());
@@ -305,6 +306,17 @@ export function AppSettingsPanel() {
               <ApiKeyRow section="composioApi" label={zhCN.appSettings.composioApiKey} placeholder={zhCN.appSettings.composioApiPlaceholder} />
               <ApiKeyRow section="box" label={zhCN.appSettings.boxToken} placeholder={zhCN.appSettings.boxTokenPlaceholder} />
             </div>
+          </SettingsDisclosure>
+
+          <SettingsDisclosure
+            icon={PlugZap}
+            title="通用 MCP 服务"
+            description="接入国内软件或网站提供的 MCP 工具服务。"
+            summary="HTTP MCP"
+            open={openSection === "mcp"}
+            onToggle={() => toggle("mcp")}
+          >
+            <McpServersSettings />
           </SettingsDisclosure>
 
           <SettingsDisclosure

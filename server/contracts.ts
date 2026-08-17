@@ -101,6 +101,14 @@ export interface SendTurnInput {
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
     composio?: { url?: string; key: string };
+    /** User-managed remote MCP services, bridged into each provider through
+     * short-lived stdio proxies so every engine gets the same tool surface. */
+    mcp?: Array<{
+      id: string;
+      url: string;
+      auth?: { type: "bearer" | "apiKey"; header?: string; token?: string };
+      allowedTools?: string[];
+    }>;
     /** The bot's cloud computer (box.ascii.dev) for desktop/browser use. */
     computer?: { boxId: string; token: string };
     /** Local computer use via the Electron-hosted cua-driver daemon —

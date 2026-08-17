@@ -2,7 +2,7 @@
 // stay still so a busy group does not become a wall of competing motion.
 // Plain messages go to the room's default responder; @mentions override it.
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ChevronDown, Pin } from "lucide-react";
+import { ArrowDown, ChevronDown, Pin, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import {
   useStore,
   useStreaming,
@@ -21,6 +21,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { cn } from "@/lib/cn";
 import { SpeakButton } from "./VoiceControls";
 import { GroupCallButton, GroupCallOverlay } from "./GroupVoiceControls";
+import { addGroupMember, canRemoveGroupMember, removeGroupMember } from "@/lib/group-membership";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -32,20 +33,55 @@ function dayLabel(at: number): string {
   return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 }
 
-/** 16px maus + name, shown once per sender cluster. */
-function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: string }) {
+function SenderAvatar({ bot, color, hidden = false }: { bot?: Bot; color: string; hidden?: boolean }) {
   return (
-    <div className="mt-1 flex items-center gap-1.5 pl-0.5">
+    <div className={cn("flex w-8 shrink-0 justify-center pt-[18px]", hidden && "invisible")} aria-hidden={hidden || undefined}>
       <MausAvatar
         color={(bot?.color ?? color) as Bot["color"]}
         shape={bot?.mascotShape}
         state={normalizeState(bot?.mascotExpression) ?? "happy"}
-        size={16}
+        size={30}
         motion="none"
         motionKey={0}
         animated={false}
       />
-      <span className="text-[11px] font-medium text-ink-secondary">{name}</span>
+    </div>
+  );
+}
+
+function GroupHeaderAvatars({ members, busyBotId, compact }: { members: Bot[]; busyBotId?: string | null; compact: boolean }) {
+  const shown = members.slice(0, compact ? 2 : 3);
+  const extra = members.length - shown.length;
+  return (
+    <div className="flex shrink-0 items-center -space-x-2" aria-label={`${members.length} 个群聊机器人`}>
+      {shown.map((member, index) => (
+        <span
+          key={member.id}
+          title={`${member.name}${busyBotId === member.id ? " — 正在工作…" : ""}`}
+          className={cn(
+            "relative inline-flex rounded-full ring-2 ring-app transition-transform duration-150",
+            busyBotId === member.id && "z-10 ring-accent/70",
+          )}
+          style={{ zIndex: shown.length - index }}
+        >
+          <MausAvatar
+            color={member.color}
+            shape={member.mascotShape}
+            state={normalizeState(member.mascotExpression) ?? "happy"}
+            size={compact ? 24 : 28}
+            motion="none"
+            animated={false}
+          />
+          {busyBotId === member.id && (
+            <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
+          )}
+        </span>
+      ))}
+      {extra > 0 && (
+        <span className="relative z-10 flex size-7 items-center justify-center rounded-full border-2 border-app bg-raised text-[10px] font-semibold tabular-nums text-ink-secondary">
+          +{extra}
+        </span>
+      )}
     </div>
   );
 }
@@ -88,33 +124,49 @@ const Transcript = memo(function Transcript({
                 <span className="max-w-[480px] truncate font-mono">{m.tool.name}</span>
               </div>
             </div>
-          ) : m.kind === "text" && m.text ? (
-            <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "flex-wrap justify-start")}>
-                {user && <ReactionBar threadId={group.threadId} message={m} />}
+          ) : m.kind === "text" && m.text ? user ? (
+            <div className="group flex w-full flex-col items-end">
+              <div className="flex w-full items-end justify-end gap-1.5">
+                <ReactionBar threadId={group.threadId} message={m} />
                 <div
-                  className={cn(
-                    "rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user
-                      ? "user-message-width whitespace-pre-wrap bg-bubble-user text-ink"
-                      : "assistant-message-width bg-card text-ink",
-                  )}
+                  className="user-message-width whitespace-pre-wrap rounded-[20px] bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-ink"
                   title={new Date(m.at).toLocaleString()}
                 >
-                  {user ? m.text : <ChatMarkdown text={m.text} />}
+                  {m.text}
                 </div>
-                {!user && (
-                  <div className="flex flex-col gap-0.5 self-end pb-0.5">
-                    {senderBot && <SpeakButton botId={senderBot.id} messageId={m.id} text={m.text} />}
-                    <ReactionBar threadId={group.threadId} message={m} />
-                  </div>
-                )}
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
                   {formatTime(m.at)}
                 </span>
               </div>
-              <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
+              <ReactionChips threadId={group.threadId} message={m} members={members} align="right" />
             </div>
+          ) : (
+            <article className={cn("group flex w-full items-start gap-2.5", newCluster ? "mt-1" : "-mt-1")} aria-label={`${m.from?.name ?? "机器人"} 的消息`}>
+              <SenderAvatar bot={senderBot} color={m.from?.color ?? "blue"} hidden={!newCluster} />
+              <div className="min-w-0 flex-1">
+                {newCluster && (
+                  <div className="mb-1 pl-0.5 text-[12.5px] font-medium leading-4 text-ink-secondary">
+                    {m.from?.name}
+                  </div>
+                )}
+                <div className="flex w-full flex-wrap items-end gap-1.5">
+                  <div
+                    className="assistant-message-surface assistant-message-width rounded-[20px] px-4 py-2.5 text-[15px] leading-relaxed text-ink"
+                    title={new Date(m.at).toLocaleString()}
+                  >
+                    <ChatMarkdown text={m.text} />
+                  </div>
+                  <div className="flex flex-col gap-0.5 self-end pb-0.5">
+                    {senderBot && <SpeakButton botId={senderBot.id} messageId={m.id} text={m.text} />}
+                    <ReactionBar threadId={group.threadId} message={m} />
+                  </div>
+                  <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
+                    {formatTime(m.at)}
+                  </span>
+                </div>
+                <ReactionChips threadId={group.threadId} message={m} members={members} align="left" />
+              </div>
+            </article>
           ) : null;
         if (!row) return null;
         return (
@@ -123,9 +175,6 @@ const Transcript = memo(function Transcript({
               <div className="py-3 text-center text-[13px] text-ink-secondary">
                 {dayLabel(m.at)} {formatTime(m.at)}
               </div>
-            )}
-            {!user && m.from && newCluster && (
-              <ClusterLabel bot={senderBot} name={m.from.name} color={m.from.color} />
             )}
             {row}
           </div>
@@ -139,7 +188,7 @@ function StreamingBubble({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
   return (
     <div className="flex w-full justify-start">
-      <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="assistant-message-surface assistant-message-width rounded-[20px] px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <ChatMarkdown text={deferred} streaming />
         <span className="animate-caret ml-0.5 inline-block h-[14px] w-[2px] bg-ink align-middle" />
       </div>
@@ -173,7 +222,7 @@ function DefaultResponderSelect({ group, members }: { group: Group; members: Bot
         aria-label="默认响应机器人"
         value={value}
         onChange={(event) => change(event.target.value)}
-        className="h-8 max-w-[190px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none hover:bg-raised focus:border-accent"
+        className="h-8 max-w-[190px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none transition-colors duration-150 hover:bg-raised focus:border-accent"
       >
         <optgroup label="默认机器人">
           {members.map((member) => (
@@ -192,6 +241,169 @@ function DefaultResponderSelect({ group, members }: { group: Group; members: Bot
         aria-hidden="true"
         className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-secondary"
       />
+    </div>
+  );
+}
+
+function GroupMemberManager({
+  group,
+  members,
+  bots,
+  compact,
+}: {
+  group: Group;
+  members: Bot[];
+  bots: Bot[];
+  compact: boolean;
+}) {
+  const { dispatch } = useStore();
+  const [open, setOpen] = useState(false);
+  const locked = Boolean(group.busyBotId);
+  const available = bots.filter((bot) => !bot.hidden && !group.memberIds.includes(bot.id));
+
+  useEffect(() => setOpen(false), [group.id]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [open]);
+
+  const add = (botId: string) => {
+    if (locked) return;
+    dispatch({
+      type: "patchGroup",
+      groupId: group.id,
+      patch: { memberIds: addGroupMember(group.memberIds, botId) },
+    });
+  };
+
+  const remove = (botId: string) => {
+    if (locked || !canRemoveGroupMember(group.memberIds, botId)) return;
+    dispatch({
+      type: "patchGroup",
+      groupId: group.id,
+      patch: { memberIds: removeGroupMember(group.memberIds, botId) },
+    });
+  };
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={cn(
+          "ui-pressable flex h-8 items-center justify-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 text-ink-secondary hover:bg-raised hover:text-ink",
+          compact ? "w-8" : "px-2.5",
+          open && "border-accent-border bg-raised text-ink",
+        )}
+        title="管理群聊机器人"
+      >
+        <UsersRound size={14} />
+        {!compact && <span className="text-[12px] font-medium tabular-nums">{members.length}</span>}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onMouseDown={() => setOpen(false)} />
+          <div
+            role="dialog"
+            aria-label="管理群聊机器人"
+            className="absolute right-0 top-full z-40 mt-2 w-[320px] overflow-hidden rounded-2xl border border-hairline/50 bg-card shadow-2xl shadow-black/30"
+          >
+            <div className="flex items-center justify-between border-b border-hairline/35 px-4 py-3">
+              <span>
+                <span className="block text-[14px] font-semibold text-ink">群聊机器人</span>
+                <span className="block text-[11px] text-ink-secondary">添加或移除参与这个群聊的机器人</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+                aria-label="关闭成员管理"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            {locked && (
+              <div className="border-b border-hairline/30 bg-warning/10 px-4 py-2 text-[11.5px] text-warning">
+                群聊正在运行，结束当前回复后才能调整成员。
+              </div>
+            )}
+
+            <div className="max-h-[420px] overflow-y-auto p-2">
+              <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+                当前成员 · {members.length}
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {members.map((member) => {
+                  const removable = canRemoveGroupMember(group.memberIds, member.id) && !locked;
+                  return (
+                    <div key={member.id} className="flex items-center gap-2.5 rounded-xl px-2 py-2 hover:bg-raised/40">
+                      <MausAvatar
+                        color={member.color}
+                        shape={member.mascotShape}
+                        state={normalizeState(member.mascotExpression) ?? "happy"}
+                        size={30}
+                        motion="none"
+                        animated={false}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{member.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => remove(member.id)}
+                        disabled={!removable}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11.5px] text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:text-ink-secondary disabled:opacity-45 disabled:hover:bg-transparent"
+                        title={locked ? "群聊运行时不能移除成员" : removable ? `移除 ${member.name}` : "群聊至少需要一个机器人"}
+                        aria-label={`从群聊移除 ${member.name}`}
+                      >
+                        <UserMinus size={13} /> 移除
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-2 border-t border-hairline/30 px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+                添加机器人
+              </div>
+              {available.length ? (
+                <div className="flex flex-col gap-0.5">
+                  {available.map((bot) => (
+                    <button
+                      key={bot.id}
+                      type="button"
+                      onClick={() => add(bot.id)}
+                      disabled={locked}
+                      className="flex items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-raised/50 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <MausAvatar
+                        color={bot.color}
+                        shape={bot.mascotShape}
+                        state={normalizeState(bot.mascotExpression) ?? "happy"}
+                        size={30}
+                        motion="none"
+                        animated={false}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{bot.name}</span>
+                      <span className="flex items-center gap-1 rounded-lg bg-accent/12 px-2 py-1.5 text-[11.5px] font-medium text-accent">
+                        <UserPlus size={13} /> 加入
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-2 py-4 text-center text-[12px] text-ink-secondary">
+                  所有可用机器人都已在群聊中。
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -255,37 +467,26 @@ export function GroupView({
         )}
         style={drag}
       >
-        <span className="min-w-0 truncate text-[15px] font-semibold text-ink">{group.name}</span>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <GroupHeaderAvatars members={members} busyBotId={group.busyBotId} compact={compactHeader} />
+          <span className={cn("min-w-0 truncate font-semibold text-ink", compactHeader ? "text-[14px]" : "text-[15px]")}>{group.name}</span>
+        </div>
         <div className="flex items-center gap-1.5" style={noDrag}>
           {!group.dm && !compactHeader && <DefaultResponderSelect group={group} members={members} />}
+          {!group.dm && (
+            <GroupMemberManager
+              group={group}
+              members={members}
+              bots={state.bots}
+              compact={compactHeader}
+            />
+          )}
           {!group.dm && <GroupCallButton group={group} active={callOpen} onToggle={() => setCallOpen((open) => !open)} />}
-          {members.map((b, index) => (
-            <span
-              key={b.id}
-              title={`${b.name}${group.busyBotId === b.id ? " — 正在工作…" : ""}`}
-              className={cn(
-                "relative inline-flex rounded-full",
-                compactHeader && index > 1 && "hidden",
-                group.busyBotId === b.id && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
-              )}
-            >
-              <MausAvatar
-                color={b.color}
-                shape={b.mascotShape}
-                state={normalizeState(b.mascotExpression) ?? "happy"}
-                size={24}
-                animated={false}
-              />
-              {group.busyBotId === b.id && (
-                <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
-              )}
-            </span>
-          ))}
         </div>
       </div>
 
       {/* Bulletin: one pinned line; click to edit */}
-      <div className={cn("mx-auto w-full max-w-[900px]", compactHeader ? "px-3" : "px-5")}>
+      <div className={cn("conversation-content mx-auto w-full", compactHeader ? "px-3" : "px-5")}>
         {bulletinOpen ? (
           <div className="mb-1 rounded-lg border border-hairline/40 bg-panel p-2">
             <textarea
@@ -308,7 +509,7 @@ export function GroupView({
         ) : (
           <button
             onClick={() => setBulletinOpen(true)}
-            className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-raised/40"
+            className="ui-pressable mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-raised/40"
             title="Room bulletin — shared instructions for every bot here"
           >
             <Pin size={12} className="shrink-0 text-ink-secondary" />
@@ -338,7 +539,7 @@ export function GroupView({
         }}
       >
         <div
-          className="mx-auto flex max-w-[900px] flex-col gap-3 pb-4"
+          className="conversation-content mx-auto flex flex-col gap-3 pb-4"
           role="log"
           aria-live="polite"
           aria-label={`Room ${group.name}`}
@@ -367,22 +568,28 @@ export function GroupView({
           )}
           <Transcript group={group} members={members} />
           {speaker && !streaming && (
-            <>
-              <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
-              <div className="flex justify-start">
-                <div className="flex items-center gap-1.5 rounded-2xl bg-raised px-4 py-3">
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
+            <article className="flex w-full items-start gap-2.5">
+              <SenderAvatar bot={speaker} color={speaker.color} />
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 pl-0.5 text-[12.5px] font-medium leading-4 text-ink-secondary">{speaker.name}</div>
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-1.5 rounded-[20px] bg-raised px-4 py-3">
+                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
+                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
+                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
+                  </div>
                 </div>
               </div>
-            </>
+            </article>
           )}
           {speaker && streaming && (
-            <>
-              <ClusterLabel bot={speaker} name={speaker.name} color={speaker.color} />
-              <StreamingBubble text={streaming} />
-            </>
+            <article className="flex w-full items-start gap-2.5">
+              <SenderAvatar bot={speaker} color={speaker.color} />
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 pl-0.5 text-[12.5px] font-medium leading-4 text-ink-secondary">{speaker.name}</div>
+                <StreamingBubble text={streaming} />
+              </div>
+            </article>
           )}
         </div>
       </div>

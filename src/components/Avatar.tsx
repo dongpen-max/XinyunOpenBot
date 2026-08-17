@@ -25,14 +25,19 @@ const GRADIENT_SHAPE: CursorShape = {
 
 export type MausShape =
   | "cursor"
-  | "blob"
   | "orb"
+  | "block"
+  | "capsule"
+  | "triangle"
+  | "crystal"
+  | "cloud"
+  | "drop"
+  // Legacy ids remain accepted so saved workspaces continue to render.
+  | "blob"
   | "diamond"
   | "leaf"
-  | "cloud"
   | "comet"
   | "shield"
-  | "capsule"
   | "star"
   | AnimalMausShape;
 
@@ -56,28 +61,105 @@ const artwork = (name: MausShape, body: string, clip: string, anchor = { x: 114,
 const pathShape = (name: MausShape, d: string, anchor?: CursorShape["anchor"]) =>
   artwork(name, `<path d="${d}" fill="{{GRADIENT}}"/>`, `<path d="${d}"/>`, anchor);
 
-/** Lightweight silhouettes inspired by modern mascot pickers. */
-const BASE_MASCOT_SHAPES: MascotShapeOption[] = [
-  { id: "cursor", label: "光标", category: "base", shape: GRADIENT_SHAPE },
+/**
+ * Eight compact robot silhouettes inspired by Grok Bot's avatar picker.
+ * The body stays deliberately simple; the CursorAvatar expression engine supplies
+ * the small white eye language so every option still animates with the app's states.
+ */
+export const BASE_MASCOT_SHAPES: MascotShapeOption[] = [
   {
-    id: "blob",
+    id: "cursor",
+    label: "圆润",
+    category: "base",
+    shape: pathShape(
+      "cursor",
+      "M114 17C69 17 31 44 21 88c-10 45 15 91 57 109 36 15 79 7 104-23 27-32 30-78 7-115-16-27-43-42-75-42Z",
+      { x: 114, y: 116, scale: 0.53 },
+    ),
+  },
+  {
+    id: "orb",
+    label: "圆球",
+    category: "base",
+    shape: artwork(
+      "orb",
+      '<circle cx="114" cy="114" r="96" fill="{{GRADIENT}}"/>',
+      '<circle cx="114" cy="114" r="96"/>',
+      { x: 114, y: 114, scale: 0.52 },
+    ),
+  },
+  {
+    id: "block",
+    label: "方块",
+    category: "base",
+    shape: artwork(
+      "block",
+      '<rect x="22" y="22" width="184" height="184" rx="54" fill="{{GRADIENT}}"/>',
+      '<rect x="22" y="22" width="184" height="184" rx="54"/>',
+      { x: 114, y: 114, scale: 0.5 },
+    ),
+  },
+  {
+    id: "capsule",
+    label: "胶囊",
+    category: "base",
+    shape: artwork(
+      "capsule",
+      '<rect x="16" y="56" width="196" height="116" rx="58" fill="{{GRADIENT}}"/>',
+      '<rect x="16" y="56" width="196" height="116" rx="58"/>',
+      { x: 114, y: 114, scale: 0.53 },
+    ),
+  },
+  {
+    id: "triangle",
+    label: "三角",
+    category: "base",
+    shape: pathShape(
+      "triangle",
+      "M114 18c8 0 15 5 19 12l79 142c8 15-3 33-20 33H36c-17 0-28-18-20-33L95 30c4-7 11-12 19-12Z",
+      { x: 114, y: 127, scale: 0.52 },
+    ),
+  },
+  {
+    id: "crystal",
+    label: "晶核",
+    category: "base",
+    shape: pathShape(
+      "crystal",
+      "M114 14 186 48l28 66-28 66-72 34-72-34-28-66 28-66 72-34Z",
+      { x: 114, y: 119, scale: 0.51 },
+    ),
+  },
+  {
+    id: "cloud",
+    label: "云团",
+    category: "base",
+    shape: pathShape(
+      "cloud",
+      "M51 178h127c25 0 42-17 42-39 0-21-16-37-37-39-5-30-29-51-60-51-26 0-48 15-57 38-4-1-8-2-13-2-27 0-48 20-48 46s20 47 46 47Z",
+      { x: 114, y: 124, scale: 0.5 },
+    ),
+  },
+  {
+    id: "drop",
     label: "水滴",
     category: "base",
     shape: pathShape(
-      "blob",
-      "M114 15C73 15 36 42 25 80c-13 45 5 98 49 120 29 15 66 14 93-3 36-22 47-65 35-105-11-37-45-77-88-77Z",
-      { x: 114, y: 118, scale: 0.73 },
+      "drop",
+      "M114 16c13 21 58 69 72 104 16 39-5 83-45 96-45 14-92-12-101-56-7-34 12-66 30-92 15-22 31-39 44-52Z",
+      { x: 114, y: 122, scale: 0.52 },
     ),
   },
-  { id: "orb", label: "圆球", category: "base", shape: artwork("orb", '<circle cx="114" cy="114" r="98" fill="{{GRADIENT}}"/>', '<circle cx="114" cy="114" r="98"/>', { x: 114, y: 114, scale: 0.72 }) },
-  { id: "diamond", label: "菱形", category: "base", shape: pathShape("diamond", "M114 12L216 114L114 216L12 114Z", { x: 114, y: 114, scale: 0.68 }) },
-  { id: "leaf", label: "叶片", category: "base", shape: pathShape("leaf", "M114 18C172 30 207 70 205 121c-2 54-40 86-91 91-4-43 9-78 34-104-30 16-53 38-70 67C45 142 27 105 42 70c13-28 38-45 72-52Z", { x: 115, y: 118, scale: 0.67 }) },
-  { id: "cloud", label: "云朵", category: "base", shape: pathShape("cloud", "M51 178h127c25 0 42-17 42-39 0-21-16-37-37-39-5-30-29-51-60-51-26 0-48 15-57 38-4-1-8-2-13-2-27 0-48 20-48 46s20 47 46 47Z", { x: 114, y: 124, scale: 0.62 }) },
-  { id: "comet", label: "彗星", category: "base", shape: artwork("comet", '<path d="M40 165c15 13 31 22 49 27-7-13-10-26-8-39 4-28 23-52 50-63 28-11 60-6 82 16 21 21 26 53 15 80-11 27-35 46-64 51-14 2-28 0-41-5-15 18-37 28-61 29 7-16 10-31 8-46-11-8-21-18-30-30Z" fill="{{GRADIENT}}"/>', '<path d="M40 165c15 13 31 22 49 27-7-13-10-26-8-39 4-28 23-52 50-63 28-11 60-6 82 16 21 21 26 53 15 80-11 27-35 46-64 51-14 2-28 0-41-5-15 18-37 28-61 29 7-16 10-31 8-46-11-8-21-18-30-30Z"/>', { x: 125, y: 128, scale: 0.62 }) },
-  { id: "shield", label: "盾牌", category: "base", shape: pathShape("shield", "M114 12 205 45v69c0 48-35 84-91 101-56-17-91-53-91-101V45l91-33Z", { x: 114, y: 116, scale: 0.67 }) },
-  { id: "capsule", label: "胶囊", category: "base", shape: artwork("capsule", '<rect x="24" y="45" width="180" height="138" rx="69" fill="{{GRADIENT}}"/>', '<rect x="24" y="45" width="180" height="138" rx="69"/>', { x: 114, y: 114, scale: 0.69 }) },
-  { id: "star", label: "星芒", category: "base", shape: pathShape("star", "M114 13l25 58 62-7-47 42 25 58-55-30-55 30 25-58-47-42 62 7 25-58Z", { x: 114, y: 120, scale: 0.57 }) },
 ];
+
+const LEGACY_BASE_SHAPE_ALIASES: Record<string, MausShape> = {
+  blob: "drop",
+  diamond: "crystal",
+  leaf: "drop",
+  comet: "cloud",
+  shield: "crystal",
+  star: "crystal",
+};
 
 export const MASCOT_SHAPES: MascotShapeOption[] = [
   ...BASE_MASCOT_SHAPES,
@@ -86,8 +168,19 @@ export const MASCOT_SHAPES: MascotShapeOption[] = [
 
 const SHAPES_BY_ID = new Map(MASCOT_SHAPES.map((entry) => [entry.id, entry.shape]));
 
+export function normalizeMascotShapeId(id?: string | null): MausShape {
+  const candidate = id ?? "cursor";
+  return (LEGACY_BASE_SHAPE_ALIASES[candidate] ?? candidate) as MausShape;
+}
+
 export function mascotShape(id?: string | null): CursorShape {
-  return SHAPES_BY_ID.get((id as MausShape) ?? "cursor") ?? GRADIENT_SHAPE;
+  return SHAPES_BY_ID.get(normalizeMascotShapeId(id)) ?? SHAPES_BY_ID.get("cursor") ?? GRADIENT_SHAPE;
+}
+
+const BASE_MASCOT_IDS = new Set(BASE_MASCOT_SHAPES.map(({ id }) => id));
+
+export function mascotUsesEyesOnly(id?: string | null): boolean {
+  return BASE_MASCOT_IDS.has(normalizeMascotShapeId(id));
 }
 
 /**
@@ -246,6 +339,8 @@ function MausAvatarComponent(
     });
   };
   const onPointerLeave = () => setPointer({ x: 0, y: 0 });
+  const resolvedShapeId = normalizeMascotShapeId(shape);
+  const eyesOnly = mascotUsesEyesOnly(resolvedShapeId);
 
   return (
     <span
@@ -258,15 +353,15 @@ function MausAvatarComponent(
         state={motionState ?? state}
         expression={expression}
         size={size}
-        shape={mascotShape(shape)}
+        shape={mascotShape(resolvedShapeId)}
         gradient={gradientFor(color)}
         title={label ?? null}
         lookAround={forward ? 0 : 1}
         gaze={{ x: (gaze?.x ?? 0) + pointer.x, y: (gaze?.y ?? 0) + pointer.y }}
         turn={turn}
         spring={spring}
-        eyeScale={eyeScale}
-        showMouth={showMouth}
+        eyeScale={eyeScale ?? (eyesOnly ? 0.9 : undefined)}
+        showMouth={showMouth ?? !eyesOnly}
         mouthStroke={mouthStroke}
         paused={!animated}
       />

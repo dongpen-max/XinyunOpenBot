@@ -32,6 +32,7 @@ import type {
 } from "../../contracts.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
+import { mcpStdioConfigs } from "../../mcp.ts";
 
 // the computer proxy entry: .ts in dev (node type stripping), .js in the
 // compiled dist-server the packaged app ships
@@ -173,6 +174,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             args: local.args,
             env: acpEnv(local.env ?? {}),
           });
+        }
+        for (const [index, remote] of mcpStdioConfigs(turn.integrations?.mcp).entries()) {
+          const name = turn.integrations!.mcp![index]!.id;
+          servers.push({ name, command: remote.command, args: remote.args, env: acpEnv(remote.env ?? {}) });
         }
         return servers;
       };

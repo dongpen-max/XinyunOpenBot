@@ -31,7 +31,7 @@ import { zhCN } from "@/locales/zh-CN";
 
 const isElectron = navigator.userAgent.includes("Electron");
 
-/** "Milind Soni" → "MS", "milind" → "M", "you@x.dev" → "Y", unset → "?" */
+/** "Milind Soni" → "MS", "milind" → "M", "you@example.com" → "Y", unset → "?" */
 function profileInitials(profile?: { name?: string; email?: string }): string {
   const name = profile?.name?.trim();
   if (name) {
@@ -135,23 +135,23 @@ function groupPreview(group: Group, bots: Bot[]): string {
   return last.from ? `${last.from.name}: ${text}` : text;
 }
 
-/** Room avatar: 2–3 overlapping mauses in the same 56px slot a bot gets. */
+/** Room avatar: 2–3 overlapping mauses in the same compact slot as a bot. */
 function StackedMauses({ members, compact = false }: { members: Bot[]; compact?: boolean }) {
   if (members.length <= 1) {
     const b = members[0];
     return (
-      <div className={cn("flex shrink-0 items-center justify-center", compact ? "size-12" : "size-14")}>
-        {b ? <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={compact ? 48 : 56} /> : <Users size={24} className="text-ink-secondary" />}
+      <div className="flex size-12 shrink-0 items-center justify-center">
+        {b ? <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={compact ? 44 : 48} /> : <Users size={22} className="text-ink-secondary" />}
       </div>
     );
   }
   const shown = members.slice(0, 3);
   const extra = members.length - shown.length;
   return (
-    <div className={cn("flex shrink-0 items-center justify-center", compact ? "size-12" : "size-14")}>
+    <div className="flex size-12 shrink-0 items-center justify-center">
       <div className={cn("flex items-center", compact ? "-space-x-3.5" : "-space-x-3")}>
         {shown.map((b) => (
-          <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={compact ? 26 : 30} />
+          <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={compact ? 25 : 28} />
         ))}
         {extra > 0 && (
           <span className="z-10 flex size-[22px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[10px] font-medium text-ink-secondary">
@@ -188,8 +188,8 @@ function GroupListItem({
       title={compact ? `${group.name} — ${groupPreview(group, state.bots)}` : undefined}
       aria-label={group.name}
       className={cn(
-        "relative flex w-full items-center rounded-xl text-left",
-        compact ? "justify-center p-2" : "gap-3 px-3 py-2.5",
+        "ui-pressable relative flex w-full items-center rounded-xl text-left",
+        compact ? "justify-center p-2" : "gap-2.5 px-3 py-2",
         selected ? "bg-raised" : "hover:bg-raised/50",
       )}
     >
@@ -459,8 +459,8 @@ function BotListItem({ bot, onMenu, compact = false }: { bot: Bot; onMenu: (menu
       title={compact ? `${bot.name}${preview(bot) ? ` — ${preview(bot)}` : ""}` : undefined}
       aria-label={bot.name}
       className={cn(
-        "relative flex w-full items-center rounded-xl border text-left",
-        compact ? "justify-center p-2" : "gap-3 px-3 py-2.5",
+        "ui-pressable relative flex w-full items-center rounded-xl border text-left",
+        compact ? "justify-center p-2" : "gap-2.5 px-3 py-2",
         bot.chiefOfStaff
           ? selected
             ? "border-accent/40 bg-accent/15"
@@ -474,7 +474,7 @@ function BotListItem({ bot, onMenu, compact = false }: { bot: Bot; onMenu: (menu
         color={bot.color}
         shape={bot.mascotShape}
         state={stateForBot({ ...bot, messages: visible })}
-        size={compact ? 48 : 56}
+        size={compact ? 46 : 48}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />
@@ -567,7 +567,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
         <div className="relative" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <button
             onClick={() => setPlusOpen((o) => !o)}
-            className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+            className="ui-pressable rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
             title={zhCN.sidebar.newBotOrRoom}
           >
             <Plus size={20} strokeWidth={2} />
@@ -575,7 +575,12 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
           {plusOpen && (
             <>
               <div className="fixed inset-0 z-30" onMouseDown={() => setPlusOpen(false)} />
-              <div className="absolute right-0 top-full z-40 mt-1 w-44 overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60">
+              <div
+                className={cn(
+                  "absolute top-full z-40 mt-1 w-44 overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60",
+                  compact ? "left-0" : "right-0",
+                )}
+              >
                 <button
                   onClick={() => {
                     setPlusOpen(false);
@@ -620,7 +625,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
 
       {/* Bot list */}
       <div className="flex-1 overflow-y-auto px-2">
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-1">
           {!compact && !chiefBot && visibleBots.length === 0 && visibleGroups.length === 0 && q && (
             <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">没有匹配“{query}”的结果</div>
           )}
@@ -665,7 +670,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
             <UpdateButton />
             <button
               onClick={() => dispatch({ type: "toggleAppSettings" })}
-              className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
+              className="ui-pressable rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
               title="应用设置"
               aria-label="应用设置"
             >

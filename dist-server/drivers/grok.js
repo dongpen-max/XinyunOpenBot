@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.js";
 import { connectMcpStdioMany } from "../tools/mcp-stdio.js";
+import { mcpStdioConfigs } from "../mcp.js";
 import { runOpenAICompatibleToolLoop, } from "../tools/openai-compatible.js";
 import { appendNative } from "./native.js";
 const DRIVER_KIND = "grok";
@@ -195,6 +196,7 @@ export const GrokDriver = {
                     const mcps = [
                         ...(config.computerTools ? [computerMcpConfig(turn)] : []),
                         ...(config.agentTools ? [agentsMcpConfig(turn)] : []),
+                        ...mcpStdioConfigs(turn.integrations?.mcp),
                     ].filter((mcp) => mcp !== null);
                     toolProvider = await connectMcpStdioMany(mcps, abort.signal);
                     const { text, usage } = await runOpenAICompatibleToolLoop({

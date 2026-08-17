@@ -825,6 +825,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     const wrapped: React.Dispatch<Action> = (action) => {
+      const previousGroup = action.type === "patchGroup"
+        ? stateRef.current.groups.find((group) => group.id === action.groupId)
+        : undefined;
       rawDispatch(action);
       switch (action.type) {
         case "send":
@@ -976,7 +979,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}`, {
             method: "PATCH",
             body: JSON.stringify(action.patch),
-          }).catch(showError);
+          })
+            .then(({ group }) => group && rawDispatch({ type: "groupPatched", group }))
+            .catch((error) => {
+              if (previousGroup) rawDispatch({ type: "groupPatched", group: previousGroup });
+              showError(error);
+            });
           break;
         case "deleteGroup":
           api(`/api/groups/${action.groupId}`, { method: "DELETE" }).catch(showError);

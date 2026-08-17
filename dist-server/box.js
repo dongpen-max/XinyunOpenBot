@@ -3,6 +3,16 @@ import { cloudComputerLeases } from "./cloud-computer-pool.js";
 const BOX_API = process.env.OMB_BOX_API || "https://ascii.dev/api/box/v1";
 const READY = new Set(["idle", "ready", "running"]);
 export const WORKSPACE_BOX_NAME = "xinyun-workspace-primary";
+export function configuredBoxType(cfg) {
+    const value = cfg?.box?.type ?? process.env.OMB_BOX_TYPE?.trim().toLowerCase();
+    return value === "small" || value === "large" || value === "default" ? value : "default";
+}
+export function automaticBoxCreationEnabled(cfg) {
+    if (typeof cfg?.box?.autoCreate === "boolean")
+        return cfg.box.autoCreate;
+    const value = process.env.OMB_BOX_DISABLE_AUTO_CREATE?.trim().toLowerCase();
+    return !["1", "true", "yes", "on"].includes(value ?? "");
+}
 function boxFetch(cfg, path, opts = {}) {
     return fetch(`${BOX_API}${path}`, {
         ...opts,
@@ -87,6 +97,16 @@ async function waitReady(cfg, boxId, budgetMs = 90_000) {
         await new Promise((r) => setTimeout(r, 2500));
     }
     return null;
+}
+async function waitDeleted(cfg, boxId, budgetMs = 90_000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < budgetMs) {
+        const result = await boxJson(cfg, `/boxes/${boxId}`).catch(() => ({ ok: false, status: 0, body: null }));
+        if (!result.ok && result.status === 404)
+            return true;
+        await new Promise((r) => setTimeout(r, 2500));
+    }
+    return false;
 }
 // Resolving the workspace Box means LISTing every box in the account, so it is
 // the most expensive thing on any hot path. The name is deterministic, so
@@ -187,6 +207,41 @@ export async function boxStatus(cfg, botId) {
         box: box ? { boxId: box.id, state: box.state, desktopAvailable: box.desktopAvailable ?? null } : null,
     };
 }
+async function initializeBox(cfg, boxId, botName, report) {
+    const ready = await waitReady(cfg, boxId);
+    if (!ready)
+        throw new Error("box did not become ready within 90s — retry in a minute");
+    report?.("initializing");
+    const cuaInstall = [
+        "sudo apt-get update -qq || true",
+        "sudo apt-get install -y -qq gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true",
+        'curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true',
+        'export PATH="$HOME/.local/bin:$PATH"',
+        'sudo mkdir -p /opt/ogb && sudo chown "$(whoami)" /opt/ogb',
+        "uv venv /opt/ogb/venv --python 3.13 >/dev/null 2>&1 || uv venv /opt/ogb/venv >/dev/null 2>&1 || true",
+        "[ -x /opt/ogb/venv/bin/python ] && uv pip install --python /opt/ogb/venv/bin/python cua-computer-server >/dev/null 2>&1 || true",
+        "[ -x /opt/ogb/venv/bin/python ] && /opt/ogb/venv/bin/python -c 'import computer_server' 2>/dev/null && touch /opt/ogb/cua-ready || true",
+    ].join("; ");
+    const bootstrap = [
+        "command -v xdotool >/dev/null || sudo apt-get install -y -qq xdotool scrot imagemagick >/dev/null 2>&1 || true",
+        `[ -f /opt/ogb/cua-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c '${cuaInstall.replace(/'/g, "'\\''")}; rm -f /tmp/ogb-cua-installing' > /tmp/ogb-cua-install.log 2>&1 & }`,
+        'if [ -f /opt/ogb/cua-ready ] && ! pgrep -f "computer_server" >/dev/null 2>&1; then DISPLAY=${DISPLAY:-:0} nohup /opt/ogb/venv/bin/python -m computer_server --host 127.0.0.1 --port 8000 --width 1280 --height 800 > /tmp/ogb-cua-server.log 2>&1 & fi',
+        `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — XinyunOpen Bot"; echo; exec bash -i'`,
+        "echo bootstrapped",
+    ].join("\n");
+    let boot;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        boot = await runCommand(cfg, boxId, bootstrap);
+        if (boot.ok || boot.exitCode !== null)
+            break;
+        await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!boot?.ok) {
+        const detail = boot?.stderr?.slice(0, 200) || (boot?.exitCode != null ? `exit ${boot.exitCode}` : "no response");
+        throw new Error(`box setup failed: ${detail}`);
+    }
+    return ready;
+}
 /**
  * Find-or-create the workspace's persistent primary Box, wait for ready, run the
  * idempotent bootstrap (screenshot tooling for the computer-use bridge +
@@ -209,7 +264,7 @@ export async function provisionBox(cfg, botId, botName, report) {
                 // survives) if every stop path dies
                 // Do not inject the account owner's environment into the guest; the
                 // computer process only needs the desktop session and X11 tools.
-                body: JSON.stringify({ ttlSeconds: 8 * 60 * 60, noEnv: true }),
+                body: JSON.stringify({ type: configuredBoxType(cfg), ttlSeconds: 8 * 60 * 60, noEnv: true }),
             });
             if (!createRes.ok || !createRes.body?.box?.id) {
                 throw new Error(boxErrorMessage(createRes.status, "box create", createRes.body));
@@ -237,50 +292,7 @@ export async function provisionBox(cfg, botId, botName, report) {
         }
         if (!created && !READY.has(box.state))
             report?.("waking");
-        const ready = await waitReady(cfg, box.id);
-        if (!ready)
-            throw new Error("box did not become ready within 90s — retry in a minute");
-        // Idempotent bootstrap. Three layers:
-        //   1. X11 action + capture tools (xdotool/scrot/imagemagick) — the
-        //      always-works fallback for the computer tools.
-        //   2. CUA (cua-computer-server, trycua) installed into /opt/ogb/venv in
-        //      the BACKGROUND (first install takes minutes; nohup'd children
-        //      survive the commands endpoint returning — probed by agentcal).
-        //   3. computer-server started loopback-only on :8000 when installed —
-        //      driven from outside via the box's run-command endpoint, so no
-        //      inbound port and no tunnel is ever needed.
-        report?.("initializing");
-        const cuaInstall = [
-            "sudo apt-get update -qq || true",
-            "sudo apt-get install -y -qq gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true",
-            'curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true',
-            'export PATH="$HOME/.local/bin:$PATH"',
-            'sudo mkdir -p /opt/ogb && sudo chown "$(whoami)" /opt/ogb',
-            "uv venv /opt/ogb/venv --python 3.13 >/dev/null 2>&1 || uv venv /opt/ogb/venv >/dev/null 2>&1 || true",
-            "[ -x /opt/ogb/venv/bin/python ] && uv pip install --python /opt/ogb/venv/bin/python cua-computer-server >/dev/null 2>&1 || true",
-            "[ -x /opt/ogb/venv/bin/python ] && /opt/ogb/venv/bin/python -c 'import computer_server' 2>/dev/null && touch /opt/ogb/cua-ready || true",
-        ].join("; ");
-        const bootstrap = [
-            "command -v xdotool >/dev/null || sudo apt-get install -y -qq xdotool scrot imagemagick >/dev/null 2>&1 || true",
-            `[ -f /opt/ogb/cua-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c '${cuaInstall.replace(/'/g, "'\\''")}; rm -f /tmp/ogb-cua-installing' > /tmp/ogb-cua-install.log 2>&1 & }`,
-            // start CUA computer-server (loopback only) once installed; pidfile-free
-            // guard on the module name is safe here — the pattern cannot match this
-            // bootstrap's own shell (agentcal's pgrep self-match trap)
-            'if [ -f /opt/ogb/cua-ready ] && ! pgrep -f "computer_server" >/dev/null 2>&1; then DISPLAY=${DISPLAY:-:0} nohup /opt/ogb/venv/bin/python -m computer_server --host 127.0.0.1 --port 8000 --width 1280 --height 800 > /tmp/ogb-cua-server.log 2>&1 & fi',
-            `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — XinyunOpen Bot"; echo; exec bash -i'`,
-            "echo bootstrapped",
-        ].join("\n");
-        let boot;
-        for (let attempt = 0; attempt < 5; attempt++) {
-            boot = await runCommand(cfg, box.id, bootstrap);
-            if (boot.ok || boot.exitCode !== null)
-                break;
-            await new Promise((r) => setTimeout(r, 3000));
-        }
-        if (!boot?.ok) {
-            const detail = boot?.stderr?.slice(0, 200) || (boot?.exitCode != null ? `exit ${boot.exitCode}` : "no response");
-            throw new Error(`box setup failed: ${detail}`);
-        }
+        const ready = await initializeBox(cfg, box.id, botName, report);
         const joinUrl = await mintDesktopUrl(cfg, box.id);
         if (!joinUrl)
             throw new Error("box desktop link could not be created");
@@ -300,6 +312,82 @@ export async function provisionBox(cfg, botId, botName, report) {
             throw error;
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`${message}. The new workspace computer could not be removed automatically; delete box ${box.id} in ascii.dev.`);
+    }
+}
+/** Explicit replacement path used only after a deliberate local command.
+ * The new machine is ready and initialized before any prior Box is removed. */
+export async function replaceAllBoxes(cfg, botName, confirm, report) {
+    if (confirm !== "replace-all-boxes")
+        throw new Error("explicit confirmation is required");
+    if (!boxConfigured(cfg))
+        throw new Error("box provider not enabled");
+    const listed = await boxJson(cfg, "/boxes");
+    if (!listed.ok)
+        throw new Error(boxErrorMessage(listed.status, "box listing", listed.body));
+    const oldBoxes = Array.isArray(listed.body?.boxes)
+        ? listed.body.boxes.filter((candidate) => candidate?.id)
+        : [];
+    const type = configuredBoxType(cfg);
+    report?.("creating");
+    const created = await boxJson(cfg, "/boxes", {
+        method: "POST",
+        body: JSON.stringify({
+            name: `xinyun-replacement-${Date.now()}`,
+            type,
+            ttlSeconds: 8 * 60 * 60,
+            noEnv: true,
+        }),
+    });
+    const newId = created.body?.box?.id;
+    if (!created.ok || !newId) {
+        throw new Error(boxErrorMessage(created.status, "box replacement create", created.body));
+    }
+    try {
+        const ready = await initializeBox(cfg, newId, botName, report);
+        const verified = await boxJson(cfg, `/boxes/${newId}`);
+        if (!verified.ok || !verified.body?.box?.id) {
+            throw new Error("new box could not be verified after initialization");
+        }
+        const actualType = verified.body.box.type ?? verified.body.box.machineType ?? verified.body.box.machine?.type;
+        if (actualType && actualType !== type) {
+            throw new Error(`new box type mismatch: expected ${type}, got ${actualType}`);
+        }
+        const deleted = [];
+        const failures = [];
+        for (const candidate of oldBoxes) {
+            if (!candidate.id || candidate.id === newId)
+                continue;
+            await boxJson(cfg, `/boxes/${candidate.id}/stop`, { method: "POST" }).catch(() => null);
+            const removal = await boxJson(cfg, `/boxes/${candidate.id}`, {
+                method: "DELETE",
+                headers: { "X-Ascii-Confirm-Delete": candidate.id },
+            }).catch(() => null);
+            if (!removal?.ok || !(await waitDeleted(cfg, candidate.id)))
+                failures.push(candidate.id);
+            else
+                deleted.push(candidate.id);
+        }
+        const rename = await boxJson(cfg, `/boxes/${newId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name: WORKSPACE_BOX_NAME }),
+        });
+        if (!rename.ok)
+            throw new Error(boxErrorMessage(rename.status, "replacement box naming", rename.body));
+        workspaceBoxIdCache = newId;
+        report?.("ready");
+        return {
+            ok: failures.length === 0,
+            box: { boxId: newId, type, state: ready.state ?? null },
+            previousCount: oldBoxes.length,
+            deletedCount: deleted.length,
+            failedDeleteIds: failures,
+        };
+    }
+    catch (error) {
+        // Never remove the verified replacement during cleanup error handling;
+        // doing so after old-machine deletion starts could leave the account empty.
+        workspaceBoxIdCache = newId;
+        throw error;
     }
 }
 /** Wake the bot's box and return a FRESH desktop URL. */

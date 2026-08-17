@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
 
 export function PaneResizeHandle({
@@ -7,6 +7,7 @@ export function PaneResizeHandle({
   min,
   max,
   direction = 1,
+  onResizePreview,
   onResize,
   onReset,
 }: {
@@ -15,10 +16,13 @@ export function PaneResizeHandle({
   min: number;
   max: number;
   direction?: 1 | -1;
+  onResizePreview: (value: number) => void;
   onResize: (delta: number) => void;
   onReset: () => void;
 }) {
-  const lastX = useRef<number | null>(null);
+  const stopDragRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => stopDragRef.current?.(), []);
 
   return (
     <div
@@ -31,22 +35,78 @@ export function PaneResizeHandle({
       tabIndex={0}
       onDoubleClick={onReset}
       onPointerDown={(event) => {
-        if (event.button !== 0) return;
-        lastX.current = event.clientX;
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }}
-      onPointerMove={(event) => {
-        if (lastX.current === null || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-        const delta = (event.clientX - lastX.current) * direction;
-        lastX.current = event.clientX;
-        if (delta) onResize(delta);
-      }}
-      onPointerUp={(event) => {
-        lastX.current = null;
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
-      onPointerCancel={() => {
-        lastX.current = null;
+        if (event.button !== 0 || stopDragRef.current) return;
+        event.preventDefault();
+
+        const handle = event.currentTarget;
+        const pointerId = event.pointerId;
+        const startX = event.clientX;
+        const startValue = value;
+        const upperBound = Math.max(min, max);
+        let currentValue = startValue;
+        let finished = false;
+        const previousCursor = document.body.style.cursor;
+        const previousUserSelect = document.body.style.userSelect;
+
+        const valueAt = (clientX: number) => {
+          const requested = startValue + (clientX - startX) * direction;
+          return Math.min(Math.max(requested, min), upperBound);
+        };
+
+        const previewAt = (clientX: number) => {
+          const nextValue = valueAt(clientX);
+          if (nextValue === currentValue) return;
+          currentValue = nextValue;
+          onResizePreview(nextValue);
+        };
+
+        const onPointerMove = (pointerEvent: PointerEvent) => {
+          if (pointerEvent.pointerId !== pointerId) return;
+          previewAt(pointerEvent.clientX);
+        };
+
+        const finishDrag = (clientX?: number) => {
+          if (finished) return;
+          if (clientX !== undefined) previewAt(clientX);
+          finished = true;
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", onPointerUp);
+          window.removeEventListener("pointercancel", onPointerCancel);
+          window.removeEventListener("blur", onWindowBlur);
+          window.removeEventListener("keydown", onWindowKeyDown);
+          handle.removeEventListener("lostpointercapture", onLostPointerCapture);
+          if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+          document.body.style.cursor = previousCursor;
+          document.body.style.userSelect = previousUserSelect;
+          delete document.documentElement.dataset.paneResizing;
+          stopDragRef.current = null;
+          const delta = currentValue - startValue;
+          if (delta) onResize(delta);
+        };
+
+        const onPointerUp = (pointerEvent: PointerEvent) => {
+          if (pointerEvent.pointerId === pointerId) finishDrag(pointerEvent.clientX);
+        };
+        const onPointerCancel = (pointerEvent: PointerEvent) => {
+          if (pointerEvent.pointerId === pointerId) finishDrag(pointerEvent.clientX);
+        };
+        const onWindowBlur = () => finishDrag();
+        const onWindowKeyDown = (keyboardEvent: KeyboardEvent) => {
+          if (keyboardEvent.key === "Escape") finishDrag();
+        };
+        const onLostPointerCapture = () => finishDrag();
+
+        stopDragRef.current = () => finishDrag();
+        document.documentElement.dataset.paneResizing = "true";
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        handle.setPointerCapture(pointerId);
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+        window.addEventListener("pointercancel", onPointerCancel);
+        window.addEventListener("blur", onWindowBlur);
+        window.addEventListener("keydown", onWindowKeyDown);
+        handle.addEventListener("lostpointercapture", onLostPointerCapture);
       }}
       onKeyDown={(event) => {
         const step = event.shiftKey ? 40 : 12;
@@ -58,10 +118,10 @@ export function PaneResizeHandle({
           onResize(step * direction);
         } else if (event.key === "Home") {
           event.preventDefault();
-          onResize((min - value));
+          onResize(min - value);
         } else if (event.key === "End") {
           event.preventDefault();
-          onResize((max - value));
+          onResize(max - value);
         }
       }}
       className={cn(

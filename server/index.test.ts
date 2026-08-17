@@ -4,8 +4,8 @@
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest, type Server } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,9 @@ let boxStub: Server;
 let boxStubPort = 0;
 let voiceStub: Server;
 let voiceStubPort = 0;
+let mcpStub: Server;
+let mcpStubPort = 0;
+const mcpRequests: Array<{ method: string; headers: Record<string, string | string[] | undefined>; body: any }> = [];
 const voiceSpeechBodies: Array<Record<string, unknown>> = [];
 let home: string;
 let stderr = "";
@@ -34,6 +37,18 @@ const api = async (method: string, path: string, body?: unknown): Promise<{ stat
   });
   return { status: res.status, body: await res.json() };
 };
+
+const apiWithHeaders = (path: string, headers: Record<string, string>): Promise<{ status: number; body: any }> =>
+  new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: "127.0.0.1", port: PORT, path, headers }, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
@@ -94,6 +109,26 @@ beforeAll(async () => {
   await new Promise<void>((r) => voiceStub.listen(0, "127.0.0.1", r));
   voiceStubPort = (voiceStub.address() as { port: number }).port;
 
+  mcpStub = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => {
+      if (req.method === "DELETE") {
+        res.writeHead(204);
+        return res.end();
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      mcpRequests.push({ method: req.method ?? "", headers: req.headers, body });
+      const result = body.method === "initialize"
+        ? { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: [{ name: "search_docs", description: "Search docs", inputSchema: { type: "object" } }] };
+      res.writeHead(200, { "content-type": "text/event-stream", "mcp-session-id": "fixture-session" });
+      res.end(`data: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`);
+    });
+  });
+  await new Promise<void>((r) => mcpStub.listen(0, "127.0.0.1", r));
+  mcpStubPort = (mcpStub.address() as { port: number }).port;
+
   child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
     cwd: ROOT,
     env: {
@@ -125,6 +160,7 @@ beforeAll(async () => {
 afterAll(async () => {
   boxStub?.close();
   voiceStub?.close();
+  mcpStub?.close();
   child?.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     if (!child || child.exitCode !== null) return resolve();
@@ -142,11 +178,41 @@ describe("harness HTTP API", () => {
     expect(typeof body.pid).toBe("number");
   });
 
+  it("accepts loopback origins and rejects non-loopback Host or Origin headers", async () => {
+    const allowed = await fetch(`${BASE}/api/health`, { headers: { origin: `http://localhost:${PORT}` } });
+    expect(allowed.status).toBe(200);
+
+    const badOrigin = await fetch(`${BASE}/api/health`, { headers: { origin: "https://evil.example" } });
+    expect(badOrigin.status).toBe(403);
+    expect(((await badOrigin.json()) as { error: string }).error).toContain("cross-origin");
+
+    const badHost = await apiWithHeaders("/api/health", { host: "evil.example" });
+    expect(badHost.status).toBe(403);
+    expect(badHost.body.error).toContain("loopback host");
+  });
+
   it("seeds one starter bot with its greeting", async () => {
     const { status, body } = await api("GET", "/api/bots");
     expect(status).toBe(200);
     expect(body.bots.length).toBeGreaterThanOrEqual(1);
     expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("never serializes provider resume cursors to the client", async () => {
+    const listed = await api("GET", "/api/bots");
+    expect(JSON.stringify(listed.body)).not.toContain("resumeCursors");
+    const bot = listed.body.bots[0];
+
+    const created = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Cursor-safe task" });
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(created.body)).not.toContain("resumeCursors");
+
+    const renamed = await api("PATCH", `/api/bots/${bot.id}/tasks/${created.body.task.threadId}`, { title: "Renamed task" });
+    expect(renamed.status).toBe(200);
+    expect(JSON.stringify(renamed.body)).not.toContain("resumeCursors");
+
+    const restored = await api("POST", `/api/bots/${bot.id}/tasks/${bot.threadId}`);
+    expect(restored.status).toBe(200);
   });
 
   it("describes the configured fleet, shadows included", async () => {
@@ -186,6 +252,39 @@ describe("harness HTTP API", () => {
     expect(deleted.status).toBe(200);
     const after = await api("GET", "/api/bots");
     expect(after.body.bots.find((b: { id: string }) => b.id === bot.id)).toBeUndefined();
+  });
+
+  it("adds and removes room members with canonical membership validation", async () => {
+    const initial = await api("GET", "/api/bots");
+    const base = initial.body.bots[0];
+    const created = await api("POST", "/api/bots");
+    expect(created.status).toBe(201);
+    const added = created.body.bot;
+
+    const room = await api("POST", "/api/groups", {
+      name: "Member editing room",
+      memberIds: [base.id, added.id],
+    });
+    expect(room.status).toBe(201);
+    const groupId = room.body.group.id;
+
+    const deduped = await api("PATCH", `/api/groups/${groupId}`, {
+      memberIds: [base.id, added.id, added.id],
+    });
+    expect(deduped.status).toBe(200);
+    expect(deduped.body.group.memberIds).toEqual([base.id, added.id]);
+
+    const removed = await api("PATCH", `/api/groups/${groupId}`, { memberIds: [added.id] });
+    expect(removed.status).toBe(200);
+    expect(removed.body.group.memberIds).toEqual([added.id]);
+    expect(removed.body.group.defaultResponder).toEqual({ kind: "member", botId: added.id });
+
+    const empty = await api("PATCH", `/api/groups/${groupId}`, { memberIds: [] });
+    expect(empty.status).toBe(400);
+    expect(empty.body.error).toContain("at least one bot");
+
+    expect((await api("DELETE", `/api/groups/${groupId}`)).status).toBe(200);
+    expect((await api("DELETE", `/api/bots/${added.id}`)).status).toBe(200);
   });
 
   it("persists an answered onboarding card", async () => {
@@ -277,6 +376,10 @@ describe("harness HTTP API", () => {
     expect(put.body.box).toEqual({ configured: true });
     expect(JSON.stringify(put.body)).not.toContain("box_good");
 
+    if (process.platform !== "win32") {
+      expect(statSync(join(home, ".openmausbot", "config.json")).mode & 0o077).toBe(0);
+    }
+
     const after = await api("GET", "/api/config");
     expect(after.body.box).toEqual({ configured: true });
     expect(JSON.stringify(after.body)).not.toContain("box_good");
@@ -292,6 +395,34 @@ describe("harness HTTP API", () => {
 
     const after = await api("GET", "/api/config");
     expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+  });
+
+  it("manages a remote MCP server without returning its token", async () => {
+    const created = await api("POST", "/api/mcp/servers", {
+      name: "本地文档 MCP",
+      url: `http://127.0.0.1:${mcpStubPort}/mcp`,
+      authType: "apiKey",
+      authHeader: "X-Domestic-Key",
+      token: "mcp_secret",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.server).toMatchObject({ enabled: true, authConfigured: true, authType: "apiKey" });
+    expect(JSON.stringify(created.body)).not.toContain("mcp_secret");
+    const id = created.body.server.id;
+
+    const listed = await api("GET", "/api/mcp/servers");
+    expect(JSON.stringify(listed.body)).not.toContain("mcp_secret");
+    expect(listed.body.servers.find((server: { id: string }) => server.id === id)).toMatchObject({ name: "本地文档 MCP" });
+
+    const tested = await api("POST", `/api/mcp/servers/${id}/test`);
+    expect(tested).toMatchObject({ status: 200, body: { ok: true, tools: [{ name: "search_docs" }] } });
+    expect(mcpRequests.at(-1)?.headers["x-domestic-key"]).toBe("mcp_secret");
+    expect(mcpRequests.map((request) => request.body.method)).toContain("initialize");
+    expect(mcpRequests.map((request) => request.body.method)).toContain("tools/list");
+
+    const disabled = await api("PATCH", `/api/mcp/servers/${id}`, { enabled: false });
+    expect(disabled.body.server.enabled).toBe(false);
+    expect((await api("DELETE", `/api/mcp/servers/${id}`)).status).toBe(200);
   });
 
   it("configures a domestic provider write-only and discovers its model catalog", async () => {

@@ -33,7 +33,14 @@ export function EngineHealthRow({ instance, compact = false }: { instance: Insta
     <div className={cn("min-w-0", !compact && "rounded-xl border border-hairline/40 bg-card p-3.5")}>
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-inset">
-          <ProviderMark driverKind={instance.driverKind} size={17} />
+          <ProviderMark
+            driverKind={instance.driverKind}
+            instanceId={instance.instanceId}
+            displayName={instance.displayName}
+            modelId={instance.models.default}
+            modelLabel={instance.models.options.find((option) => option.id === instance.models.default)?.label}
+            size={17}
+          />
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13.5px] font-medium text-ink">{instance.displayName}</div>

@@ -2,11 +2,37 @@
 
 .assistant-message-width {
   flex-shrink: 0;
-  max-width: min(100%, 72ch);
+  max-width: min(100%, 78ch);
+}
+
+.conversation-content {
+  max-width: min(100%, 1120px);
+}
+
+/* Grok-like tactile feedback: a tiny, fast press without the bouncy feel. */
+.ui-pressable {
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out,
+    box-shadow 150ms ease-out, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ui-pressable:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.ui-pressable:focus-visible {
+  outline: 2px solid var(--color-accent-border);
+  outline-offset: 2px;
 }
 
 .user-message-width {
   max-width: min(85%, 72ch);
+}
+
+/* Assistant replies need a semantic surface separate from generic cards.
+   In the pure-white theme, card and transcript canvas are both white. */
+.assistant-message-surface {
+  border: 1px solid color-mix(in srgb, var(--color-hairline) 42%, transparent);
+  background: var(--color-bubble-assistant);
 }
 
 /* XinyunOpen Bot surface tokens. Themes override these variables below. */
@@ -28,6 +54,7 @@
   --color-ink-secondary: #fcfcfc99;
   --color-accent: #1084fe;
   --color-accent-border: #459ffe;
+  --color-bubble-assistant: #262626;
   --color-bubble-user: #5a5a5a;
   --color-success: #38d591;
   --color-danger: #ff5667;
@@ -53,6 +80,7 @@
   --color-ink-secondary: #d4e2f4a6;
   --color-accent: #69aef8;
   --color-accent-border: #98c8ff;
+  --color-bubble-assistant: #12223b;
   --color-bubble-user: #34547d;
 }
 
@@ -68,6 +96,7 @@
   --color-ink-secondary: #fcfcfc99;
   --color-accent: #1084fe;
   --color-accent-border: #459ffe;
+  --color-bubble-assistant: #262626;
   --color-bubble-user: #5a5a5a;
 }
 
@@ -83,6 +112,7 @@
   --color-ink-secondary: #d9e0e999;
   --color-accent: #78aef5;
   --color-accent-border: #a7c9f7;
+  --color-bubble-assistant: #222a35;
   --color-bubble-user: #4b5b70;
 }
 
@@ -98,6 +128,7 @@
   --color-ink-secondary: #e5d9f5a3;
   --color-accent: #a98cf8;
   --color-accent-border: #cbb9ff;
+  --color-bubble-assistant: #2a2141;
   --color-bubble-user: #5c4b78;
 }
 
@@ -113,22 +144,29 @@
   --color-ink-secondary: #d4ebe0a3;
   --color-accent: #62cba3;
   --color-accent-border: #93dfc1;
+  --color-bubble-assistant: #1a302a;
   --color-bubble-user: #3b675a;
 }
 
 :root[data-app-theme="white"] {
   --color-app: #ffffff;
-  --color-panel: #f7f8fa;
-  --color-raised: #e9edf3;
-  --color-raised-hover: #dfe5ec;
+  --color-panel: #f5f7fa;
+  --color-raised: #e6ebf1;
+  --color-raised-hover: #d9e1ea;
   --color-card: #ffffff;
-  --color-inset: #f1f3f6;
-  --color-hairline: #c8d0dc;
+  --color-inset: #eef2f6;
+  --color-hairline: #8795a8;
   --color-ink: #172033;
-  --color-ink-secondary: #526174;
+  --color-ink-secondary: #3f4e63;
   --color-accent: #1769d2;
   --color-accent-border: #5b8fd9;
-  --color-bubble-user: #e5eefb;
+  --color-bubble-assistant: #f2f4f7;
+  --color-bubble-user: #e1ebf8;
+  color-scheme: light;
+}
+
+:root[data-app-theme="white"] .assistant-message-surface {
+  box-shadow: 0 1px 2px rgb(23 32 51 / 5%);
 }
 
 :root[data-app-theme="custom"] {
@@ -140,6 +178,31 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+:root[data-pane-resizing="true"],
+:root[data-pane-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.pane-layout {
+  --left-pane-width: 300px;
+  --right-pane-width: 420px;
+}
+
+.pane-layout__left {
+  width: var(--left-pane-width);
+}
+
+.pane-layout__right {
+  width: var(--right-pane-width);
+}
+
+@media (max-width: 900px) {
+  .conversation-content {
+    max-width: 100%;
+  }
 }
 
 body {

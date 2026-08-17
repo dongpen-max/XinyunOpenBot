@@ -1,7 +1,7 @@
 import { ChevronLeft, Crown } from "lucide-react";
 import { useEffect } from "react";
 import { useStore, type Bot } from "@/state/store";
-import { MASCOT_SHAPES, MausAvatar, type MausShape } from "./Avatar";
+import { MASCOT_SHAPES, MausAvatar, normalizeMascotShapeId, type MausShape } from "./Avatar";
 import {
   PICKABLE_STATES,
   stateForBot,
@@ -62,6 +62,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
+  const normalizedBotShape = normalizeMascotShapeId(bot.mascotShape);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentTools === true;
@@ -125,18 +126,18 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 {SHAPE_GROUPS.map((group) => (
                   <section key={group.id} aria-label={group.label}>
                     <div className="mb-1.5 text-[11px] font-medium text-ink-secondary">{group.label}</div>
-                    <div className="grid grid-cols-5 gap-2">
+                    <div className={cn("grid gap-2", group.id === "base" ? "grid-cols-4" : "grid-cols-5")}>
                       {MASCOT_SHAPES.filter(({ category }) => category === group.id).map(({ id, label }) => (
                         <button
                           key={`${id}-${activeState}`}
                           onClick={() => patch({ mascotShape: id as MausShape })}
                           className={cn(
                             "flex h-[62px] flex-col items-center justify-center gap-0.5 rounded-xl bg-inset transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-border",
-                            (bot.mascotShape ?? "cursor") === id && "ring-2 ring-accent-border",
+                            normalizedBotShape === id && "ring-2 ring-accent-border",
                           )}
                           title={label}
                           aria-label={`使用${label}形状`}
-                          aria-pressed={(bot.mascotShape ?? "cursor") === id}
+                          aria-pressed={normalizedBotShape === id}
                         >
                           <MausAvatar color={bot.color} shape={id} state={activeState} size={38} animated={false} />
                           <span className="text-[10px] leading-none text-ink-secondary">{label}</span>

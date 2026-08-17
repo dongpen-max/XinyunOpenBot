@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MASCOT_SHAPES, mascotShape } from "./Avatar";
+import { MASCOT_SHAPES, mascotShape, mascotUsesEyesOnly } from "./Avatar";
 
 describe("mascot shape catalogue", () => {
   it("contains unique and resolvable shape ids", () => {
@@ -19,5 +19,32 @@ describe("mascot shape catalogue", () => {
       expect(shape.anchor.scale).toBeGreaterThan(0.45);
       expect(shape.anchor.scale).toBeLessThan(0.75);
     }
+  });
+
+  it("ships the Grok-inspired eight-shape basic robot set", () => {
+    const base = MASCOT_SHAPES.filter(({ category }) => category === "base");
+
+    expect(base).toHaveLength(8);
+    expect(base.map(({ label }) => label)).toEqual([
+      "圆润",
+      "圆球",
+      "方块",
+      "胶囊",
+      "三角",
+      "晶核",
+      "云团",
+      "水滴",
+    ]);
+    expect(base.every(({ id }) => mascotUsesEyesOnly(id))).toBe(true);
+    expect(base.every(({ shape }) => shape.body.includes("{{GRADIENT}}"))).toBe(true);
+  });
+
+  it("keeps animal faces unchanged and maps retired base ids", () => {
+    const animals = MASCOT_SHAPES.filter(({ category }) => category === "animal");
+
+    expect(animals.every(({ id }) => !mascotUsesEyesOnly(id))).toBe(true);
+    expect(mascotShape("blob").name).toBe("drop");
+    expect(mascotShape("diamond").name).toBe("crystal");
+    expect(mascotShape("shield").name).toBe("crystal");
   });
 });

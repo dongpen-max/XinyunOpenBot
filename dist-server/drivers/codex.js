@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.js";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.js";
 import { augmentedPath } from "../env-path.js";
+import { mcpEnvironment, mcpStdioConfigs } from "../mcp.js";
 import { appendNative } from "./native.js";
 const DRIVER_KIND = "codex";
 const proxyPath = (basename) => {
@@ -54,6 +55,9 @@ export function codexAppServerArgs(turn) {
     }
     if (turn.integrations?.agents)
         appendMcpOverrides(args, "agents", turn.integrations.agents);
+    for (const [index, remote] of mcpStdioConfigs(turn.integrations?.mcp, { inheritCredentials: true }).entries()) {
+        appendMcpOverrides(args, turn.integrations.mcp[index].id, remote);
+    }
     args.push("app-server");
     return args;
 }
@@ -118,6 +122,7 @@ export const CodexDriver = {
                 PATH: augmentedPath(),
                 NPM_CONFIG_LOGLEVEL: "error",
             };
+            Object.assign(env, mcpEnvironment(turn.integrations?.mcp));
             // The CLI owns its own ChatGPT login; a leaked API key flips billing to
             // pay-as-you-go, so the key is only forwarded when a custom base URL is
             // configured — that combination means "bring your own gateway".

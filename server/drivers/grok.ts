@@ -19,6 +19,7 @@ import type {
 } from "../contracts.ts";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.ts";
 import { connectMcpStdioMany, type McpStdioConfig } from "../tools/mcp-stdio.ts";
+import { mcpStdioConfigs } from "../mcp.ts";
 import {
   runOpenAICompatibleToolLoop,
   type OpenAIMessage,
@@ -239,6 +240,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           const mcps = [
             ...(config.computerTools ? [computerMcpConfig(turn)] : []),
             ...(config.agentTools ? [agentsMcpConfig(turn)] : []),
+            ...mcpStdioConfigs(turn.integrations?.mcp),
           ].filter((mcp): mcp is McpStdioConfig => mcp !== null);
           toolProvider = await connectMcpStdioMany(mcps, abort.signal);
           const { text, usage } = await runOpenAICompatibleToolLoop({

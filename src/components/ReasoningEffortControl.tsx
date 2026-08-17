@@ -71,7 +71,7 @@ export function ReasoningEffortControl({
         <div
           role="group"
           aria-label="模型思考强度"
-          className="reasoning-effort-popover animate-pop-in absolute bottom-[calc(100%+12px)] left-0 z-30 w-[290px] rounded-2xl border border-hairline/60 bg-panel p-3.5 shadow-2xl"
+          className="reasoning-effort-popover animate-pop-in absolute bottom-[calc(100%+12px)] right-0 z-30 w-[290px] rounded-2xl border border-hairline/60 bg-panel p-3.5 shadow-2xl"
         >
           <div className="mb-2.5 flex items-start justify-between gap-3">
             <div>

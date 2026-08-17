@@ -15,6 +15,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR } from "../config.js";
 import { augmentedPath } from "../env-path.js";
+import { mcpStdioConfigs } from "../mcp.js";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.js";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.js";
 import { appendNative } from "./native.js";
@@ -271,6 +272,11 @@ export const ClaudeDriver = {
             if (turn.integrations?.agents) {
                 mcpServers.agents = { ...turn.integrations.agents };
                 allowed.push("mcp__agents");
+            }
+            for (const [index, remote] of mcpStdioConfigs(turn.integrations?.mcp).entries()) {
+                const name = turn.integrations.mcp[index].id;
+                mcpServers[name] = remote;
+                allowed.push(`mcp__${name}`);
             }
             // permission broker: anything acceptEdits would silently deny becomes
             // an Allow/Deny card in chat, and the agent gets ask_user. Skipped in

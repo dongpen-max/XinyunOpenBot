@@ -13,8 +13,9 @@ import { approvalKey, autoDecision } from "./auto-approve.ts";
 import * as box from "./box.ts";
 import { cloudComputerLeases } from "./cloud-computer-pool.ts";
 import * as composio from "./composio.ts";
+import * as mcp from "./mcp.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
+import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { resetPathCache } from "./env-path.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { discoverModels, saveDiscoveredModels, type RelaySection } from "./models-discover.ts";
@@ -27,7 +28,14 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { DOMESTIC_PROVIDER_IDS } from "./domestic-models.ts";
-import { mentionedBots, roomResponders, Store, type GroupDefaultResponder, type Message } from "./store.ts";
+import {
+  mentionedBots,
+  roomResponders,
+  Store,
+  type GroupDefaultResponder,
+  type Message,
+  type TaskRecord,
+} from "./store.ts";
 import { describeVoice, synthesize, transcribe } from "./voice/index.ts";
 import { toUtterances } from "./voice/speech-text.ts";
 
@@ -126,6 +134,24 @@ const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 
+type StoredBot = NonNullable<ReturnType<typeof store.bot>>;
+
+/** Provider-native continuation tokens never cross the server boundary. */
+const wireTask = ({ resumeCursors: _resumeCursors, ...task }: TaskRecord) => task;
+
+/** Strip both the legacy active-task cursor mirror and all per-task cursors. */
+const wireBot = (bot: StoredBot) => {
+  const { resumeCursors: _resumeCursors, tasks, ...rest } = bot;
+  return { ...rest, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+};
+
+const wireBotWithThread = (bot: StoredBot) => ({
+  ...wireBot(bot),
+  messages: store.messagesFor(bot.threadId),
+  activeLeafId: store.activeLeaf(bot.threadId),
+  tasks: store.tasks(bot.id).map(wireTask),
+});
+
 // ── SSE fan-out to clients ─────────────────────────────────────────────
 interface SseClient {
   res: ServerResponse;
@@ -146,6 +172,10 @@ function broadcast(payload: Record<string, unknown>) {
       sseClients.delete(client);
     }
   }
+}
+
+function broadcastBot(bot: StoredBot | null | undefined, withThread = false) {
+  if (bot) broadcast({ kind: "bot", bot: withThread ? wireBotWithThread(bot) : wireBot(bot) });
 }
 
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
@@ -299,7 +329,7 @@ bus.subscribe((event: RuntimeEvent) => {
     case "turn.completed": {
       if (bot) {
         store.patchBot(bot.id, { busy: false, unread: true });
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(store.bot(bot.id));
         if (screenPollers.has(bot.id)) {
           // the last live frame becomes a settled inline screen message —
           // the screenshot-in-chat moment. One fresh capture first, so the
@@ -507,12 +537,14 @@ async function startTurn(
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
   store.patchBot(bot.id, { busy: true, unread: false });
-  broadcast({ kind: "bot", bot: store.bot(bot.id) });
+  broadcastBot(store.bot(bot.id));
 
   void (async () => {
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
       if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
+      const managedMcp = mcp.activeMcpIntegrations(cfg);
+      if (managedMcp.length) integrations.mcp = managedMcp;
       const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
       // Capability, not provider name, decides whether this exact engine can
       // work through a cloud computer. `native` runs the whole turn on Box;
@@ -531,6 +563,9 @@ async function startTurn(
             broadcast({ kind: "computer", botId: bot.id, state: "checking" });
             let b = await box.findBox(cfg, bot.id).catch(() => null);
             if (!b) {
+              if (!box.automaticBoxCreationEnabled(cfg)) {
+                throw new Error("未找到云端电脑；本机已禁止自动创建，请在电脑面板中明确执行创建命令");
+              }
               await box.provisionBox(cfg, bot.id, bot.name, (state) =>
                 broadcast({ kind: "computer", botId: bot.id, state }),
               );
@@ -647,7 +682,7 @@ async function startTurn(
       });
       broadcast({ kind: "message", threadId: bot.threadId, message: failure });
       store.patchBot(bot.id, { busy: false });
-      broadcast({ kind: "bot", bot: store.bot(bot.id) });
+      broadcastBot(store.bot(bot.id));
     }
   })();
 }
@@ -846,7 +881,7 @@ async function reloadProviders() {
     });
     broadcast({ kind: "message", threadId: b.threadId, message: note });
     store.patchBot(b.id, { busy: false });
-    broadcast({ kind: "bot", bot: store.bot(b.id) });
+    broadcastBot(store.bot(b.id));
   }
 }
 
@@ -910,7 +945,41 @@ function readBytes(req: IncomingMessage, maxBytes = 25_000_000): Promise<Uint8Ar
   });
 }
 
+function requestHostName(host: string | undefined): string | null {
+  if (!host) return null;
+  const value = host.trim().toLowerCase();
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    return end > 0 ? value.slice(1, end) : null;
+  }
+  return value.split(":", 1)[0] || null;
+}
+
+function isLoopbackHost(host: string | undefined): boolean {
+  const hostname = requestHostName(host);
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      isLoopbackHost(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 const server = createServer(async (req, res) => {
+  if (!isLoopbackHost(req.headers.host)) {
+    return json(res, 403, { error: "forbidden: loopback host required" });
+  }
+  if (!isAllowedOrigin(req.headers.origin)) {
+    return json(res, 403, { error: "forbidden: cross-origin request" });
+  }
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -1040,12 +1109,7 @@ const server = createServer(async (req, res) => {
     // ── bots ──
     if (method === "GET" && path === "/api/bots") {
       return json(res, 200, {
-        bots: store.bots.map((b) => ({
-          ...b,
-          messages: store.messagesFor(b.threadId),
-          activeLeafId: store.activeLeaf(b.threadId),
-          tasks: (b.tasks ?? []).map(({ resumeCursors, ...t }) => t),
-        })),
+        bots: store.bots.map(wireBotWithThread),
         groups: store.groups.map((g) => ({ ...g, messages: store.messagesFor(g.threadId) })),
       });
     }
@@ -1076,8 +1140,13 @@ const server = createServer(async (req, res) => {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (Array.isArray(body.memberIds)) {
-        const ids = body.memberIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id)));
-        if (ids.length) patch.memberIds = ids;
+        if (existing.dm) return json(res, 400, { error: "direct channels have fixed membership" });
+        if (existing.busyBotId) return json(res, 409, { error: "room membership cannot change while a bot is working" });
+        const ids = [...new Set(body.memberIds.filter(
+          (id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id)),
+        ))];
+        if (!ids.length) return json(res, 400, { error: "a room needs at least one bot" });
+        patch.memberIds = ids;
       }
       if (body.defaultResponder !== undefined) {
         const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
@@ -1142,13 +1211,7 @@ const server = createServer(async (req, res) => {
     if (method === "POST" && path === "/api/bots") {
       const bot = store.createBot();
       store.patchBot(bot.id, { modelSelection: await defaultSelection() });
-      return json(res, 201, {
-        bot: {
-          ...store.bot(bot.id)!,
-          messages: store.messagesFor(bot.threadId),
-          activeLeafId: store.activeLeaf(bot.threadId),
-        },
-      });
+      return json(res, 201, { bot: wireBotWithThread(store.bot(bot.id)!) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "PATCH") {
@@ -1210,8 +1273,8 @@ const server = createServer(async (req, res) => {
       if (chiefChanges === null) return json(res, 404, { error: "no such bot" });
       const changed = new Map([[bot.id, store.bot(bot.id)!]]);
       for (const changedBot of chiefChanges) changed.set(changedBot.id, changedBot);
-      for (const changedBot of changed.values()) broadcast({ kind: "bot", bot: changedBot });
-      return json(res, 200, { bot: store.bot(bot.id)! });
+      for (const changedBot of changed.values()) broadcastBot(changedBot);
+      return json(res, 200, { bot: wireBot(store.bot(bot.id)!) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
@@ -1354,13 +1417,6 @@ const server = createServer(async (req, res) => {
     // The bot record answers with its messages because switching tasks
     // changes which transcript is live, and a partial patch would leave
     // the client showing the previous task's conversation.
-    const botWithThread = (bot: NonNullable<ReturnType<typeof store.bot>>) => ({
-      ...bot,
-      messages: store.messagesFor(bot.threadId),
-      activeLeafId: store.activeLeaf(bot.threadId),
-      tasks: store.tasks(bot.id).map(({ resumeCursors, ...t }) => t),
-    });
-
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks$/);
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
@@ -1369,25 +1425,24 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const task = store.createTask(bot.id, typeof body.title === "string" ? body.title : undefined);
       if (!task) return json(res, 500, { error: "couldn't create that task" });
-      const fresh = botWithThread(store.bot(bot.id)!);
-      broadcast({ kind: "bot", bot: fresh });
-      return json(res, 201, { bot: fresh, task });
+      const fresh = wireBotWithThread(store.bot(bot.id)!);
+      broadcastBot(store.bot(bot.id), true);
+      return json(res, 201, { bot: fresh, task: wireTask(task) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)$/);
     if (m && method === "POST") {
       const switched = store.switchTask(m[1], m[2]);
       if (!switched) return json(res, 404, { error: "no such task" });
-      const fresh = botWithThread(switched);
-      broadcast({ kind: "bot", bot: fresh });
+      const fresh = wireBotWithThread(switched);
+      broadcastBot(switched, true);
       return json(res, 200, { bot: fresh });
     }
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const task = store.renameTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });
-      const fresh = botWithThread(store.bot(m[1])!);
-      broadcast({ kind: "bot", bot: fresh });
-      return json(res, 200, { task });
+      broadcastBot(store.bot(m[1]), true);
+      return json(res, 200, { task: wireTask(task) });
     }
     if (m && method === "DELETE") {
       const bot = store.bot(m[1]);
@@ -1396,8 +1451,8 @@ const server = createServer(async (req, res) => {
       }
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 400, { error: "a bot keeps at least one task" });
-      const fresh = botWithThread(updated);
-      broadcast({ kind: "bot", bot: fresh });
+      const fresh = wireBotWithThread(updated);
+      broadcastBot(updated, true);
       return json(res, 200, { bot: fresh });
     }
 
@@ -1508,10 +1563,54 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/connectors\/([\w-]+)$/);
     if (m && method === "DELETE") return json(res, 200, await composio.removeService(cfg, m[1]));
 
+    // ── user-managed remote MCP services ──────────────────────────────
+    if (method === "GET" && path === "/api/mcp/servers") {
+      return json(res, 200, { servers: mcp.publicMcpServers(cfg) });
+    }
+    if (method === "POST" && path === "/api/mcp/servers") {
+      try {
+        const next = mcp.upsertMcpServer(cfg, await readBody(req));
+        replaceMcpServers(next.servers);
+        Object.assign(cfg, loadConfig());
+        return json(res, 201, { server: mcp.publicMcpServers(cfg).find((server) => server.id === next.id) });
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    m = path.match(/^\/api\/mcp\/servers\/([a-z][\w-]{0,31})$/);
+    if (m && method === "PATCH") {
+      try {
+        const next = mcp.upsertMcpServer(cfg, { ...(await readBody(req)), id: m[1] });
+        replaceMcpServers(next.servers);
+        Object.assign(cfg, loadConfig());
+        return json(res, 200, { server: mcp.publicMcpServers(cfg).find((server) => server.id === next.id) });
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (m && method === "DELETE") {
+      const servers = mcp.deleteMcpServer(cfg, m[1]);
+      if (!servers) return json(res, 404, { error: "no such MCP server" });
+      replaceMcpServers(servers);
+      Object.assign(cfg, loadConfig());
+      return json(res, 200, { ok: true });
+    }
+    m = path.match(/^\/api\/mcp\/servers\/([a-z][\w-]{0,31})\/test$/);
+    if (m && method === "POST") {
+      const server = cfg.mcp?.servers?.[m[1]];
+      if (!server) return json(res, 404, { error: "no such MCP server" });
+      try {
+        const tools = await mcp.probeMcpServer(server);
+        return json(res, 200, { ok: true, tools });
+      } catch (error) {
+        return json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     // ── the bot's cloud computer (Box) ──
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer$/);
     if (m && method === "GET") return json(res, 200, await box.boxStatus(cfg, m[1]));
-    m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|join|sleep|exec|screenshot)$/);
+    m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|replace|join|sleep|exec|screenshot)$/);
     if (m && method === "POST") {
       const botId = m[1];
       const bot = store.bot(botId);
@@ -1525,6 +1624,16 @@ const server = createServer(async (req, res) => {
               broadcast({ kind: "computer", botId, state }),
             ),
           );
+        case "replace": {
+          const body = await readBody(req);
+          return json(
+            res,
+            200,
+            await box.replaceAllBoxes(cfg, bot.name, String(body.confirm ?? ""), (state) =>
+              broadcast({ kind: "computer", botId, state }),
+            ),
+          );
+        }
         case "join":
           return json(res, 200, await box.joinBox(cfg, botId));
         case "sleep":

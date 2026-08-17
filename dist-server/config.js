@@ -1,7 +1,7 @@
 // Config + data dirs. One file, ~/.openmausbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { chmodSync, readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DOMESTIC_PROVIDER_IDS, DOMESTIC_PROVIDER_PRESETS, } from "./domestic-models.js";
@@ -115,7 +115,31 @@ export function saveConfig(patch) {
         };
     }
     mkdirSync(DATA_DIR, { recursive: true });
-    writeFileAtomic(p, JSON.stringify(disk, null, 2));
+    writeConfigFile(p, disk);
+}
+function writeConfigFile(path, disk) {
+    writeFileAtomic(path, JSON.stringify(disk, null, 2), 0o600);
+    try {
+        chmodSync(path, 0o600);
+    }
+    catch {
+        // Best effort on platforms/filesystems without POSIX mode semantics.
+    }
+}
+/** Replace the complete MCP registry so removing a service really removes its
+ * stored token too. Other config sections are preserved untouched. */
+export function replaceMcpServers(servers) {
+    const p = join(DATA_DIR, "config.json");
+    let disk = {};
+    try {
+        disk = JSON.parse(readFileSync(p, "utf8"));
+    }
+    catch {
+        /* first write */
+    }
+    disk.mcp = { servers };
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeConfigFile(p, disk);
 }
 export function instanceConfigs(cfg) {
     // The default `grok` instance rides the `grokAgent` driver, not the API-key
