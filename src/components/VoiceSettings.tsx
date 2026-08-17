@@ -13,7 +13,7 @@ const CALIBRATION_SAMPLE = "正在校准麦克风。请暂时保持安静，稍�
 const inputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
 
-export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function VoiceSettingsContent() {
   const { state, dispatch } = useStore();
   const status = state.config?.voice;
   const speech = useVoiceSpeech();
@@ -120,14 +120,7 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
   const availableVoices = voiceOptions(provider);
 
   return (
-    <SettingsDisclosure
-      icon={Mic}
-      title="语音聊天"
-      description="配置识别与合成服务；每个机器人可在自己的设置中覆盖音色和语速。"
-      summary={`${voice.split(":").at(-1) ?? voice} · ${speed.toFixed(2)}×`}
-      open={open}
-      onToggle={onToggle}
-    >
+    <>
       <div className="grid gap-3">
         <div className="text-[13px] font-medium text-ink">语音识别（STT）</div>
         <input className={inputClass} value={sttUrl} onChange={(e) => setSttUrl(e.target.value)} placeholder="https://api.example.com/v1" aria-label="STT URL" />
@@ -219,6 +212,25 @@ export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () 
       </div>
       {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
       {speech.error && <div className="mt-2 text-[12px] text-danger">{speech.error}</div>}
+    </>
+  );
+}
+
+export function VoiceSettings({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const { state } = useStore();
+  const voice = state.config?.voice?.tts.voice ?? "未配置";
+  const speed = state.config?.voice?.tts.speed ?? 1;
+
+  return (
+    <SettingsDisclosure
+      icon={Mic}
+      title="语音聊天"
+      description="配置识别与合成服务；每个机器人可在自己的设置中覆盖音色和语速。"
+      summary={`${voice.split(":").at(-1) ?? voice} · ${speed.toFixed(2)}×`}
+      open={open}
+      onToggle={onToggle}
+    >
+      <VoiceSettingsContent />
     </SettingsDisclosure>
   );
 }

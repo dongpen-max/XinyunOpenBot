@@ -241,6 +241,9 @@ interface AppState {
   computerOpen: boolean;
   /** Bot whose cloud desktop currently appears in the full-app overlay. */
   cloudDesktopBotId: string | null;
+  /** Compact app settings drawer opened from the sidebar gear. */
+  appQuickSettingsOpen: boolean;
+  /** Full app settings center opened from the account menu and deep links. */
   appSettingsOpen: boolean;
   /** latest live frame of a bot's computer, per botId */
   screens: Record<string, { png: string; mime: string }>;
@@ -314,6 +317,7 @@ type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "openCloudDesktop"; botId: string }
   | { type: "closeCloudDesktop" }
+  | { type: "toggleAppQuickSettings"; open?: boolean }
   | { type: "toggleAppSettings"; open?: boolean }
   | {
       type: "updateBot";
@@ -555,13 +559,14 @@ function reducer(state: AppState, action: Action): AppState {
           : state),
         error: action.message,
       };
-    // bot settings, the computer panel, and app settings share the right slot
+    // Bot settings, the computer panel, and quick app settings share the right slot.
     case "toggleSettings": {
       const open = action.open ?? !state.settingsOpen;
       return {
         ...state,
         settingsOpen: open,
         computerOpen: open ? false : state.computerOpen,
+        appQuickSettingsOpen: open ? false : state.appQuickSettingsOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
@@ -574,6 +579,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         computerOpen: open,
         settingsOpen: open ? false : state.settingsOpen,
+        appQuickSettingsOpen: open ? false : state.appQuickSettingsOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
@@ -585,10 +591,23 @@ function reducer(state: AppState, action: Action): AppState {
         cloudDesktopBotId: action.botId,
         settingsOpen: false,
         computerOpen: false,
+        appQuickSettingsOpen: false,
         appSettingsOpen: false,
       };
     case "closeCloudDesktop":
       return { ...state, cloudDesktopBotId: null };
+    case "toggleAppQuickSettings": {
+      const open = action.open ?? !state.appQuickSettingsOpen;
+      return {
+        ...state,
+        appQuickSettingsOpen: open,
+        settingsOpen: open ? false : state.settingsOpen,
+        computerOpen: open ? false : state.computerOpen,
+        appSettingsOpen: open ? false : state.appSettingsOpen,
+        pluginsOpen: open ? false : state.pluginsOpen,
+        cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
+      };
+    }
     case "toggleAppSettings": {
       const open = action.open ?? !state.appSettingsOpen;
       return {
@@ -596,6 +615,7 @@ function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
+        appQuickSettingsOpen: open ? false : state.appQuickSettingsOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
@@ -698,6 +718,7 @@ const initialState: AppState = {
   pluginsOpen: false,
   computerOpen: false,
   cloudDesktopBotId: null,
+  appQuickSettingsOpen: false,
   appSettingsOpen: false,
   screens: {},
   provisioning: {},

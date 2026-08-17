@@ -10,7 +10,7 @@ import { SettingsPanel } from "@/components/SettingsPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { CloudDesktopView } from "@/components/CloudDesktopView";
-import { AppSettingsPanel } from "@/components/AppSettingsPanel";
+import { AppSettingsCenter, AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { NoEngines } from "@/components/NoEngines";
 import { PaneResizeHandle } from "@/components/PaneResizeHandle";
@@ -57,7 +57,7 @@ function Shell() {
   const noEngines = state.connected && state.instances.length > 0 && !state.instances.some((i) => i.snapshot.state === "available");
   const layoutRef = useRef<HTMLDivElement>(null);
   const rightOpen = Boolean(
-    state.settingsOpen || state.computerOpen || state.appSettingsOpen,
+    state.settingsOpen || state.computerOpen || state.appQuickSettingsOpen,
   );
   const [layoutWidth, setLayoutWidth] = useState(() => window.innerWidth);
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() =>
@@ -250,13 +250,14 @@ function Shell() {
                 <StableSettingsPanel bot={bot} />
               ) : state.computerOpen && bot ? (
                 <StableComputerPanel bot={bot} />
-              ) : state.appSettingsOpen ? (
+              ) : state.appQuickSettingsOpen ? (
                 <StableAppSettingsPanel />
               ) : null}
             </div>
           </>
         )}
         {state.pluginsOpen && <PluginsPanel />}
+        {state.appSettingsOpen && <AppSettingsCenter />}
       </div>
       {cloudDesktopBot && <CloudDesktopView key={cloudDesktopBot.id} bot={cloudDesktopBot} />}
     </div>

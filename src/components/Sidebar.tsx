@@ -1,5 +1,6 @@
 import { track } from "@/lib/analytics";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowDownToLine,
   BellDot,
@@ -103,6 +104,104 @@ function UpdateButton() {
         <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent" />
       )}
     </button>
+  );
+}
+
+function AccountMenu({ anchor, onClose }: { anchor: DOMRect; onClose: () => void }) {
+  const { state, dispatch } = useStore();
+  const updaterState = useUpdaterState();
+  const settingsRef = useRef<HTMLButtonElement>(null);
+  const updater = window.ogb?.updater;
+  const profile = state.config?.profile;
+  const name = profile?.name?.trim() || zhCN.sidebar.you;
+  const email = profile?.email?.trim() || "尚未填写邮箱";
+  const updateLabel =
+    updaterState?.status === "available"
+      ? `下载 ${updaterState.version ?? "新版本"}`
+      : updaterState?.status === "downloading"
+        ? `正在下载 ${Math.round(updaterState.percent ?? 0)}%`
+        : updaterState?.status === "downloaded"
+          ? "重启并更新"
+          : updaterState?.status === "checking"
+            ? "正在检查更新"
+            : "检查更新";
+
+  useEffect(() => {
+    settingsRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    const onResize = () => onClose();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [onClose]);
+
+  const runUpdate = () => {
+    if (!updater) return;
+    if (updaterState?.status === "downloaded") void updater.install();
+    else if (updaterState?.status === "available") void updater.download();
+    else void updater.check();
+  };
+
+  const width = 284;
+  const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12));
+  const bottom = Math.max(12, window.innerHeight - anchor.top + 8);
+
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-40" onMouseDown={onClose} />
+      <div
+        className="account-menu animate-pop-in fixed z-50 w-[284px] overflow-hidden rounded-2xl border border-hairline/55 bg-card p-2 shadow-2xl shadow-black/45"
+        style={{ left, bottom }}
+        role="menu"
+        aria-label="个人账号菜单"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 px-2.5 py-2.5">
+          <InitialsAvatar initials={profileInitials(profile)} size={36} />
+          <div className="min-w-0">
+            <div className="truncate text-[14px] font-semibold text-ink">{name}</div>
+            <div className="truncate text-[11.5px] text-ink-secondary">{email}</div>
+          </div>
+        </div>
+        <div className="my-1 h-px bg-hairline/40" />
+        <button
+          ref={settingsRef}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onClose();
+            dispatch({ type: "toggleAppSettings", open: true });
+          }}
+          className="ui-pressable flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13.5px] text-ink hover:bg-raised"
+        >
+          <Settings size={17} className="text-ink-secondary" />
+          <span className="flex-1">设置</span>
+        </button>
+        {updater && (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={runUpdate}
+            disabled={updaterState?.status === "checking" || updaterState?.status === "downloading"}
+            className="ui-pressable flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13.5px] text-ink hover:bg-raised disabled:opacity-55"
+          >
+            {updaterState?.status === "checking" || updaterState?.status === "downloading" ? (
+              <Loader2 size={17} className="animate-spin text-ink-secondary" />
+            ) : updaterState?.status === "available" ? (
+              <ArrowDownToLine size={17} className="text-ink-secondary" />
+            ) : (
+              <RefreshCw size={17} className="text-ink-secondary" />
+            )}
+            <span className="flex-1">{updateLabel}</span>
+          </button>
+        )}
+        <div className="mt-1 px-3 pb-1.5 pt-2 text-[10.5px] text-ink-secondary">XinyunOpen Bot · AI 桌面工作台</div>
+      </div>
+    </>,
+    document.body,
   );
 }
 
@@ -524,6 +623,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
   const [plusOpen, setPlusOpen] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
   const [query, setQuery] = useState("");
+  const [accountMenuAnchor, setAccountMenuAnchor] = useState<DOMRect | null>(null);
 
   useEffect(() => {
     if (compact) setQuery("");
@@ -656,7 +756,10 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
         </button>
         <div className={cn("flex items-center", compact && "flex-col justify-center")}>
           <button
-            onClick={() => dispatch({ type: "toggleAppSettings" })}
+            onClick={(event) => {
+              const anchor = event.currentTarget.getBoundingClientRect();
+              setAccountMenuAnchor((current) => current ? null : anchor);
+            }}
             className={cn("flex min-w-0 items-center rounded-xl text-left hover:bg-raised/50", compact ? "justify-center p-2" : "flex-1 gap-3 px-3 py-2")}
             title={compact ? "个人资料与应用设置" : undefined}
             aria-label="个人资料与应用设置"
@@ -669,7 +772,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
           <div className={cn("flex items-center", compact && "justify-center")}>
             <UpdateButton />
             <button
-              onClick={() => dispatch({ type: "toggleAppSettings" })}
+              onClick={() => dispatch({ type: "toggleAppQuickSettings" })}
               className="ui-pressable rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
               title="应用设置"
               aria-label="应用设置"
@@ -683,6 +786,7 @@ export function Sidebar({ compact = false }: { compact?: boolean }) {
       {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {roomMenu && <RoomContextMenu menu={roomMenu} onClose={() => setRoomMenu(null)} />}
       {newRoom && <NewRoomPanel onClose={() => setNewRoom(false)} />}
+      {accountMenuAnchor && <AccountMenu anchor={accountMenuAnchor} onClose={() => setAccountMenuAnchor(null)} />}
     </aside>
   );
 }
