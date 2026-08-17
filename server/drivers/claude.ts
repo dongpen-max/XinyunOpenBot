@@ -8,9 +8,9 @@
 //   - Composio Connect (connected apps → tools) over streamable HTTP
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -345,8 +345,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
       }
+      let mcpConfigPath: string | null = null;
       if (Object.keys(mcpServers).length) {
-        args.push("--mcp-config", JSON.stringify({ mcpServers }));
+        // MCP configuration may carry provider, Box, and agents tokens. Claude
+        // accepts a file path here, which keeps those values out of process
+        // listings for the lifetime of the turn.
+        mcpConfigPath = join(mkdtempSync(join(tmpdir(), "xinyun-mcp-")), "mcp.json");
+        writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+        args.push("--mcp-config", mcpConfigPath);
         args.push("--allowedTools", allowed.join(","));
       }
 
@@ -363,6 +369,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (settled) return;
         settled = true;
         broker?.close();
+        if (mcpConfigPath) {
+          try {
+            rmSync(dirname(mcpConfigPath), { recursive: true, force: true });
+          } catch {
+            /* best-effort removal of the short-lived credential file */
+          }
+        }
         active.delete(threadId);
         emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost });
       };

@@ -1056,12 +1056,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
     loadAll();
+    let firstHello = true;
 
     const es = new EventSource("/api/events");
-    es.onopen = () => {
-      rawDispatch({ type: "connected", value: true });
-      loadAll(); // resync anything missed while disconnected
-    };
+    es.onopen = () => rawDispatch({ type: "connected", value: true });
     es.onerror = () => rawDispatch({ type: "connected", value: false });
     es.onmessage = (raw) => {
       let frame: any;
@@ -1071,6 +1069,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return;
       }
       switch (frame.kind) {
+        case "hello":
+          // The eager load covers the cold start. On reconnect, hydrate only
+          // when the server says the missed gap has fallen out of its buffer.
+          if (!firstHello && !frame.resumed) loadAll();
+          firstHello = false;
+          break;
         case "message":
           rawDispatch({ type: "messageAdded", threadId: frame.threadId, message: frame.message });
           // a settled assistant bubble replaces the in-flight stream

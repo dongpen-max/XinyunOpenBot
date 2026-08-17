@@ -6,7 +6,7 @@
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands: the
 // fake CLI is a shebang script, which Windows cannot exec directly (the
 // same reason claude.cmd needs special handling — see the Windows PRs).
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -169,13 +169,36 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const mcpConfig = JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1]);
-    expect(mcpConfig.mcpServers.agents).toMatchObject({
+    expect(seen.mcpConfig.mcpServers.agents).toMatchObject({
       args: ["/fake/agents-proxy.js"],
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
+    expect(JSON.stringify(seen.argv)).not.toContain("tok");
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__agents");
+  });
+
+  it.each([
+    ["a completed turn", "happy"],
+    ["a crashed turn", "exit-early"],
+  ])("deletes the credential-bearing MCP config after %s", async (_label, mode) => {
+    await create(mode);
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: `t-cleanup-${mode}`,
+      text: "hi",
+      integrations: { composio: { key: "ck_x" } },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const configPath = seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    expect(configPath).toMatch(/xinyun-mcp-/);
+    expect(JSON.stringify(seen.argv)).not.toContain("ck_x");
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(dirname(configPath))).toBe(false);
   });
 
   it("resumes with --resume when a cursor exists and reports that session id", async () => {

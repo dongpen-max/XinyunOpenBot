@@ -229,72 +229,100 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   const vmName = WORKSPACE_BOX_NAME;
   let box = await findBox(cfg, botId);
   let created = false;
-  if (!box) {
-    report?.("creating");
-    const createRes = await boxJson(cfg, "/boxes", {
-      method: "POST",
-      // substrate-side backstop: archives itself (billing pauses, disk
-      // survives) if every stop path dies
-      body: JSON.stringify({ ttlSeconds: 8 * 60 * 60 }),
-    });
-    if (!createRes.ok || !createRes.body?.box?.id) {
-      throw new Error(boxErrorMessage(createRes.status, "box create", createRes.body));
+  try {
+    if (!box) {
+      report?.("creating");
+      const createRes = await boxJson(cfg, "/boxes", {
+        method: "POST",
+        // substrate-side backstop: archives itself (billing pauses, disk
+        // survives) if every stop path dies
+        // Do not inject the account owner's environment into the guest; the
+        // computer process only needs the desktop session and X11 tools.
+        body: JSON.stringify({ ttlSeconds: 8 * 60 * 60, noEnv: true }),
+      });
+      if (!createRes.ok || !createRes.body?.box?.id) {
+        throw new Error(boxErrorMessage(createRes.status, "box create", createRes.body));
+      }
+      box = createRes.body.box;
+      created = true;
+      workspaceBoxIdCache = box.id;
+      const rename = await boxJson(cfg, `/boxes/${box.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: vmName }),
+      });
+      if (!rename.ok) throw new Error(boxErrorMessage(rename.status, "box naming", rename.body));
+    } else {
+      report?.("reusing");
+      if (box.name !== vmName) {
+        const rename = await boxJson(cfg, `/boxes/${box.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: vmName }),
+        });
+        if (rename.ok) box = { ...box, name: vmName };
+      }
     }
-    box = createRes.body.box;
-    created = true;
-    workspaceBoxIdCache = box.id;
-    await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
-  } else {
-    report?.("reusing");
-    if (box.name !== vmName) {
-      await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
-      box = { ...box, name: vmName };
+    if (!created && !READY.has(box.state)) report?.("waking");
+    const ready = await waitReady(cfg, box.id);
+    if (!ready) throw new Error("box did not become ready within 90s — retry in a minute");
+
+    // Idempotent bootstrap. Three layers:
+    //   1. X11 action + capture tools (xdotool/scrot/imagemagick) — the
+    //      always-works fallback for the computer tools.
+    //   2. CUA (cua-computer-server, trycua) installed into /opt/ogb/venv in
+    //      the BACKGROUND (first install takes minutes; nohup'd children
+    //      survive the commands endpoint returning — probed by agentcal).
+    //   3. computer-server started loopback-only on :8000 when installed —
+    //      driven from outside via the box's run-command endpoint, so no
+    //      inbound port and no tunnel is ever needed.
+    report?.("initializing");
+    const cuaInstall = [
+      "sudo apt-get update -qq || true",
+      "sudo apt-get install -y -qq gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true",
+      'curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true',
+      'export PATH="$HOME/.local/bin:$PATH"',
+      'sudo mkdir -p /opt/ogb && sudo chown "$(whoami)" /opt/ogb',
+      "uv venv /opt/ogb/venv --python 3.13 >/dev/null 2>&1 || uv venv /opt/ogb/venv >/dev/null 2>&1 || true",
+      "[ -x /opt/ogb/venv/bin/python ] && uv pip install --python /opt/ogb/venv/bin/python cua-computer-server >/dev/null 2>&1 || true",
+      "[ -x /opt/ogb/venv/bin/python ] && /opt/ogb/venv/bin/python -c 'import computer_server' 2>/dev/null && touch /opt/ogb/cua-ready || true",
+    ].join("; ");
+    const bootstrap = [
+      "command -v xdotool >/dev/null || sudo apt-get install -y -qq xdotool scrot imagemagick >/dev/null 2>&1 || true",
+      `[ -f /opt/ogb/cua-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c '${cuaInstall.replace(/'/g, "'\\''")}; rm -f /tmp/ogb-cua-installing' > /tmp/ogb-cua-install.log 2>&1 & }`,
+      // start CUA computer-server (loopback only) once installed; pidfile-free
+      // guard on the module name is safe here — the pattern cannot match this
+      // bootstrap's own shell (agentcal's pgrep self-match trap)
+      'if [ -f /opt/ogb/cua-ready ] && ! pgrep -f "computer_server" >/dev/null 2>&1; then DISPLAY=${DISPLAY:-:0} nohup /opt/ogb/venv/bin/python -m computer_server --host 127.0.0.1 --port 8000 --width 1280 --height 800 > /tmp/ogb-cua-server.log 2>&1 & fi',
+      `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — XinyunOpen Bot"; echo; exec bash -i'`,
+      "echo bootstrapped",
+    ].join("\n");
+    let boot;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      boot = await runCommand(cfg, box.id, bootstrap);
+      if (boot.ok || boot.exitCode !== null) break;
+      await new Promise((r) => setTimeout(r, 3000));
     }
-  }
-  if (!created && !READY.has(box.state)) report?.("waking");
-  const ready = await waitReady(cfg, box.id);
-  if (!ready) throw new Error("box did not become ready within 90s — retry in a minute");
+    if (!boot?.ok) {
+      const detail = boot?.stderr?.slice(0, 200) || (boot?.exitCode != null ? `exit ${boot.exitCode}` : "no response");
+      throw new Error(`box setup failed: ${detail}`);
+    }
 
-  // Idempotent bootstrap. Three layers:
-  //   1. X11 action + capture tools (xdotool/scrot/imagemagick) — the
-  //      always-works fallback for the computer tools.
-  //   2. CUA (cua-computer-server, trycua) installed into /opt/ogb/venv in
-  //      the BACKGROUND (first install takes minutes; nohup'd children
-  //      survive the commands endpoint returning — probed by agentcal).
-  //   3. computer-server started loopback-only on :8000 when installed —
-  //      driven from outside via the box's run-command endpoint, so no
-  //      inbound port and no tunnel is ever needed.
-  report?.("initializing");
-  const cuaInstall = [
-    "sudo apt-get update -qq || true",
-    "sudo apt-get install -y -qq gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true",
-    'curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true',
-    'export PATH="$HOME/.local/bin:$PATH"',
-    'sudo mkdir -p /opt/ogb && sudo chown "$(whoami)" /opt/ogb',
-    "uv venv /opt/ogb/venv --python 3.13 >/dev/null 2>&1 || uv venv /opt/ogb/venv >/dev/null 2>&1 || true",
-    "[ -x /opt/ogb/venv/bin/python ] && uv pip install --python /opt/ogb/venv/bin/python cua-computer-server >/dev/null 2>&1 || true",
-    "[ -x /opt/ogb/venv/bin/python ] && /opt/ogb/venv/bin/python -c 'import computer_server' 2>/dev/null && touch /opt/ogb/cua-ready || true",
-  ].join("; ");
-  const bootstrap = [
-    "command -v xdotool >/dev/null || sudo apt-get install -y -qq xdotool scrot imagemagick >/dev/null 2>&1 || true",
-    `[ -f /opt/ogb/cua-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c '${cuaInstall.replace(/'/g, "'\\''")}; rm -f /tmp/ogb-cua-installing' > /tmp/ogb-cua-install.log 2>&1 & }`,
-    // start CUA computer-server (loopback only) once installed; pidfile-free
-    // guard on the module name is safe here — the pattern cannot match this
-    // bootstrap's own shell (agentcal's pgrep self-match trap)
-    'if [ -f /opt/ogb/cua-ready ] && ! pgrep -f "computer_server" >/dev/null 2>&1; then DISPLAY=${DISPLAY:-:0} nohup /opt/ogb/venv/bin/python -m computer_server --host 127.0.0.1 --port 8000 --width 1280 --height 800 > /tmp/ogb-cua-server.log 2>&1 & fi',
-    `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — XinyunOpen Bot"; echo; exec bash -i'`,
-    "echo bootstrapped",
-  ].join("\n");
-  let boot;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    boot = await runCommand(cfg, box.id, bootstrap);
-    if (boot.ok || boot.exitCode !== null) break;
-    await new Promise((r) => setTimeout(r, 3000));
+    const joinUrl = await mintDesktopUrl(cfg, box.id);
+    if (!joinUrl) throw new Error("box desktop link could not be created");
+    report?.("ready");
+    return { boxId: box.id, machineName: vmName, reused: !created, state: ready.state, joinUrl };
+  } catch (error) {
+    if (!created || !box?.id) throw error;
+    const cleanup = await boxJson(cfg, `/boxes/${box.id}`, {
+      method: "DELETE",
+      headers: { "X-Ascii-Confirm-Delete": box.id },
+    }).catch(() => null);
+    if (workspaceBoxIdCache === box.id) workspaceBoxIdCache = null;
+    if (cleanup?.ok) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message}. The new workspace computer could not be removed automatically; delete box ${box.id} in ascii.dev.`,
+    );
   }
-
-  const joinUrl = await mintDesktopUrl(cfg, box.id);
-  report?.("ready");
-  return { boxId: box.id, machineName: vmName, reused: !created, state: ready.state, joinUrl };
 }
 
 /** Wake the bot's box and return a FRESH desktop URL. */
@@ -313,6 +341,11 @@ export async function sleepBox(cfg: AppConfig, botId: string) {
   if (cloudComputerLeases.isBusy(box.id)) {
     throw new Error("工作区主云端电脑正在执行任务，请等待机器人完成后再休眠");
   }
+  const quiesceBrowser = [
+    'for name in chrome google-chrome chromium chromium-browser; do pid=$(pgrep -o -x "$name" 2>/dev/null || true); [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true; done',
+    'for i in 1 2 3 4 5 6 7 8; do if ! pgrep -x chrome >/dev/null 2>&1 && ! pgrep -x google-chrome >/dev/null 2>&1 && ! pgrep -x chromium >/dev/null 2>&1 && ! pgrep -x chromium-browser >/dev/null 2>&1; then break; fi; sleep 0.25; done',
+  ].join("; ");
+  await runCommand(cfg, box.id, quiesceBrowser, { timeoutMs: 5_000 }).catch(() => null);
   await boxJson(cfg, `/boxes/${box.id}/stop`, { method: "POST" }).catch(() => {});
   return { ok: true };
 }

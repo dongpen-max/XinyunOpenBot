@@ -48,6 +48,23 @@ jobs:
           echo "version: $(node -p "require('./package.json').version")"
           echo "commit:  $(git rev-parse HEAD)"
           ls -lh release/*.exe release/*.yml 2>/dev/null || true
+      - name: verify the packaged tree
+        shell: bash
+        run: |
+          res=release/win-unpacked/resources
+          fail=0
+          [ -f "$res/server/index.js" ] || { echo "::error::missing $res/server/index.js"; fail=1; }
+          [ -f "$res/ui/index.html" ] || { echo "::error::missing $res/ui/index.html"; fail=1; }
+          [ -f "$res/app-update.yml" ] || { echo "::error::missing $res/app-update.yml"; fail=1; }
+          if [ -f "$res/app-update.yml" ]; then
+            grep -q "xinyunopenbot-releases" "$res/app-update.yml" || {
+              echo "::error::app-update.yml does not point at xinyunopenbot-releases"; fail=1; }
+            if grep -q "publisherName" "$res/app-update.yml"; then
+              echo "::error::app-update.yml carries publisherName on an unsigned build"; fail=1
+            fi
+          fi
+          echo "--- app-update.yml ---"; cat "$res/app-update.yml" 2>/dev/null || true
+          exit $fail
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer

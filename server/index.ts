@@ -21,6 +21,7 @@ import { discoverModels, saveDiscoveredModels, type RelaySection } from "./model
 import { modelForReasoningLevel } from "./model-downgrade.ts";
 import { parseReasoningRequest, reasoningEffortForLevel, type ReasoningLevel } from "./reasoning.ts";
 import { shouldUseCloudComputer } from "./turn-computer.ts";
+import { SseReplayBuffer } from "./sse-replay.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -126,14 +127,23 @@ bootSelection = await defaultSelection();
 store.seedIfEmpty();
 
 // ── SSE fan-out to clients ─────────────────────────────────────────────
-const sseClients = new Set<ServerResponse>();
-function broadcast(payload: unknown) {
-  const frame = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const res of [...sseClients]) {
+interface SseClient {
+  res: ServerResponse;
+  screens: boolean;
+}
+
+const sseClients = new Set<SseClient>();
+const sseReplay = new SseReplayBuffer();
+const wantsSseKind = (client: SseClient, kind: string) => kind !== "screen" || client.screens;
+
+function broadcast(payload: Record<string, unknown>) {
+  const { kind, frame } = sseReplay.append(payload);
+  for (const client of [...sseClients]) {
+    if (!wantsSseKind(client, kind)) continue;
     try {
-      res.write(frame);
+      client.res.write(frame);
     } catch {
-      sseClients.delete(res);
+      sseClients.delete(client);
     }
   }
 }
@@ -612,6 +622,9 @@ async function startTurn(
             : integrations.localComputer
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
+          (integrations.computer || integrations.localComputer
+            ? " At a sign-in, password, MFA, CAPTCHA, or other protected-input step, stop and ask the user to complete it on the visible computer. Never type their password or ask them to paste a password or one-time code into chat."
+            : "") +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           (tagged.length
             ? ` The user tagged ${tagged
@@ -999,13 +1012,19 @@ const server = createServer(async (req, res) => {
 
     // ── events stream ──
     if (method === "GET" && path === "/api/events") {
+      const client: SseClient = { res, screens: url.searchParams.get("screens") !== "off" };
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
       });
-      res.write(`data: ${JSON.stringify({ kind: "hello" })}\n\n`);
-      sseClients.add(res);
+      const replay = sseReplay.resume(
+        url.searchParams.get("since") ?? req.headers["last-event-id"],
+        (kind) => wantsSseKind(client, kind),
+      );
+      res.write(`data: ${JSON.stringify({ kind: "hello", cursor: replay.cursor, resumed: replay.resumed })}\n\n`);
+      for (const frame of replay.frames) res.write(frame);
+      sseClients.add(client);
       const keepalive = setInterval(() => {
         try {
           res.write(": keepalive\n\n");
@@ -1013,7 +1032,7 @@ const server = createServer(async (req, res) => {
       }, 25_000);
       req.on("close", () => {
         clearInterval(keepalive);
-        sseClients.delete(res);
+        sseClients.delete(client);
       });
       return;
     }
@@ -1561,7 +1580,7 @@ function shutdown(): Promise<void> {
     cloudLeaseByThread.clear();
     await registry.disposeAll();
     for (const client of sseClients) {
-      try { client.end(); } catch {}
+      try { client.res.end(); } catch {}
     }
     sseClients.clear();
     await new Promise<void>((resolve) => {

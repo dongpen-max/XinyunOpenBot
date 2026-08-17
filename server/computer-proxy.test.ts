@@ -169,7 +169,8 @@ describe("computer proxy (fake box)", () => {
       params: { name: "type_text", arguments: { text: "hello" } },
     });
     const res = await waitFor(5);
-    expect(commands.at(-1)).toMatch(/xdotool type --delay 8 'hello'/);
+    expect(commands.at(-1)).toContain("xdotool type --clearmodifiers --delay 8 --");
+    expect(commands.at(-1)).toContain("hello");
     expect(res.result.content[1]).toMatchObject({ type: "image" });
   });
 

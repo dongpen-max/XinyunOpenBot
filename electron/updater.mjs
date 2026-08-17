@@ -9,6 +9,7 @@
 // the packaged app ships no node_modules.
 import { app, ipcMain } from "electron";
 import { createRequire } from "node:module";
+import { createUpdaterCoordinator } from "./updater-coordinator.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -16,12 +17,7 @@ let autoUpdater = null;
 let win = null;
 // status: idle | checking | available | downloading | downloaded | error
 let state = { status: "idle" };
-// Whether the in-flight check came from the user's button. Background checks
-// fail for reasons that are none of the user's business — no feed published
-// for this platform yet, offline, a GitHub blip — and a popup for those on
-// every launch is pure noise. Only a check the user asked for may surface an
-// error; automatic ones fall back to idle.
-let userInitiated = false;
+let updaterCoordinator = null;
 
 function setState(patch) {
   state = { ...state, ...patch };
@@ -32,31 +28,10 @@ function setState(patch) {
   }
 }
 
-function check(manual = false) {
-  if (!autoUpdater) return;
-  userInitiated = manual;
-  try {
-    autoUpdater.checkForUpdates();
-  } catch (e) {
-    reportError(e);
-  }
-}
-
-function reportError(e) {
-  if (!userInitiated) return setState({ status: "idle" });
-  setState({ status: "error", message: String(e?.message ?? e) });
-}
-
 export function registerUpdaterIpc() {
   ipcMain.handle("update:get-state", () => state);
-  ipcMain.handle("update:check", () => check(true));
-  ipcMain.handle("update:download", () => {
-    try {
-      autoUpdater?.downloadUpdate();
-    } catch (e) {
-      setState({ status: "error", message: String(e?.message ?? e) });
-    }
-  });
+  ipcMain.handle("update:check", () => updaterCoordinator?.check(true));
+  ipcMain.handle("update:download", () => updaterCoordinator?.download());
   ipcMain.handle("update:install", () => {
     // isSilent, isForceRunAfter — relaunch straight into the new version
     try {
@@ -71,12 +46,14 @@ export function startUpdater(mainWindow) {
   win = mainWindow;
   // dev / unsigned builds can't auto-update — leave the banner dormant
   if (!app.isPackaged) {
+    updaterCoordinator = null;
     setState({ status: "idle" });
     return;
   }
   try {
     ({ autoUpdater } = require("./vendor/electron-updater.cjs"));
   } catch {
+    updaterCoordinator = null;
     setState({ status: "error", message: "updater unavailable" });
     return;
   }
@@ -84,22 +61,11 @@ export function startUpdater(mainWindow) {
   autoUpdater.autoInstallOnAppQuit = false; // button-driven install
   autoUpdater.logger = null;
 
-  autoUpdater.on("checking-for-update", () => setState({ status: "checking" }));
-  autoUpdater.on("update-available", (info) =>
-    setState({ status: "available", version: info?.version, message: undefined }),
-  );
-  autoUpdater.on("update-not-available", () => setState({ status: "idle" }));
-  autoUpdater.on("download-progress", (p) =>
-    setState({ status: "downloading", percent: Math.round(p?.percent ?? 0) }),
-  );
-  autoUpdater.on("update-downloaded", (info) =>
-    setState({ status: "downloaded", version: info?.version }),
-  );
-  autoUpdater.on("error", reportError);
+  updaterCoordinator = createUpdaterCoordinator(autoUpdater, setState);
 
   // first check ~15s after launch (let the app settle), then hourly — both
   // silent on failure, hence the arrow: a bare `check` would receive the
   // timer's argument as `manual` and start reporting errors again.
-  setTimeout(() => check(), 15_000).unref?.();
-  setInterval(() => check(), 60 * 60 * 1000).unref?.();
+  setTimeout(() => void updaterCoordinator?.check(), 15_000).unref?.();
+  setInterval(() => void updaterCoordinator?.check(), 60 * 60 * 1000).unref?.();
 }

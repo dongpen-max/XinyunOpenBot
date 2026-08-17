@@ -40,8 +40,20 @@ const SETTLE_MS = 350;
 /** Gap between batched actions so focus changes land before typing. */
 const ACTION_GAP_MS = 120;
 const CHROME_PROFILE = "$HOME/.openmausbot/chrome-profile";
-const CHROME_DEBUG_FLAGS = `--user-data-dir="${CHROME_PROFILE}" --no-first-run --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222`;
-const CHROME_PROFILE_SETUP = `mkdir -p "${CHROME_PROFILE}" && chmod 700 "${CHROME_PROFILE}"`;
+const CHROME_DEBUG_FLAGS = `--user-data-dir="${CHROME_PROFILE}" --password-store=basic --disable-session-crashed-bubble --no-first-run --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222`;
+const CHROME_PROFILE_SETUP = [
+    `profile="${CHROME_PROFILE}"`,
+    'mkdir -p "$profile" "$HOME/.config"',
+    'chmod 700 "$profile"',
+    'for browser_dir in "$HOME/.config/google-chrome" "$HOME/.config/chromium"; do',
+    '  if [ -e "$browser_dir" ] && [ ! -L "$browser_dir" ]; then',
+    '    if [ -d "$browser_dir" ] && ! cp -a -n "$browser_dir"/. "$profile"/; then echo "failed to copy browser profile: $browser_dir" >&2; exit 1; fi',
+    '    mv "$browser_dir" "$browser_dir.pre-xinyun-$(date +%s)-$$"',
+    '  fi',
+    '  if [ -L "$browser_dir" ]; then rm -f "$browser_dir"; fi',
+    '  ln -s "$profile" "$browser_dir"',
+    'done',
+].join("\n");
 /** Frames larger than this come back over the files API instead of
  * inline stdout (keeps us clear of the command endpoint's stdout cap). */
 const INLINE_MAX_BYTES = 400_000;
@@ -66,10 +78,26 @@ async function resumeBox() {
     return false;
 }
 async function runOnBox(command, timeoutMs = 60_000, allowWake = true) {
+    // Agent-issued commands must not inherit provider/account credentials from
+    // the Box host environment. Preserve only the desktop variables required by
+    // X11, Chrome and the computer bridge.
+    const isolatedCommand = [
+        "exec env -i",
+        'HOME="$HOME"',
+        'USER="${USER:-$(id -un)}"',
+        'LOGNAME="${LOGNAME:-${USER:-$(id -un)}}"',
+        'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
+        'DISPLAY="${DISPLAY:-:0}"',
+        'XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"',
+        'XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
+        'DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"',
+        "/bin/bash -c",
+        shellQuote(command),
+    ].join(" ");
     const res = await fetch(`${BOX_API}/boxes/${boxId}/commands`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ command }),
+        body: JSON.stringify({ command: isolatedCommand }),
         signal: AbortSignal.timeout(timeoutMs),
     });
     const body = await res.json().catch(() => null);
@@ -486,7 +514,7 @@ function actionShell(a) {
         const t = String(a.text ?? "");
         if (!t)
             return { error: "type_text needs text" };
-        return `xdotool type --delay 8 ${shellQuote(t)}`;
+        return `xdotool type --clearmodifiers --delay 8 -- ${shellQuote(t)}`;
     }
     if (kind === "press_key") {
         const keys = String(a.keys ?? "").replace(/[^\w+]/g, "");
@@ -682,7 +710,11 @@ async function handle(msg) {
             return await call(msg.id, msg.params?.name, msg.params?.arguments ?? {});
         }
         catch (e) {
-            return text(msg.id, `computer tool failed: ${e.message}`, true);
+            const error = e instanceof Error ? e : new Error(String(e));
+            const timedOut = error.name === "TimeoutError" || /timed?\s*out|timeout/i.test(error.message);
+            return text(msg.id, timedOut
+                ? "computer tool timed out. The action may or may not have completed; take a screenshot to inspect the current state before retrying it."
+                : `computer tool failed: ${error.message}`, true);
         }
     }
     if (String(msg.method ?? "").startsWith("notifications/"))
