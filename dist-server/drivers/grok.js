@@ -179,7 +179,8 @@ export const GrokDriver = {
                 throw new Error("a turn is already running on this thread");
             const turnId = newId();
             const abort = new AbortController();
-            active.set(threadId, { abort, turnId });
+            const asks = new Map();
+            active.set(threadId, { abort, turnId, asks });
             const messages = [
                 ...(turn.system ? [{ role: "system", content: turn.system }] : []),
                 ...(turn.transcript ?? []).map((m) => ({
@@ -199,12 +200,63 @@ export const GrokDriver = {
                         ...mcpStdioConfigs(turn.integrations?.mcp),
                     ].filter((mcp) => mcp !== null);
                     toolProvider = await connectMcpStdioMany(mcps, abort.signal);
+                    const policies = new Map();
+                    for (const integration of turn.integrations?.mcp ?? []) {
+                        for (const [tool, policy] of Object.entries(integration.toolPolicies ?? {})) {
+                            policies.set(tool, { serverId: integration.id, policy });
+                        }
+                    }
+                    const approvedProvider = toolProvider && policies.size
+                        ? {
+                            listTools: () => toolProvider.listTools(),
+                            callTool: async (name, args) => {
+                                const policy = policies.get(name);
+                                if (!policy || policy.policy === "auto")
+                                    return toolProvider.callTool(name, args);
+                                if (policy.policy === "deny") {
+                                    return { text: `MCP tool ${name} is disabled.`, images: [], isError: true };
+                                }
+                                const requestId = newId();
+                                const behavior = await new Promise((resolve) => {
+                                    const timer = setTimeout(() => {
+                                        asks.delete(requestId);
+                                        resolve("deny");
+                                    }, 5 * 60_000);
+                                    timer.unref?.();
+                                    asks.set(requestId, (answer) => {
+                                        clearTimeout(timer);
+                                        asks.delete(requestId);
+                                        resolve(answer);
+                                    });
+                                    emit({
+                                        ...base(threadId, turnId),
+                                        type: "request.opened",
+                                        requestId,
+                                        requestType: "permission",
+                                        tool: `mcp__${policy.serverId}__${name}`,
+                                        summary: `MCP 工具 ${policy.serverId}/${name} 请求执行`,
+                                    });
+                                });
+                                emit({
+                                    ...base(threadId, turnId),
+                                    type: "request.resolved",
+                                    requestId,
+                                    behavior,
+                                    source: "user",
+                                });
+                                return behavior === "allow"
+                                    ? toolProvider.callTool(name, args)
+                                    : { text: `MCP tool ${name} was denied.`, images: [], isError: true };
+                            },
+                            close: () => toolProvider.close(),
+                        }
+                        : toolProvider;
                     const { text, usage } = await runOpenAICompatibleToolLoop({
                         model: turn.model || models.default,
                         messages,
                         reasoningEffort: supportsReasoningEffort ? turn.reasoningEffort : undefined,
                         signal: abort.signal,
-                        toolProvider,
+                        toolProvider: approvedProvider,
                         request: async (body, signal) => {
                             const res = await fetch(`${baseUrl}/chat/completions`, {
                                 method: "POST",
@@ -267,6 +319,9 @@ export const GrokDriver = {
                     });
                 }
                 finally {
+                    for (const finish of asks.values())
+                        finish("deny");
+                    asks.clear();
                     active.delete(threadId);
                     await toolProvider?.close();
                 }
@@ -300,8 +355,11 @@ export const GrokDriver = {
                 },
                 sendTurn,
                 interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
-                respondToRequest: async () => {
-                    throw new Error("grok driver has no pending asks");
+                respondToRequest: async (threadId, requestId, decision) => {
+                    const pending = active.get(threadId)?.asks.get(requestId);
+                    if (!pending)
+                        throw new Error("no such pending request");
+                    pending(decision.behavior === "allow" ? "allow" : "deny");
                 },
                 hasSession: (threadId) => active.has(threadId),
                 stopAll: async () => {

@@ -108,6 +108,7 @@ export interface SendTurnInput {
       url: string;
       auth?: { type: "bearer" | "apiKey"; header?: string; token?: string };
       allowedTools?: string[];
+      toolPolicies?: Record<string, "auto" | "ask" | "deny">;
     }>;
     /** The bot's cloud computer (box.ascii.dev) for desktop/browser use. */
     computer?: { boxId: string; token: string };

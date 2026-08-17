@@ -15,6 +15,7 @@ import {
 import { writeFileAtomic } from "./atomic.ts";
 
 export type VoiceSensitivity = "low" | "medium" | "high" | "custom";
+export type McpToolPolicy = "auto" | "ask" | "deny";
 
 export interface VoiceInputProfileConfig {
   sensitivity?: VoiceSensitivity;
@@ -40,6 +41,10 @@ export interface McpServerConfig {
   /** Absent means every tool advertised by this endpoint. An explicit empty
    * array disables every tool while keeping the service connected. */
   allowedTools?: string[];
+  /** Per-tool execution policy. `auto` runs without another prompt, `ask`
+   * delegates to the provider's permission broker, and `deny` is removed by
+   * the local MCP proxy. */
+  toolPolicies?: Record<string, McpToolPolicy>;
   /** Last successfully discovered tool catalog. Tool inputs are never stored. */
   tools?: Array<{ name: string; description?: string }>;
   lastCheckedAt?: string;

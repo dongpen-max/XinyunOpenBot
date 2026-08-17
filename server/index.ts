@@ -14,6 +14,7 @@ import * as box from "./box.ts";
 import { cloudComputerLeases } from "./cloud-computer-pool.ts";
 import * as composio from "./composio.ts";
 import * as mcp from "./mcp.ts";
+import { appendMcpAudit, recentMcpAudit } from "./mcp-audit.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { resetPathCache } from "./env-path.ts";
@@ -182,6 +183,13 @@ function broadcastBot(bot: StoredBot | null | undefined, withThread = false) {
 // The canonical stream is the source of truth; the persisted transcript
 // and every client view are projections of it.
 const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
+const mcpAuditByItem = new Map<string, {
+  botId: string | null;
+  threadId: string;
+  serverId: string;
+  tool: string;
+  startedAt: string;
+}>();
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
 const cloudLeaseByThread = new Map<string, () => void>();
 const pendingCloudLeaseByThread = new Map<string, AbortController>();
@@ -214,6 +222,20 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.itemType === "assistant_text") {
         pushMessage({ role: "bot", kind: "text", text: event.text });
       } else if (event.itemType === "tool" && event.itemId) {
+        const auditKey = `${event.threadId}:${event.turnId ?? ""}:${event.itemId}`;
+        const audit = mcpAuditByItem.get(auditKey);
+        if (audit) {
+          const completedAt = event.createdAt;
+          const started = Date.parse(audit.startedAt);
+          const completed = Date.parse(completedAt);
+          appendMcpAudit({
+            ...audit,
+            completedAt,
+            durationMs: Number.isFinite(started) && Number.isFinite(completed) ? completed - started : 0,
+            ok: event.ok,
+          });
+          mcpAuditByItem.delete(auditKey);
+        }
         const messageId = toolMessageByItem.get(event.itemId);
         let toolName = "tool";
         if (messageId) {
@@ -235,6 +257,16 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.started":
       if (event.itemType === "tool") {
+        const managed = mcp.resolveManagedMcpTool(cfg, event.title);
+        if (managed && event.itemId) {
+          mcpAuditByItem.set(`${event.threadId}:${event.turnId ?? ""}:${event.itemId}`, {
+            botId: bot?.id ?? speaker?.botId ?? null,
+            threadId: event.threadId,
+            serverId: managed.serverId,
+            tool: managed.tool,
+            startedAt: event.createdAt,
+          });
+        }
         // ask_bot's raw tool chip is redundant — the internal endpoint
         // appends a richer "Messaged @X" chip linking to the channel
         if (event.title?.endsWith("__ask_bot")) break;
@@ -249,7 +281,8 @@ bus.subscribe((event: RuntimeEvent) => {
       // whole point of asking is that a person decides — and anything that
       // looks destructive stops even in auto mode.
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
-      const settled = permission && asker && event.requestId
+      const forceAsk = permission && mcp.managedMcpToolPolicy(cfg, event.tool) === "ask";
+      const settled = permission && !forceAsk && asker && event.requestId
         ? autoDecision(asker, event.tool, event.summary)
         : null;
       if (settled && asker && event.requestId) {
@@ -327,6 +360,20 @@ bus.subscribe((event: RuntimeEvent) => {
       pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
       break;
     case "turn.completed": {
+      const auditPrefix = `${event.threadId}:${event.turnId ?? ""}:`;
+      for (const [key, audit] of mcpAuditByItem) {
+        if (!key.startsWith(auditPrefix)) continue;
+        const completedAt = event.createdAt;
+        const started = Date.parse(audit.startedAt);
+        const completed = Date.parse(completedAt);
+        appendMcpAudit({
+          ...audit,
+          completedAt,
+          durationMs: Number.isFinite(started) && Number.isFinite(completed) ? completed - started : 0,
+          ok: false,
+        });
+        mcpAuditByItem.delete(key);
+      }
       if (bot) {
         store.patchBot(bot.id, { busy: false, unread: true });
         broadcastBot(store.bot(bot.id));
@@ -1566,6 +1613,9 @@ const server = createServer(async (req, res) => {
     // ── user-managed remote MCP services ──────────────────────────────
     if (method === "GET" && path === "/api/mcp/servers") {
       return json(res, 200, { servers: mcp.publicMcpServers(cfg) });
+    }
+    if (method === "GET" && path === "/api/mcp/audit") {
+      return json(res, 200, { entries: recentMcpAudit(Number(url.searchParams.get("limit") ?? 50)) });
     }
     if (method === "POST" && path === "/api/mcp/servers") {
       try {

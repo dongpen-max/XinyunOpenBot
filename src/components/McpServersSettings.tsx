@@ -1,4 +1,4 @@
-import { Check, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, Clock3, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/cn";
@@ -8,6 +8,17 @@ interface McpTool {
   name: string;
   description: string;
   allowed: boolean;
+  policy: "auto" | "ask" | "deny";
+}
+
+interface McpAuditEntry {
+  id: string;
+  startedAt: string;
+  durationMs: number;
+  botId: string | null;
+  serverId: string;
+  tool: string;
+  ok: boolean;
 }
 
 interface McpServer {
@@ -50,12 +61,20 @@ export function McpServersSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tested, setTested] = useState<Record<string, string>>({});
+  const [audit, setAudit] = useState<McpAuditEntry[]>([]);
 
   const refresh = () => api("/api/mcp/servers")
     .then((result) => setServers(result.servers ?? []))
     .catch((reason) => setError(reason.message));
 
-  useEffect(() => { void refresh(); }, []);
+  const refreshAudit = () => api("/api/mcp/audit?limit=50")
+    .then((result) => setAudit(result.entries ?? []))
+    .catch(() => {});
+
+  useEffect(() => {
+    void refresh();
+    void refreshAudit();
+  }, []);
 
   const replaceServer = (server: McpServer) => {
     setServers((current) => current.map((item) => item.id === server.id ? server : item));
@@ -107,20 +126,21 @@ export function McpServersSettings() {
       .finally(() => setBusy(null));
   };
 
-  const updateAllowedTools = (server: McpServer, allowedTools: string[]) => {
+  const updateToolPolicies = (server: McpServer, toolPolicies: Record<string, McpTool["policy"]>) => {
     setBusy(`tools:${server.id}`);
     setError(null);
-    api(`/api/mcp/servers/${server.id}`, { method: "PATCH", body: JSON.stringify({ allowedTools }) })
+    api(`/api/mcp/servers/${server.id}`, { method: "PATCH", body: JSON.stringify({ toolPolicies }) })
       .then((result) => result.server ? replaceServer(result.server) : refresh())
       .catch((reason) => setError(`${server.name}：${reason.message}`))
       .finally(() => setBusy(null));
   };
 
-  const toggleTool = (server: McpServer, tool: McpTool) => {
-    const allowed = new Set(server.tools.filter((item) => item.allowed).map((item) => item.name));
-    if (tool.allowed) allowed.delete(tool.name);
-    else allowed.add(tool.name);
-    updateAllowedTools(server, [...allowed]);
+  const setToolPolicy = (server: McpServer, tool: McpTool, policy: McpTool["policy"]) => {
+    updateToolPolicies(server, Object.fromEntries(server.tools.map((item) => [item.name, item.name === tool.name ? policy : item.policy])));
+  };
+
+  const setAllPolicies = (server: McpServer, policy: McpTool["policy"]) => {
+    updateToolPolicies(server, Object.fromEntries(server.tools.map((tool) => [tool.name, policy])));
   };
 
   const remove = (server: McpServer) => {
@@ -163,7 +183,9 @@ export function McpServersSettings() {
 
       {servers.map((server) => {
         const tools = server.tools ?? [];
-        const allowedCount = tools.filter((tool) => tool.allowed).length;
+        const autoCount = tools.filter((tool) => tool.policy === "auto").length;
+        const askCount = tools.filter((tool) => tool.policy === "ask").length;
+        const denyCount = tools.filter((tool) => tool.policy === "deny").length;
         const toolsBusy = busy === `tools:${server.id}`;
         return (
           <div key={server.id} className="rounded-lg border border-hairline/40 bg-card">
@@ -205,13 +227,14 @@ export function McpServersSettings() {
                   <ShieldCheck size={15} className="shrink-0 text-ink-secondary" />
                   <div>
                     <div className="text-[12px] font-medium text-ink">工具权限</div>
-                    <div className="text-[10px] text-ink-secondary">{tools.length ? `已允许 ${allowedCount}/${tools.length} 个工具` : "刷新连接后显示工具清单"}</div>
+                    <div className="text-[10px] text-ink-secondary">{tools.length ? `自动 ${autoCount} · 询问 ${askCount} · 禁止 ${denyCount}` : "刷新连接后显示工具清单"}</div>
                   </div>
                 </div>
                 {tools.length > 0 && (
                   <div className="flex items-center gap-1">
-                    <button type="button" disabled={busy !== null || allowedCount === tools.length} onClick={() => updateAllowedTools(server, tools.map((tool) => tool.name))} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部启用</button>
-                    <button type="button" disabled={busy !== null || allowedCount === 0} onClick={() => updateAllowedTools(server, [])} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部停用</button>
+                    <button type="button" disabled={busy !== null || autoCount === tools.length} onClick={() => setAllPolicies(server, "auto")} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部自动</button>
+                    <button type="button" disabled={busy !== null || askCount === tools.length} onClick={() => setAllPolicies(server, "ask")} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部询问</button>
+                    <button type="button" disabled={busy !== null || denyCount === tools.length} onClick={() => setAllPolicies(server, "deny")} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部禁止</button>
                   </div>
                 )}
               </div>
@@ -219,20 +242,31 @@ export function McpServersSettings() {
               {tools.length > 0 && (
                 <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-hairline/30 bg-inset/50">
                   {tools.map((tool) => (
-                    <label key={tool.name} className="flex cursor-pointer items-start gap-2.5 border-b border-hairline/25 px-2.5 py-2 last:border-b-0 hover:bg-raised/45">
-                      <input
-                        type="checkbox"
-                        checked={tool.allowed}
-                        disabled={busy !== null || !server.enabled}
-                        onChange={() => toggleTool(server, tool)}
-                        className="mt-0.5 size-3.5 shrink-0 accent-[var(--color-accent)]"
-                      />
+                    <div key={tool.name} className="flex items-start gap-2.5 border-b border-hairline/25 px-2.5 py-2 last:border-b-0 hover:bg-raised/45">
                       <span className="min-w-0 flex-1">
                         <span className="block break-all font-mono text-[11px] font-medium text-ink">{tool.name}</span>
                         {tool.description && <span className="mt-0.5 block text-[10px] leading-relaxed text-ink-secondary">{tool.description}</span>}
                       </span>
+                      <span className="flex shrink-0 overflow-hidden rounded-md border border-hairline/35 bg-card" role="group" aria-label={`${tool.name} 权限策略`}>
+                        {(["auto", "ask", "deny"] as const).map((policy) => (
+                          <button
+                            key={policy}
+                            type="button"
+                            disabled={busy !== null || !server.enabled}
+                            onClick={() => setToolPolicy(server, tool, policy)}
+                            className={cn(
+                              "ui-pressable px-2 py-1 text-[10px] transition-colors disabled:opacity-40",
+                              tool.policy === policy
+                                ? policy === "deny" ? "bg-danger/15 text-danger" : policy === "ask" ? "bg-warning/15 text-warning" : "bg-success/15 text-success"
+                                : "text-ink-secondary hover:bg-raised hover:text-ink",
+                            )}
+                          >
+                            {policy === "auto" ? "自动" : policy === "ask" ? "询问" : "禁止"}
+                          </button>
+                        ))}
+                      </span>
                       {toolsBusy && <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin text-ink-secondary" />}
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}
@@ -242,6 +276,32 @@ export function McpServersSettings() {
       })}
       {!servers.length && <div className="py-3 text-center text-[12px] text-ink-secondary">尚未添加 MCP 服务。添加后可检测并管理它提供的工具。</div>}
       {error && <div role="alert" className="text-[12px] text-danger">{error}</div>}
+      <div className="rounded-lg border border-hairline/40 bg-card">
+        <div className="flex items-center justify-between border-b border-hairline/30 px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <Clock3 size={15} className="text-ink-secondary" />
+            <div>
+              <div className="text-[12px] font-medium text-ink">最近调用</div>
+              <div className="text-[10px] text-ink-secondary">仅记录工具、时间、耗时和结果，不保存参数或返回正文</div>
+            </div>
+          </div>
+          <button type="button" onClick={() => void refreshAudit()} className="ui-pressable rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" aria-label="刷新 MCP 调用记录">
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {audit.length ? (
+          <div className="max-h-56 overflow-y-auto">
+            {audit.map((entry) => (
+              <div key={entry.id} className="flex items-center gap-2 border-b border-hairline/25 px-3 py-2 text-[10px] last:border-b-0">
+                <span className={cn("size-1.5 shrink-0 rounded-full", entry.ok ? "bg-success" : "bg-danger")} />
+                <span className="min-w-0 flex-1 truncate text-ink"><span className="font-mono text-ink-secondary">{entry.serverId}/</span>{entry.tool}</span>
+                <span className="shrink-0 text-ink-secondary">{entry.durationMs}ms</span>
+                <span className="shrink-0 text-ink-secondary">{new Date(entry.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="px-3 py-4 text-center text-[11px] text-ink-secondary">暂无 MCP 调用记录</div>}
+      </div>
     </div>
   );
 }

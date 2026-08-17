@@ -16,16 +16,32 @@ describe("OpenAI-compatible API tools", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   const requests: any[] = [];
+  const mcpCalls: any[] = [];
   let requestedTool = "screenshot";
 
   beforeEach(async () => {
     requests.length = 0;
+    mcpCalls.length = 0;
     requestedTool = "screenshot";
     api = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         const request = JSON.parse(body || "{}");
+        if (req.url === "/mcp") {
+          if (request.method === "tools/call") mcpCalls.push(request);
+          res.writeHead(200, { "content-type": "application/json" });
+          if (request.method === "initialize") {
+            return res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "1" } } }));
+          }
+          if (request.method === "tools/list") {
+            return res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools: [{ name: "search_docs", description: "Search docs", inputSchema: { type: "object", properties: {} } }] } }));
+          }
+          if (request.method === "tools/call") {
+            return res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "found docs" }] } }));
+          }
+          return res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id ?? null, result: {} }));
+        }
         requests.push(request);
         res.writeHead(200, { "content-type": "text/event-stream" });
         if (requests.length === 1) {
@@ -148,6 +164,30 @@ describe("OpenAI-compatible API tools", () => {
         expect.objectContaining({ type: "turn.completed", ok: true }),
       ]),
     );
+  });
+
+  it("pauses ask-policy MCP tools until the user approves", async () => {
+    requestedTool = "search_docs";
+    const turn = await instance.adapter.sendTurn({
+      threadId: "mcp-ask-thread",
+      text: "search docs",
+      model: "test-model",
+      integrations: {
+        mcp: [{
+          id: "feishu",
+          url: `${baseUrl.replace(/\/v1$/, "")}/mcp`,
+          allowedTools: ["search_docs"],
+          toolPolicies: { search_docs: "ask" },
+        }],
+      },
+    });
+    const opened = await recorder.until((event) => event.type === "request.opened", 15_000);
+    expect(opened).toMatchObject({ requestType: "permission", tool: "mcp__feishu__search_docs" });
+    expect(mcpCalls).toHaveLength(0);
+    await instance.adapter.respondToRequest("mcp-ask-thread", opened.requestId!, { behavior: "allow" });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turn.turnId, 15_000);
+    expect(mcpCalls).toHaveLength(1);
+    expect(requests[1].messages.some((message: any) => message.role === "tool" && /found docs/.test(message.content))).toBe(true);
   });
 
   it("can be configured as chat-only for endpoints without function calling", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AppConfig } from "./config.ts";
-import { mcpStdioConfigs, publicMcpServers, recordMcpProbe, upsertMcpServer } from "./mcp.ts";
+import { autoApprovedMcpTools, mcpStdioConfigs, publicMcpServers, recordMcpProbe, upsertMcpServer } from "./mcp.ts";
 import { parseMcpMessages } from "./mcp-http.ts";
 
 describe("remote MCP bridge", () => {
@@ -72,9 +72,35 @@ describe("remote MCP bridge", () => {
       health: "online",
     });
     expect(server?.tools).toEqual([
-      { name: "search_docs", description: "Search docs", allowed: true },
-      { name: "write_docs", description: "Write docs", allowed: false },
+      { name: "search_docs", description: "Search docs", allowed: true, policy: "auto" },
+      { name: "write_docs", description: "Write docs", allowed: false, policy: "deny" },
     ]);
     expect(JSON.stringify(server)).not.toContain("secret");
+  });
+
+  it("defaults mutating tools to ask and only pre-approves auto tools", () => {
+    const cfg: AppConfig = {
+      mcp: {
+        servers: {
+          feishu: { name: "飞书", url: "https://example.invalid/mcp" },
+        },
+      },
+    };
+    cfg.mcp!.servers = recordMcpProbe(cfg, "feishu", {
+      status: "ok",
+      tools: [{ name: "search_docs" }, { name: "create_document" }, { name: "delete_document" }],
+    })!;
+    const [server] = publicMcpServers(cfg);
+    expect(server.tools.map((tool) => [tool.name, tool.policy])).toEqual([
+      ["search_docs", "auto"],
+      ["create_document", "ask"],
+      ["delete_document", "ask"],
+    ]);
+    expect(autoApprovedMcpTools({
+      id: "feishu",
+      url: "https://example.invalid/mcp",
+      allowedTools: server.allowedTools ?? undefined,
+      toolPolicies: Object.fromEntries(server.tools.map((tool) => [tool.name, tool.policy])),
+    })).toEqual(["mcp__feishu__search_docs"]);
   });
 });

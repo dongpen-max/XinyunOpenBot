@@ -19,6 +19,7 @@ import type {
 } from "../contracts.ts";
 import { decodeModelCatalog, newEventId, newId } from "../contracts.ts";
 import { connectMcpStdioMany, type McpStdioConfig } from "../tools/mcp-stdio.ts";
+import type { ToolProvider, ToolResult } from "../tools/contracts.ts";
 import { mcpStdioConfigs } from "../mcp.ts";
 import {
   runOpenAICompatibleToolLoop,
@@ -142,7 +143,11 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     const baseUrl = config.url !== DEFAULT_URL ? config.url : environmentBaseUrl ?? config.url;
     const models = config.models;
     const listeners = new Set<RuntimeEventListener>();
-    const active = new Map<string, { abort: AbortController; turnId: string }>();
+    const active = new Map<string, {
+      abort: AbortController;
+      turnId: string;
+      asks: Map<string, (behavior: "allow" | "deny") => void>;
+    }>();
 
     const emit = (event: RuntimeEvent) => {
       for (const l of [...listeners]) l(event);
@@ -220,7 +225,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       const abort = new AbortController();
-      active.set(threadId, { abort, turnId });
+      const asks = new Map<string, (behavior: "allow" | "deny") => void>();
+      active.set(threadId, { abort, turnId, asks });
 
       const messages: OpenAIMessage[] = [
         ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
@@ -243,12 +249,62 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
             ...mcpStdioConfigs(turn.integrations?.mcp),
           ].filter((mcp): mcp is McpStdioConfig => mcp !== null);
           toolProvider = await connectMcpStdioMany(mcps, abort.signal);
+          const policies = new Map<string, { serverId: string; policy: "auto" | "ask" | "deny" }>();
+          for (const integration of turn.integrations?.mcp ?? []) {
+            for (const [tool, policy] of Object.entries(integration.toolPolicies ?? {})) {
+              policies.set(tool, { serverId: integration.id, policy });
+            }
+          }
+          const approvedProvider: ToolProvider | null = toolProvider && policies.size
+            ? {
+                listTools: () => toolProvider!.listTools(),
+                callTool: async (name, args): Promise<ToolResult> => {
+                  const policy = policies.get(name);
+                  if (!policy || policy.policy === "auto") return toolProvider!.callTool(name, args);
+                  if (policy.policy === "deny") {
+                    return { text: `MCP tool ${name} is disabled.`, images: [], isError: true };
+                  }
+                  const requestId = newId();
+                  const behavior = await new Promise<"allow" | "deny">((resolve) => {
+                    const timer = setTimeout(() => {
+                      asks.delete(requestId);
+                      resolve("deny");
+                    }, 5 * 60_000);
+                    timer.unref?.();
+                    asks.set(requestId, (answer) => {
+                      clearTimeout(timer);
+                      asks.delete(requestId);
+                      resolve(answer);
+                    });
+                    emit({
+                      ...base(threadId, turnId),
+                      type: "request.opened",
+                      requestId,
+                      requestType: "permission",
+                      tool: `mcp__${policy.serverId}__${name}`,
+                      summary: `MCP 工具 ${policy.serverId}/${name} 请求执行`,
+                    });
+                  });
+                  emit({
+                    ...base(threadId, turnId),
+                    type: "request.resolved",
+                    requestId,
+                    behavior,
+                    source: "user",
+                  });
+                  return behavior === "allow"
+                    ? toolProvider!.callTool(name, args)
+                    : { text: `MCP tool ${name} was denied.`, images: [], isError: true };
+                },
+                close: () => toolProvider!.close(),
+              }
+            : toolProvider;
           const { text, usage } = await runOpenAICompatibleToolLoop({
             model: turn.model || models.default,
             messages,
             reasoningEffort: supportsReasoningEffort ? turn.reasoningEffort : undefined,
             signal: abort.signal,
-            toolProvider,
+            toolProvider: approvedProvider,
             request: async (body, signal) => {
               const res = await fetch(`${baseUrl}/chat/completions`, {
                 method: "POST",
@@ -314,6 +370,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
             cost: null,
           });
         } finally {
+          for (const finish of asks.values()) finish("deny");
+          asks.clear();
           active.delete(threadId);
           await toolProvider?.close();
         }
@@ -350,8 +408,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
-        respondToRequest: async () => {
-          throw new Error("grok driver has no pending asks");
+        respondToRequest: async (threadId, requestId, decision) => {
+          const pending = active.get(threadId)?.asks.get(requestId);
+          if (!pending) throw new Error("no such pending request");
+          pending(decision.behavior === "allow" ? "allow" : "deny");
         },
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {

@@ -178,6 +178,33 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     expect(allowed).toContain("mcp__agents");
   });
 
+  it("pre-allows only MCP tools whose policy is auto", async () => {
+    await create();
+    const dump = join(scratch, "mcp-policy-dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-mcp-policy",
+      text: "hi",
+      integrations: {
+        mcp: [{
+          id: "feishu",
+          url: "https://example.invalid/mcp",
+          allowedTools: ["search_docs", "create_document"],
+          toolPolicies: { search_docs: "auto", create_document: "ask", delete_document: "deny" },
+        }],
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const allowed = String(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).split(",");
+    expect(allowed).toContain("mcp__feishu__search_docs");
+    expect(allowed).not.toContain("mcp__feishu");
+    expect(allowed).not.toContain("mcp__feishu__create_document");
+    expect(allowed).not.toContain("mcp__feishu__delete_document");
+  });
+
   it.each([
     ["a completed turn", "happy"],
     ["a crashed turn", "exit-early"],

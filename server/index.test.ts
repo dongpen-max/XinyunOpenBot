@@ -419,7 +419,7 @@ describe("harness HTTP API", () => {
     expect(tested.body.server).toMatchObject({
       id,
       health: "online",
-      tools: [{ name: "search_docs", description: "Search docs", allowed: true }],
+      tools: [{ name: "search_docs", description: "Search docs", allowed: true, policy: "auto" }],
     });
     expect(mcpRequests.at(-1)?.headers["x-domestic-key"]).toBe("mcp_secret");
     expect(mcpRequests.map((request) => request.body.method)).toContain("initialize");
@@ -428,14 +428,40 @@ describe("harness HTTP API", () => {
     const denied = await api("PATCH", `/api/mcp/servers/${id}`, { allowedTools: [] });
     expect(denied.body.server).toMatchObject({
       allowedTools: [],
-      tools: [{ name: "search_docs", allowed: false }],
+      tools: [{ name: "search_docs", allowed: false, policy: "deny" }],
     });
     const persisted = await api("GET", "/api/mcp/servers");
     expect(persisted.body.servers.find((server: { id: string }) => server.id === id)).toMatchObject({ allowedTools: [] });
 
+    const asks = await api("PATCH", `/api/mcp/servers/${id}`, { toolPolicies: { search_docs: "ask" } });
+    expect(asks.body.server).toMatchObject({
+      allowedTools: ["search_docs"],
+      tools: [{ name: "search_docs", allowed: true, policy: "ask" }],
+    });
+
     const disabled = await api("PATCH", `/api/mcp/servers/${id}`, { enabled: false });
     expect(disabled.body.server.enabled).toBe(false);
     expect((await api("DELETE", `/api/mcp/servers/${id}`)).status).toBe(200);
+  });
+
+  it("returns redacted MCP audit metadata without call arguments or results", async () => {
+    writeFileSync(join(home, ".openmausbot", "mcp-audit.ndjson"), `${JSON.stringify({
+      id: "audit-1",
+      startedAt: "2026-08-17T10:00:00.000Z",
+      completedAt: "2026-08-17T10:00:00.120Z",
+      durationMs: 120,
+      botId: "bot-1",
+      threadId: "thread-1",
+      serverId: "feishu",
+      tool: "search_docs",
+      ok: true,
+    })}\n`);
+    const result = await api("GET", "/api/mcp/audit?limit=10");
+    expect(result).toMatchObject({
+      status: 200,
+      body: { entries: [{ id: "audit-1", serverId: "feishu", tool: "search_docs", durationMs: 120, ok: true }] },
+    });
+    expect(JSON.stringify(result.body)).not.toMatch(/arguments|resultBody|token|authorization/i);
   });
 
   it("configures a domestic provider write-only and discovers its model catalog", async () => {

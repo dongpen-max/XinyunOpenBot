@@ -6,6 +6,21 @@ const validId = /^[a-z][a-z0-9_-]{0,31}$/;
 const validHeader = /^[A-Za-z0-9-]{1,64}$/;
 const loopback = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const reservedIds = new Set(["agents", "computer", "composio", "ogb"]);
+const toolPolicyValues = new Set(["auto", "ask", "deny"]);
+const mutatingTool = /(?:^|[_-])(create|write|update|edit|delete|remove|send|post|publish|upload|move|copy|invite|add|set|patch|put|execute|run)(?:[_-]|$)/i;
+export function defaultMcpToolPolicy(name) {
+    return mutatingTool.test(name) ? "ask" : "auto";
+}
+function effectiveToolPolicies(server) {
+    const configured = server.toolPolicies ?? {};
+    const allowed = server.allowedTools === undefined ? null : new Set(server.allowedTools);
+    return Object.fromEntries((server.tools ?? []).map((tool) => {
+        const configuredPolicy = configured[tool.name];
+        if (toolPolicyValues.has(configuredPolicy))
+            return [tool.name, configuredPolicy];
+        return [tool.name, allowed === null || allowed.has(tool.name) ? "auto" : "deny"];
+    }));
+}
 function normalizedId(value) {
     const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
     const fromName = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -30,7 +45,8 @@ export function publicMcpServers(cfg) {
     return Object.entries(cfg.mcp?.servers ?? {})
         .filter(([id, server]) => validId.test(id) && Boolean(server?.url))
         .map(([id, server]) => {
-        const allowed = server.allowedTools ? new Set(server.allowedTools) : null;
+        const policies = effectiveToolPolicies(server);
+        const allowedTools = (server.tools ?? []).filter((tool) => policies[tool.name] !== "deny").map((tool) => tool.name);
         return {
             id,
             name: server.name || id,
@@ -38,11 +54,12 @@ export function publicMcpServers(cfg) {
             enabled: server.enabled !== false,
             authConfigured: Boolean(server.auth?.token),
             authType: server.auth?.type ?? null,
-            allowedTools: server.allowedTools ?? null,
+            allowedTools: server.tools?.length ? allowedTools : server.allowedTools ?? null,
             tools: (server.tools ?? []).map((tool) => ({
                 name: tool.name,
                 description: tool.description ?? "",
-                allowed: allowed ? allowed.has(tool.name) : true,
+                allowed: policies[tool.name] !== "deny",
+                policy: policies[tool.name] ?? "auto",
             })),
             lastCheckedAt: server.lastCheckedAt ?? null,
             health: server.lastCheckStatus === "ok" ? "online" : server.lastCheckStatus === "error" ? "error" : "unknown",
@@ -53,7 +70,13 @@ export function publicMcpServers(cfg) {
 export function activeMcpIntegrations(cfg) {
     return Object.entries(cfg.mcp?.servers ?? {})
         .filter(([id, server]) => validId.test(id) && server.enabled !== false && Boolean(server.url))
-        .map(([id, server]) => ({ id, url: server.url, auth: server.auth, allowedTools: server.allowedTools }));
+        .map(([id, server]) => {
+        const toolPolicies = effectiveToolPolicies(server);
+        const allowedTools = server.tools?.length
+            ? server.tools.filter((tool) => toolPolicies[tool.name] !== "deny").map((tool) => tool.name)
+            : server.allowedTools;
+        return { id, url: server.url, auth: server.auth, allowedTools, toolPolicies };
+    });
 }
 export function upsertMcpServer(cfg, input) {
     let id = normalizedId(input.id ?? input.name);
@@ -78,6 +101,22 @@ export function upsertMcpServer(cfg, input) {
                 .map((name) => name.trim())
                 .filter((name) => !knownTools.size || knownTools.has(name)))].slice(0, 100)
         : current?.allowedTools;
+    const requestedPolicies = input.toolPolicies && typeof input.toolPolicies === "object" && !Array.isArray(input.toolPolicies)
+        ? input.toolPolicies
+        : null;
+    let toolPolicies = current?.toolPolicies;
+    if (requestedPolicies) {
+        toolPolicies = Object.fromEntries(Object.entries(requestedPolicies)
+            .filter(([name, policy]) => (!knownTools.size || knownTools.has(name)) && toolPolicyValues.has(policy))
+            .slice(0, 200));
+    }
+    else if (Array.isArray(input.allowedTools)) {
+        const allowed = new Set(allowedTools ?? []);
+        toolPolicies = Object.fromEntries((current?.tools ?? []).map((tool) => [tool.name, allowed.has(tool.name) ? "auto" : "deny"]));
+    }
+    const derivedAllowedTools = toolPolicies && current?.tools?.length
+        ? current.tools.filter((tool) => toolPolicies?.[tool.name] !== "deny").map((tool) => tool.name)
+        : allowedTools;
     const clearAuth = input.authType === "none";
     const type = clearAuth ? undefined : input.authType === "bearer" || input.authType === "apiKey" ? input.authType : current?.auth?.type;
     const header = typeof input.authHeader === "string" && input.authHeader.trim() ? input.authHeader.trim() : current?.auth?.header;
@@ -92,7 +131,8 @@ export function upsertMcpServer(cfg, input) {
             url,
             enabled,
             ...(auth ? { auth } : {}),
-            ...(allowedTools !== undefined ? { allowedTools } : {}),
+            ...(derivedAllowedTools !== undefined ? { allowedTools: derivedAllowedTools } : {}),
+            ...(toolPolicies !== undefined ? { toolPolicies } : {}),
             ...(current?.tools ? { tools: current.tools } : {}),
             ...(current?.lastCheckedAt ? { lastCheckedAt: current.lastCheckedAt } : {}),
             ...(current?.lastCheckStatus ? { lastCheckStatus: current.lastCheckStatus } : {}),
@@ -122,6 +162,17 @@ export function recordMcpProbe(cfg, id, result) {
     };
     if (result.status === "ok") {
         next.tools = normalizedTools(result.tools);
+        const firstDiscovery = !current.tools?.length;
+        const legacySelection = current.allowedTools === undefined ? null : new Set(current.allowedTools);
+        next.toolPolicies = Object.fromEntries(next.tools.map((tool) => {
+            const existing = current.toolPolicies?.[tool.name];
+            if (toolPolicyValues.has(existing))
+                return [tool.name, existing];
+            if (!firstDiscovery)
+                return [tool.name, legacySelection === null || legacySelection.has(tool.name) ? "auto" : "deny"];
+            return [tool.name, defaultMcpToolPolicy(tool.name)];
+        }));
+        next.allowedTools = next.tools.filter((tool) => next.toolPolicies?.[tool.name] !== "deny").map((tool) => tool.name);
         if (next.allowedTools !== undefined) {
             const known = new Set(next.tools.map((tool) => tool.name));
             next.allowedTools = next.allowedTools.filter((name) => known.has(name));
@@ -143,7 +194,7 @@ export async function probeMcpServer(server) {
             jsonrpc: "2.0",
             id: 1,
             method: "initialize",
-            params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "xinyunopen-bot", version: "0.1.31" } },
+            params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "xinyunopen-bot", version: "0.1.32" } },
         }, session);
         session = initialized.session;
         const listed = await requestRemoteMcp(server, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, session);
@@ -179,6 +230,30 @@ export function mcpStdioConfigs(integrations, options = {}) {
             ...(server.allowedTools !== undefined ? { XINYUN_MCP_ALLOWED_TOOLS: JSON.stringify(server.allowedTools) } : {}),
         },
     }));
+}
+export function autoApprovedMcpTools(integration) {
+    if (!integration.toolPolicies)
+        return integration.allowedTools === undefined ? [`mcp__${integration.id}`] : integration.allowedTools.map((tool) => `mcp__${integration.id}__${tool}`);
+    return Object.entries(integration.toolPolicies)
+        .filter(([, policy]) => policy === "auto")
+        .map(([tool]) => `mcp__${integration.id}__${tool}`);
+}
+export function resolveManagedMcpTool(cfg, title) {
+    if (!title)
+        return null;
+    for (const serverId of Object.keys(cfg.mcp?.servers ?? {})) {
+        const prefix = `mcp__${serverId}__`;
+        if (title.startsWith(prefix))
+            return { serverId, tool: title.slice(prefix.length) };
+    }
+    const matches = Object.entries(cfg.mcp?.servers ?? {}).filter(([, server]) => server.tools?.some((tool) => tool.name === title));
+    return matches.length === 1 ? { serverId: matches[0][0], tool: title } : null;
+}
+export function managedMcpToolPolicy(cfg, title) {
+    const resolved = resolveManagedMcpTool(cfg, title);
+    if (!resolved)
+        return null;
+    return effectiveToolPolicies(cfg.mcp.servers[resolved.serverId])[resolved.tool] ?? null;
 }
 function mcpTokenEnvName(id) {
     return `XINYUN_MCP_TOKEN_${id.replace(/[^A-Za-z0-9]/g, "_").toUpperCase()}`;
