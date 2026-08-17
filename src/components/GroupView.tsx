@@ -90,12 +90,14 @@ const Transcript = memo(function Transcript({
             </div>
           ) : m.kind === "text" && m.text ? (
             <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
+              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "flex-wrap justify-start")}>
                 {user && <ReactionBar threadId={group.threadId} message={m} />}
                 <div
                   className={cn(
-                    "max-w-[70%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+                    "rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+                    user
+                      ? "user-message-width whitespace-pre-wrap bg-bubble-user text-ink"
+                      : "assistant-message-width bg-card text-ink",
                   )}
                   title={new Date(m.at).toLocaleString()}
                 >
@@ -137,7 +139,7 @@ function StreamingBubble({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <ChatMarkdown text={deferred} streaming />
         <span className="animate-caret ml-0.5 inline-block h-[14px] w-[2px] bg-ink align-middle" />
       </div>
@@ -283,7 +285,7 @@ export function GroupView({
       </div>
 
       {/* Bulletin: one pinned line; click to edit */}
-      <div className="mx-auto w-full max-w-[900px] px-5">
+      <div className={cn("mx-auto w-full max-w-[900px]", compactHeader ? "px-3" : "px-5")}>
         {bulletinOpen ? (
           <div className="mb-1 rounded-lg border border-hairline/40 bg-panel p-2">
             <textarea
@@ -320,7 +322,7 @@ export function GroupView({
       {/* Transcript */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-5 [overflow-anchor:none]"
+        className={cn("flex-1 overflow-y-auto [overflow-anchor:none]", compactHeader ? "px-3" : "px-5")}
         onWheel={(e) => {
           if (e.deltaY < 0) setFollow(false);
           else if (atEnd()) setFollow(true);
@@ -398,7 +400,7 @@ export function GroupView({
         </button>
       )}
 
-      <Composer key={group.id} group={group} members={members} />
+      <Composer key={group.id} group={group} members={members} compact={compactHeader} />
       {callOpen && !group.dm && <GroupCallOverlay group={group} members={members} onHangup={() => setCallOpen(false)} />}
     </main>
   );

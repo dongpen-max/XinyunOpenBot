@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+.assistant-message-width {
+  flex-shrink: 0;
+  max-width: min(100%, 72ch);
+}
+
+.user-message-width {
+  max-width: min(85%, 72ch);
+}
+
 /* XinyunOpen Bot surface tokens. Themes override these variables below. */
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);

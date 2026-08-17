@@ -88,7 +88,7 @@ function ThinkingStrip({ text, active }: { text: string; active: boolean }) {
   }, [text, open]);
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[70%] min-w-[200px]">
+      <div className="assistant-message-width min-w-[200px]">
         <button
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
@@ -124,7 +124,7 @@ function ErrorRow({ message, onRetry }: { message: string; onRetry?: () => void 
   const error = actionableRuntimeError(message);
   return (
     <div className="flex justify-start">
-      <div className="max-w-[70%] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
+      <div className="assistant-message-width rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">
@@ -158,7 +158,7 @@ class MessageBoundary extends Component<{ children: ReactNode; fallbackText: str
   render() {
     if (this.state.failed) {
       return (
-        <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
+        <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
           {this.props.fallbackText}
         </div>
       );
@@ -190,7 +190,7 @@ function BubbleEditor({
     if (draft.trim()) onSubmit(draft.trim());
   };
   return (
-    <div className="w-full max-w-[70%] rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3">
+    <div className="user-message-width w-full rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3">
       <textarea
         ref={ref}
         value={draft}
@@ -268,7 +268,7 @@ function Bubble({
 
   return (
     <div className={cn("group animate-msg-in flex w-full flex-col", user ? "items-end" : "items-start")}>
-      <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "flex-wrap justify-start")}>
         {/* editing rewinds the thread, so it waits for the turn to end —
             same rule as the version switcher below */}
         {user && message.kind === "text" && !bot.busy && (
@@ -285,8 +285,10 @@ function Bubble({
         {user && <CopyButton text={text} />}
         <div
           className={cn(
-            "max-w-[70%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-            user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+            "rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+            user
+              ? "user-message-width whitespace-pre-wrap bg-bubble-user text-ink"
+              : "assistant-message-width bg-card text-ink",
           )}
           title={new Date(message.at).toLocaleString()}
         >
@@ -418,7 +420,7 @@ function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
       <img
         src={`data:${mime ?? "image/png"};base64,${png}`}
         alt={zhCN.chat.botComputer}
-        className="max-w-[70%] rounded-2xl border border-hairline/40"
+        className="assistant-message-width rounded-2xl border border-hairline/40"
       />
     </div>
   );
@@ -430,7 +432,7 @@ function StreamingBubble({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="assistant-message-width rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <MessageBoundary fallbackText={deferred}>
           <ChatMarkdown text={deferred} streaming />
         </MessageBoundary>
@@ -727,7 +729,7 @@ export function ChatView({
 
       {/* Error banner */}
       {state.error && (
-        <div className="mx-auto w-full max-w-[900px] px-5">
+        <div className={cn("mx-auto w-full max-w-[900px]", compactHeader ? "px-3" : "px-5")}>
           <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
             <div className="font-medium">{globalError?.summary}</div>
             <div className="mt-0.5 text-[12px] text-danger/85">{globalError?.hint}</div>
@@ -738,7 +740,7 @@ export function ChatView({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-5 [overflow-anchor:none]"
+        className={cn("flex-1 overflow-y-auto [overflow-anchor:none]", compactHeader ? "px-3" : "px-5")}
         onWheel={(e) => {
           if (e.deltaY < 0) setFollow(false);
           else if (atEnd()) setFollow(true);
@@ -821,6 +823,7 @@ export function ChatView({
       <Composer
         key={bot.threadId}
         bot={bot}
+        compact={compactHeader}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
       />
 

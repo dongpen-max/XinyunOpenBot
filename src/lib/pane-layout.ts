@@ -1,7 +1,8 @@
 export const PANE_LAYOUT_STORAGE_KEY = "xinyunopen-pane-layout";
 export const PANE_DIVIDER_WIDTH = 7;
 export const CENTER_PANE_MIN_WIDTH = 360;
-export const LEFT_PANE_MIN_WIDTH = 180;
+export const LEFT_PANE_MIN_WIDTH = 92;
+export const LEFT_PANE_COMPACT_MAX_WIDTH = 180;
 export const LEFT_PANE_MAX_WIDTH = 520;
 export const LEFT_PANE_DEFAULT_WIDTH = 300;
 export const RIGHT_PANE_MIN_WIDTH = 300;
@@ -19,6 +20,10 @@ function finite(value: unknown, fallback: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(min, value), Math.max(min, max));
+}
+
+export function isCompactLeftPane(width: number): boolean {
+  return finite(width, LEFT_PANE_DEFAULT_WIDTH) <= LEFT_PANE_COMPACT_MAX_WIDTH;
 }
 
 export function clampLeftPaneWidth(

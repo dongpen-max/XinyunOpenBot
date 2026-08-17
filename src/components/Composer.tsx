@@ -32,11 +32,13 @@ export function Composer({
   bot,
   group,
   members,
+  compact = false,
   onEditLast,
 }: {
   bot?: Bot;
   group?: Group;
   members?: Bot[];
+  compact?: boolean;
   onEditLast?: () => void;
 }) {
   const { state, dispatch } = useStore();
@@ -208,7 +210,7 @@ export function Composer({
   };
 
   return (
-    <div className="px-5 pb-5 pt-2">
+    <div className={cn("pt-2", compact ? "px-3 pb-3" : "px-5 pb-5")}>
       {speechError && (
         <div className="mx-auto mb-2 max-w-[900px] rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   CENTER_PANE_MIN_WIDTH,
+  LEFT_PANE_COMPACT_MAX_WIDTH,
   LEFT_PANE_DEFAULT_WIDTH,
   LEFT_PANE_MIN_WIDTH,
   PANE_DIVIDER_WIDTH,
   RIGHT_PANE_DEFAULT_WIDTH,
   clampLeftPaneWidth,
   clampRightPaneWidth,
+  isCompactLeftPane,
   normalizePaneWidths,
 } from "../src/lib/pane-layout.ts";
 
@@ -17,6 +19,13 @@ describe("resizable pane layout", () => {
       left: LEFT_PANE_DEFAULT_WIDTH,
       right: RIGHT_PANE_DEFAULT_WIDTH,
     });
+  });
+
+  it("provides a true icon-rail width below the compact sidebar threshold", () => {
+    expect(LEFT_PANE_MIN_WIDTH).toBeLessThan(LEFT_PANE_COMPACT_MAX_WIDTH);
+    expect(clampLeftPaneWidth(0, RIGHT_PANE_DEFAULT_WIDTH, 1440, true)).toBe(LEFT_PANE_MIN_WIDTH);
+    expect(isCompactLeftPane(LEFT_PANE_COMPACT_MAX_WIDTH)).toBe(true);
+    expect(isCompactLeftPane(LEFT_PANE_COMPACT_MAX_WIDTH + 1)).toBe(false);
   });
 
   it("shrinks side panes to preserve a usable center on a narrow window", () => {

@@ -26,6 +26,7 @@ import {
   RIGHT_PANE_MIN_WIDTH,
   clampLeftPaneWidth,
   clampRightPaneWidth,
+  isCompactLeftPane,
   normalizePaneWidths,
   type PaneWidths,
 } from "@/lib/pane-layout";
@@ -104,7 +105,8 @@ function Shell() {
     - paneWidths.left
     - PANE_DIVIDER_WIDTH
     - (rightOpen ? paneWidths.right + PANE_DIVIDER_WIDTH : 0);
-  const compactCenterHeader = rightOpen && centerWidth < 520;
+  const compactCenterHeader = centerWidth < 520;
+  const compactSidebar = isCompactLeftPane(paneWidths.left);
 
   // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next.
   // Kept deliberately small; every panel already closes on Esc.
@@ -141,7 +143,7 @@ function Shell() {
       <UpdateBanner />
       <div ref={layoutRef} className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className="h-full min-w-0 shrink-0" style={{ width: paneWidths.left }}>
-          <Sidebar />
+          <Sidebar compact={compactSidebar} />
         </div>
         <PaneResizeHandle
           label="调整左侧机器人列表宽度"

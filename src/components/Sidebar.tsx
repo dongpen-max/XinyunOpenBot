@@ -136,22 +136,22 @@ function groupPreview(group: Group, bots: Bot[]): string {
 }
 
 /** Room avatar: 2–3 overlapping mauses in the same 56px slot a bot gets. */
-function StackedMauses({ members }: { members: Bot[] }) {
+function StackedMauses({ members, compact = false }: { members: Bot[]; compact?: boolean }) {
   if (members.length <= 1) {
     const b = members[0];
     return (
-      <div className="flex size-14 shrink-0 items-center justify-center">
-        {b ? <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={56} /> : <Users size={24} className="text-ink-secondary" />}
+      <div className={cn("flex shrink-0 items-center justify-center", compact ? "size-12" : "size-14")}>
+        {b ? <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={compact ? 48 : 56} /> : <Users size={24} className="text-ink-secondary" />}
       </div>
     );
   }
   const shown = members.slice(0, 3);
   const extra = members.length - shown.length;
   return (
-    <div className="flex size-14 shrink-0 items-center justify-center">
-      <div className="flex items-center -space-x-3">
+    <div className={cn("flex shrink-0 items-center justify-center", compact ? "size-12" : "size-14")}>
+      <div className={cn("flex items-center", compact ? "-space-x-3.5" : "-space-x-3")}>
         {shown.map((b) => (
-          <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={30} />
+          <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={compact ? 26 : 30} />
         ))}
         {extra > 0 && (
           <span className="z-10 flex size-[22px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[10px] font-medium text-ink-secondary">
@@ -163,7 +163,15 @@ function StackedMauses({ members }: { members: Bot[] }) {
   );
 }
 
-function GroupListItem({ group, onMenu }: { group: Group; onMenu: (menu: { groupId: string; x: number; y: number }) => void }) {
+function GroupListItem({
+  group,
+  onMenu,
+  compact = false,
+}: {
+  group: Group;
+  onMenu: (menu: { groupId: string; x: number; y: number }) => void;
+  compact?: boolean;
+}) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === group.id;
   const members = group.memberIds
@@ -177,13 +185,16 @@ function GroupListItem({ group, onMenu }: { group: Group; onMenu: (menu: { group
         e.preventDefault();
         onMenu({ groupId: group.id, x: e.clientX, y: e.clientY });
       }}
+      title={compact ? `${group.name} — ${groupPreview(group, state.bots)}` : undefined}
+      aria-label={group.name}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left",
+        "relative flex w-full items-center rounded-xl text-left",
+        compact ? "justify-center p-2" : "gap-3 px-3 py-2.5",
         selected ? "bg-raised" : "hover:bg-raised/50",
       )}
     >
-      <StackedMauses members={members} />
-      <div className="min-w-0 flex-1">
+      <StackedMauses members={members} compact={compact} />
+      {!compact && <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
           {selected && last && <span className="shrink-0 text-xs text-ink-secondary">{formatTime(last.at)}</span>}
@@ -192,7 +203,10 @@ function GroupListItem({ group, onMenu }: { group: Group; onMenu: (menu: { group
           <span className="truncate text-[13px] text-ink-secondary">{groupPreview(group, state.bots)}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>
-      </div>
+      </div>}
+      {compact && group.unread && (
+        <span className="absolute right-1.5 top-1.5 size-2.5 rounded-full border-2 border-panel bg-accent" />
+      )}
     </button>
   );
 }
@@ -428,7 +442,7 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
   );
 }
 
-function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => void }) {
+function BotListItem({ bot, onMenu, compact = false }: { bot: Bot; onMenu: (menu: MenuState) => void; compact?: boolean }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
@@ -442,8 +456,11 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         e.preventDefault();
         onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
       }}
+      title={compact ? `${bot.name}${preview(bot) ? ` — ${preview(bot)}` : ""}` : undefined}
+      aria-label={bot.name}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left",
+        "relative flex w-full items-center rounded-xl border text-left",
+        compact ? "justify-center p-2" : "gap-3 px-3 py-2.5",
         bot.chiefOfStaff
           ? selected
             ? "border-accent/40 bg-accent/15"
@@ -457,11 +474,11 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         color={bot.color}
         shape={bot.mascotShape}
         state={stateForBot({ ...bot, messages: visible })}
-        size={56}
+        size={compact ? 48 : 56}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />
-      <div className="min-w-0 flex-1">
+      {!compact && <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5 truncate text-[15px] font-semibold text-ink">
             {bot.pinned && <Pin size={12} className="shrink-0 text-ink-secondary" />}
@@ -487,18 +504,30 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
             <span className="size-2 shrink-0 rounded-full bg-accent" />
           )}
         </div>
-      </div>
+      </div>}
+      {compact && bot.chiefOfStaff && (
+        <span className="absolute left-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-panel text-accent shadow-sm" aria-hidden="true">
+          <Crown size={10} />
+        </span>
+      )}
+      {compact && bot.unread && (
+        <span className="absolute right-1.5 top-1.5 size-2.5 rounded-full border-2 border-panel bg-accent" />
+      )}
     </button>
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ compact = false }: { compact?: boolean }) {
   const { state, dispatch } = useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [roomMenu, setRoomMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (compact) setQuery("");
+  }, [compact]);
 
   const q = query.trim().toLowerCase();
   const matchingBots = state.bots
@@ -517,10 +546,10 @@ export function Sidebar() {
   const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
 
   return (
-    <aside className="flex h-full w-full min-w-0 flex-col bg-panel">
+    <aside className={cn("flex h-full w-full min-w-0 flex-col bg-panel", compact && "items-stretch")} data-compact={compact || undefined}>
       {/* Titlebar: real traffic lights in Electron, faux ones in the browser */}
       <div
-        className="flex items-center justify-between px-4 pt-3.5 pb-1"
+        className={cn("flex items-center justify-between pt-3.5 pb-1", compact ? "px-2" : "px-4")}
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       >
         {isElectron ? (
@@ -575,7 +604,7 @@ export function Sidebar() {
       </div>
 
       {/* Search */}
-      <div className="px-3 pt-2 pb-3">
+      {!compact && <div className="px-3 pt-2 pb-3">
         <div className="flex items-center gap-2 rounded-lg bg-raised/70 px-3 py-2">
           <Search size={16} className="text-ink-secondary" />
           <input
@@ -587,55 +616,62 @@ export function Sidebar() {
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
-      </div>
+      </div>}
 
       {/* Bot list */}
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
-          {!chiefBot && visibleBots.length === 0 && visibleGroups.length === 0 && q && (
+          {!compact && !chiefBot && visibleBots.length === 0 && visibleGroups.length === 0 && q && (
             <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">没有匹配“{query}”的结果</div>
           )}
           {chiefBot && (
             <div className="mb-1.5">
-              <BotListItem bot={chiefBot} onMenu={setMenu} />
+              <BotListItem bot={chiefBot} onMenu={setMenu} compact={compact} />
             </div>
           )}
           {visibleGroups.map((g) => (
-            <GroupListItem key={g.id} group={g} onMenu={setRoomMenu} />
+            <GroupListItem key={g.id} group={g} onMenu={setRoomMenu} compact={compact} />
           ))}
           {visibleBots.map((b) => (
-            <BotListItem key={b.id} bot={b} onMenu={setMenu} />
+            <BotListItem key={b.id} bot={b} onMenu={setMenu} compact={compact} />
           ))}
         </div>
       </div>
 
       {/* Footer */}
-      <div className="px-3 pb-3 pt-2">
+      <div className={cn("pb-3 pt-2", compact ? "px-2" : "px-3")}>
         <button
           onClick={() => dispatch({ type: "togglePlugins", open: true })}
-          className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
+          className={cn("flex w-full items-center rounded-xl text-left hover:bg-raised/50", compact ? "justify-center p-2" : "gap-3 px-3 py-2")}
+          title={compact ? zhCN.sidebar.plugins : undefined}
+          aria-label={zhCN.sidebar.plugins}
         >
           <Puzzle size={20} className="text-ink-secondary" />
-          <span className="text-[14px] text-ink">{zhCN.sidebar.plugins}</span>
+          {!compact && <span className="text-[14px] text-ink">{zhCN.sidebar.plugins}</span>}
         </button>
-        <div className="flex items-center">
+        <div className={cn("flex items-center", compact && "flex-col justify-center")}>
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
-            className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
+            className={cn("flex min-w-0 items-center rounded-xl text-left hover:bg-raised/50", compact ? "justify-center p-2" : "flex-1 gap-3 px-3 py-2")}
+            title={compact ? "个人资料与应用设置" : undefined}
+            aria-label="个人资料与应用设置"
           >
             <InitialsAvatar initials={profileInitials(state.config?.profile)} size={28} />
-            <span className="truncate text-[14px] text-ink">
+            {!compact && <span className="truncate text-[14px] text-ink">
               {state.config?.profile?.name?.trim() || state.config?.profile?.email?.trim() || zhCN.sidebar.you}
-            </span>
+            </span>}
           </button>
-          <UpdateButton />
-          <button
-            onClick={() => dispatch({ type: "toggleAppSettings" })}
-            className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
-            title="应用设置"
-          >
-            <Settings size={18} />
-          </button>
+          <div className={cn("flex items-center", compact && "justify-center")}>
+            <UpdateButton />
+            <button
+              onClick={() => dispatch({ type: "toggleAppSettings" })}
+              className="rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
+              title="应用设置"
+              aria-label="应用设置"
+            >
+              <Settings size={18} />
+            </button>
+          </div>
         </div>
       </div>
 
