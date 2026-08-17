@@ -1587,14 +1587,29 @@ const server = createServer(async (req, res) => {
         }
         m = path.match(/^\/api\/mcp\/servers\/([a-z][\w-]{0,31})\/test$/);
         if (m && method === "POST") {
-            const server = cfg.mcp?.servers?.[m[1]];
+            const id = m[1];
+            const server = cfg.mcp?.servers?.[id];
             if (!server)
                 return json(res, 404, { error: "no such MCP server" });
             try {
                 const tools = await mcp.probeMcpServer(server);
-                return json(res, 200, { ok: true, tools });
+                const servers = mcp.recordMcpProbe(cfg, id, { status: "ok", tools });
+                if (servers) {
+                    replaceMcpServers(servers);
+                    Object.assign(cfg, loadConfig());
+                }
+                return json(res, 200, {
+                    ok: true,
+                    tools,
+                    server: mcp.publicMcpServers(cfg).find((candidate) => candidate.id === id),
+                });
             }
             catch (error) {
+                const servers = mcp.recordMcpProbe(cfg, id, { status: "error" });
+                if (servers) {
+                    replaceMcpServers(servers);
+                    Object.assign(cfg, loadConfig());
+                }
                 return json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
             }
         }

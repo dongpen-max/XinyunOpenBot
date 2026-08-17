@@ -3,6 +3,7 @@ import type { McpServerConfig } from "./config.ts";
 
 const url = process.env.XINYUN_MCP_URL;
 if (!url) throw new Error("XINYUN_MCP_URL is required");
+const allowedToolsConfigured = process.env.XINYUN_MCP_ALLOWED_TOOLS !== undefined;
 const allowedTools = new Set<string>(JSON.parse(process.env.XINYUN_MCP_ALLOWED_TOOLS || "[]"));
 const authToken = process.env.XINYUN_MCP_AUTH_TOKEN_ENV
   ? process.env[process.env.XINYUN_MCP_AUTH_TOKEN_ENV]
@@ -42,14 +43,14 @@ process.stdin.on("data", (chunk: string) => {
     }
     void (async () => {
       try {
-        if (message.method === "tools/call" && allowedTools.size) {
+        if (message.method === "tools/call" && allowedToolsConfigured) {
           const name = (message.params as { name?: unknown } | undefined)?.name;
           if (typeof name !== "string" || !allowedTools.has(name)) throw new Error("MCP tool is not enabled for this service");
         }
         const response = await requestRemoteMcp(server, message, session);
         session = response.session;
         for (const item of response.messages) {
-          if (message.method === "tools/list" && allowedTools.size && Array.isArray(item?.result?.tools)) {
+          if (message.method === "tools/list" && allowedToolsConfigured && Array.isArray(item?.result?.tools)) {
             item.result.tools = item.result.tools.filter((tool: any) => allowedTools.has(tool?.name));
           }
           process.stdout.write(`${JSON.stringify(item)}\n`);

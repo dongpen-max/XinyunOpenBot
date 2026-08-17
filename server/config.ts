@@ -37,8 +37,13 @@ export interface McpServerConfig {
     header?: string;
     token?: string;
   };
-  /** Empty/absent means every tool advertised by this endpoint. */
+  /** Absent means every tool advertised by this endpoint. An explicit empty
+   * array disables every tool while keeping the service connected. */
   allowedTools?: string[];
+  /** Last successfully discovered tool catalog. Tool inputs are never stored. */
+  tools?: Array<{ name: string; description?: string }>;
+  lastCheckedAt?: string;
+  lastCheckStatus?: "ok" | "error";
 }
 
 export interface AppConfig {

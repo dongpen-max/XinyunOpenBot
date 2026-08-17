@@ -416,9 +416,22 @@ describe("harness HTTP API", () => {
 
     const tested = await api("POST", `/api/mcp/servers/${id}/test`);
     expect(tested).toMatchObject({ status: 200, body: { ok: true, tools: [{ name: "search_docs" }] } });
+    expect(tested.body.server).toMatchObject({
+      id,
+      health: "online",
+      tools: [{ name: "search_docs", description: "Search docs", allowed: true }],
+    });
     expect(mcpRequests.at(-1)?.headers["x-domestic-key"]).toBe("mcp_secret");
     expect(mcpRequests.map((request) => request.body.method)).toContain("initialize");
     expect(mcpRequests.map((request) => request.body.method)).toContain("tools/list");
+
+    const denied = await api("PATCH", `/api/mcp/servers/${id}`, { allowedTools: [] });
+    expect(denied.body.server).toMatchObject({
+      allowedTools: [],
+      tools: [{ name: "search_docs", allowed: false }],
+    });
+    const persisted = await api("GET", "/api/mcp/servers");
+    expect(persisted.body.servers.find((server: { id: string }) => server.id === id)).toMatchObject({ allowedTools: [] });
 
     const disabled = await api("PATCH", `/api/mcp/servers/${id}`, { enabled: false });
     expect(disabled.body.server.enabled).toBe(false);

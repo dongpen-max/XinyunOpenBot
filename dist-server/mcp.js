@@ -29,15 +29,25 @@ function validateUrl(value) {
 export function publicMcpServers(cfg) {
     return Object.entries(cfg.mcp?.servers ?? {})
         .filter(([id, server]) => validId.test(id) && Boolean(server?.url))
-        .map(([id, server]) => ({
-        id,
-        name: server.name || id,
-        url: server.url,
-        enabled: server.enabled !== false,
-        authConfigured: Boolean(server.auth?.token),
-        authType: server.auth?.type ?? null,
-        allowedTools: server.allowedTools ?? [],
-    }))
+        .map(([id, server]) => {
+        const allowed = server.allowedTools ? new Set(server.allowedTools) : null;
+        return {
+            id,
+            name: server.name || id,
+            url: server.url,
+            enabled: server.enabled !== false,
+            authConfigured: Boolean(server.auth?.token),
+            authType: server.auth?.type ?? null,
+            allowedTools: server.allowedTools ?? null,
+            tools: (server.tools ?? []).map((tool) => ({
+                name: tool.name,
+                description: tool.description ?? "",
+                allowed: allowed ? allowed.has(tool.name) : true,
+            })),
+            lastCheckedAt: server.lastCheckedAt ?? null,
+            health: server.lastCheckStatus === "ok" ? "online" : server.lastCheckStatus === "error" ? "error" : "unknown",
+        };
+    })
         .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
 }
 export function activeMcpIntegrations(cfg) {
@@ -61,8 +71,12 @@ export function upsertMcpServer(cfg, input) {
     if (!url)
         throw new Error("MCP 服务地址不能为空");
     const enabled = input.enabled === undefined ? current?.enabled !== false : input.enabled === true;
+    const knownTools = new Set((current?.tools ?? []).map((tool) => tool.name));
     const allowedTools = Array.isArray(input.allowedTools)
-        ? [...new Set(input.allowedTools.filter((name) => typeof name === "string" && Boolean(name.trim())).map((name) => name.trim()))].slice(0, 100)
+        ? [...new Set(input.allowedTools
+                .filter((name) => typeof name === "string" && Boolean(name.trim()))
+                .map((name) => name.trim())
+                .filter((name) => !knownTools.size || knownTools.has(name)))].slice(0, 100)
         : current?.allowedTools;
     const clearAuth = input.authType === "none";
     const type = clearAuth ? undefined : input.authType === "bearer" || input.authType === "apiKey" ? input.authType : current?.auth?.type;
@@ -71,8 +85,49 @@ export function upsertMcpServer(cfg, input) {
         throw new Error("API Key 请求头名称无效");
     const token = clearAuth ? undefined : typeof input.token === "string" && input.token.trim() ? input.token.trim() : current?.auth?.token;
     const auth = type && token ? { type, ...(type === "apiKey" && header ? { header } : {}), token } : undefined;
-    const servers = { ...(cfg.mcp?.servers ?? {}), [id]: { name, url, enabled, ...(auth ? { auth } : {}), ...(allowedTools?.length ? { allowedTools } : {}) } };
+    const servers = {
+        ...(cfg.mcp?.servers ?? {}),
+        [id]: {
+            name,
+            url,
+            enabled,
+            ...(auth ? { auth } : {}),
+            ...(allowedTools !== undefined ? { allowedTools } : {}),
+            ...(current?.tools ? { tools: current.tools } : {}),
+            ...(current?.lastCheckedAt ? { lastCheckedAt: current.lastCheckedAt } : {}),
+            ...(current?.lastCheckStatus ? { lastCheckStatus: current.lastCheckStatus } : {}),
+        },
+    };
     return { id, servers };
+}
+function normalizedTools(tools) {
+    const seen = new Set();
+    return tools.flatMap((tool) => {
+        const name = typeof tool?.name === "string" ? tool.name.trim().slice(0, 160) : "";
+        if (!name || seen.has(name))
+            return [];
+        seen.add(name);
+        const description = typeof tool.description === "string" ? tool.description.trim().slice(0, 800) : "";
+        return [{ name, ...(description ? { description } : {}) }];
+    }).slice(0, 200);
+}
+export function recordMcpProbe(cfg, id, result) {
+    const current = cfg.mcp?.servers?.[id];
+    if (!current || !validId.test(id))
+        return null;
+    const next = {
+        ...current,
+        lastCheckedAt: new Date().toISOString(),
+        lastCheckStatus: result.status,
+    };
+    if (result.status === "ok") {
+        next.tools = normalizedTools(result.tools);
+        if (next.allowedTools !== undefined) {
+            const known = new Set(next.tools.map((tool) => tool.name));
+            next.allowedTools = next.allowedTools.filter((name) => known.has(name));
+        }
+    }
+    return { ...(cfg.mcp?.servers ?? {}), [id]: next };
 }
 export function deleteMcpServer(cfg, id) {
     if (!validId.test(id) || !cfg.mcp?.servers?.[id])
@@ -88,7 +143,7 @@ export async function probeMcpServer(server) {
             jsonrpc: "2.0",
             id: 1,
             method: "initialize",
-            params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "xinyunopen-bot", version: "0.1.30" } },
+            params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "xinyunopen-bot", version: "0.1.31" } },
         }, session);
         session = initialized.session;
         const listed = await requestRemoteMcp(server, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, session);
@@ -121,7 +176,7 @@ export function mcpStdioConfigs(integrations, options = {}) {
                 : {}),
             ...(server.auth?.type ? { XINYUN_MCP_AUTH_TYPE: server.auth.type } : {}),
             ...(server.auth?.header ? { XINYUN_MCP_AUTH_HEADER: server.auth.header } : {}),
-            ...(server.allowedTools?.length ? { XINYUN_MCP_ALLOWED_TOOLS: JSON.stringify(server.allowedTools) } : {}),
+            ...(server.allowedTools !== undefined ? { XINYUN_MCP_ALLOWED_TOOLS: JSON.stringify(server.allowedTools) } : {}),
         },
     }));
 }
