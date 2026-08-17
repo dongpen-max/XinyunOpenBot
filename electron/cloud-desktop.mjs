@@ -2,7 +2,7 @@ import { BrowserWindow, WebContentsView, ipcMain } from "electron";
 import {
   isAllowedCloudDesktopNavigation,
   isValidCloudDesktopBotId,
-  parseCloudDesktopUrl,
+  prepareCloudDesktopUrl,
   sanitizeCloudDesktopBounds,
   sanitizeCloudDesktopError,
 } from "./cloud-desktop-utils.mjs";
@@ -74,7 +74,7 @@ class CloudDesktopController {
     );
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof body?.error === "string" ? body.error : `HTTP ${response.status}`);
-    const url = parseCloudDesktopUrl(body?.joinUrl);
+    const url = prepareCloudDesktopUrl(body?.joinUrl);
     if (!url) throw new Error("桌面服务没有返回有效的 HTTPS 地址");
     return url;
   }

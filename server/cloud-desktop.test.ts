@@ -4,6 +4,7 @@ import {
   isAllowedCloudDesktopNavigation,
   isValidCloudDesktopBotId,
   parseCloudDesktopUrl,
+  prepareCloudDesktopUrl,
   sanitizeCloudDesktopBounds,
   sanitizeCloudDesktopError,
 } from "../electron/cloud-desktop-utils.mjs";
@@ -21,6 +22,15 @@ describe("cloud desktop URL validation", () => {
     expect(isAllowedCloudDesktopNavigation("https://desktop.example.test/client/#session", allowed)).toBe(true);
     expect(isAllowedCloudDesktopNavigation("https://login.example.test/redirect", allowed)).toBe(false);
     expect(isAllowedCloudDesktopNavigation("https://desktop.example.test.evil.test/", allowed)).toBe(false);
+  });
+
+  it("forces noVNC to contain the full remote desktop inside the embedded viewport", () => {
+    const url = prepareCloudDesktopUrl(
+      "https://desktop.example.test/vnc.html?autoconnect=true&resize=remote&token=rotating",
+    );
+    expect(url?.searchParams.get("resize")).toBe("scale");
+    expect(url?.searchParams.get("autoconnect")).toBe("true");
+    expect(url?.searchParams.get("token")).toBe("rotating");
   });
 
   it("accepts only server-compatible bot ids", () => {

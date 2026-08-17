@@ -19,6 +19,16 @@ export function parseCloudDesktopUrl(value) {
   }
 }
 
+/** Force noVNC to scale the complete remote framebuffer into the embedded
+ * viewport. `remote` can leave a larger desktop than the available panel on
+ * HiDPI Windows displays, which makes the bottom taskbar scroll out of view. */
+export function prepareCloudDesktopUrl(value) {
+  const url = parseCloudDesktopUrl(value);
+  if (!url) return null;
+  url.searchParams.set("resize", "scale");
+  return url;
+}
+
 export function isAllowedCloudDesktopNavigation(value, allowedOrigins) {
   const url = parseCloudDesktopUrl(value);
   return Boolean(url && allowedOrigins.has(url.origin));
