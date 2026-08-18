@@ -160,6 +160,9 @@ const mcpAuditByItem = new Map();
 const askMessageByRequest = new Map(); // requestId -> messageId
 const cloudLeaseByThread = new Map();
 const pendingCloudLeaseByThread = new Map();
+// Providers may publish running totals more than once during a turn. Keep
+// only the latest snapshot and fold it once when the turn settles.
+const turnUsage = new Map();
 // Group threads: the fold needs to know WHO is talking — the turn engine
 // records the active member here before dispatching its turn.
 const groupSpeakers = new Map();
@@ -331,7 +334,16 @@ bus.subscribe((event) => {
         case "runtime.error":
             pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
             break;
+        case "thread.token-usage.updated":
+            turnUsage.set(event.threadId, { input: event.input, output: event.output });
+            break;
         case "turn.completed": {
+            const usage = turnUsage.get(event.threadId);
+            turnUsage.delete(event.threadId);
+            // Group turns share a room thread, so only 1:1 task turns currently
+            // have an unambiguous task tally.
+            if (bot && usage)
+                store.addTaskUsage(bot.id, event.threadId, usage);
             const auditPrefix = `${event.threadId}:${event.turnId ?? ""}:`;
             for (const [key, audit] of mcpAuditByItem) {
                 if (!key.startsWith(auditPrefix))
@@ -549,7 +561,7 @@ async function startTurn(botId, text, opts) {
             const integrations = {};
             if (cfg.composio?.key)
                 integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
-            const managedMcp = mcp.activeMcpIntegrations(cfg);
+            const managedMcp = mcp.activeMcpIntegrations(cfg, bot.id);
             if (managedMcp.length)
                 integrations.mcp = managedMcp;
             const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
@@ -1097,6 +1109,63 @@ const server = createServer(async (req, res) => {
             });
             return;
         }
+        // Global palette search. It is intentionally read-only and scans only
+        // persisted text messages; screenshots, tool payloads and credentials
+        // never enter the result set.
+        if (method === "GET" && path === "/api/search") {
+            const query = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+            const normalized = query.toLocaleLowerCase();
+            const requestedLimit = Number(url.searchParams.get("limit") ?? 12);
+            const limit = Math.min(50, Math.max(1, Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 12));
+            if (!normalized)
+                return json(res, 200, { hits: [] });
+            const snippet = (text) => {
+                const lower = text.toLocaleLowerCase();
+                const match = lower.indexOf(normalized);
+                const start = Math.max(0, match - 50);
+                const end = Math.min(text.length, match + query.length + 90);
+                const compact = text.slice(start, end).replace(/\s+/g, " ").trim();
+                return `${start > 0 ? "…" : ""}${compact}${end < text.length ? "…" : ""}`;
+            };
+            const hits = [];
+            for (const bot of store.bots) {
+                if (bot.hidden)
+                    continue;
+                for (const task of store.tasks(bot.id)) {
+                    for (const message of store.messagesFor(task.threadId)) {
+                        if (message.kind !== "text" || !message.text?.toLocaleLowerCase().includes(normalized))
+                            continue;
+                        hits.push({
+                            threadId: task.threadId,
+                            messageId: message.id,
+                            at: message.at,
+                            role: message.role,
+                            snippet: snippet(message.text),
+                            name: bot.name,
+                            botId: bot.id,
+                            task: task.title,
+                        });
+                    }
+                }
+            }
+            for (const group of store.groups) {
+                for (const message of store.messagesFor(group.threadId)) {
+                    if (message.kind !== "text" || !message.text?.toLocaleLowerCase().includes(normalized))
+                        continue;
+                    hits.push({
+                        threadId: group.threadId,
+                        messageId: message.id,
+                        at: message.at,
+                        role: message.role,
+                        snippet: snippet(message.text),
+                        name: group.name,
+                        groupId: group.id,
+                    });
+                }
+            }
+            hits.sort((a, b) => b.at - a.at);
+            return json(res, 200, { hits: hits.slice(0, limit) });
+        }
         // ── bots ──
         if (method === "GET" && path === "/api/bots") {
             return json(res, 200, {
@@ -1599,6 +1668,20 @@ const server = createServer(async (req, res) => {
         if (method === "GET" && path === "/api/mcp/audit") {
             return json(res, 200, { entries: recentMcpAudit(Number(url.searchParams.get("limit") ?? 50)) });
         }
+        if (method === "GET" && path === "/api/mcp/config/export") {
+            return json(res, 200, mcp.exportMcpConfig(cfg, new Map(store.bots.map((bot) => [bot.id, bot.name]))));
+        }
+        if (method === "POST" && path === "/api/mcp/config/import") {
+            try {
+                const next = mcp.importMcpConfig(cfg, await readBody(req), new Map(store.bots.map((bot) => [bot.name, bot.id])));
+                replaceMcpServers(next.servers);
+                Object.assign(cfg, loadConfig());
+                return json(res, 200, { imported: next.imported, servers: mcp.publicMcpServers(cfg) });
+            }
+            catch (error) {
+                return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+        }
         if (method === "POST" && path === "/api/mcp/servers") {
             try {
                 const next = mcp.upsertMcpServer(cfg, await readBody(req));
@@ -1650,12 +1733,13 @@ const server = createServer(async (req, res) => {
                 });
             }
             catch (error) {
-                const servers = mcp.recordMcpProbe(cfg, id, { status: "error" });
+                const safeError = mcp.safeMcpError(error);
+                const servers = mcp.recordMcpProbe(cfg, id, { status: "error", error: safeError });
                 if (servers) {
                     replaceMcpServers(servers);
                     Object.assign(cfg, loadConfig());
                 }
-                return json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+                return json(res, 400, { ok: false, error: safeError });
             }
         }
         // ── the bot's cloud computer (Box) ──

@@ -450,6 +450,9 @@ export class Store {
         const bot = this.bot(botId);
         return bot?.tasks?.find((t) => t.threadId === bot.threadId);
     }
+    taskByThread(botId, threadId) {
+        return this.bot(botId)?.tasks?.find((task) => task.threadId === threadId);
+    }
     /** A fresh context on the same bot: new thread, new session, same
      * persona/tools/computer. Becomes the active task. */
     createTask(botId, title) {
@@ -483,6 +486,22 @@ export class Store {
         if (!task)
             return null;
         task.title = title.trim().slice(0, 80) || UNTITLED_TASK;
+        this.saveBots();
+        return task;
+    }
+    /** Fold one completed turn's final totals into its owning task. */
+    addTaskUsage(botId, threadId, usage) {
+        const task = this.taskByThread(botId, threadId);
+        if (!task)
+            return null;
+        const previous = task.usage ?? { input: 0, output: 0, turns: 0 };
+        const input = Number.isFinite(usage.input) ? Math.max(0, Math.trunc(usage.input)) : 0;
+        const output = Number.isFinite(usage.output) ? Math.max(0, Math.trunc(usage.output)) : 0;
+        task.usage = {
+            input: previous.input + input,
+            output: previous.output + output,
+            turns: previous.turns + 1,
+        };
         this.saveBots();
         return task;
     }
