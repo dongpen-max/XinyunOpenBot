@@ -14,6 +14,7 @@ import { AppSettingsCenter, AppSettingsPanel } from "@/components/AppSettingsPan
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { NoEngines } from "@/components/NoEngines";
 import { PaneResizeHandle } from "@/components/PaneResizeHandle";
+import { CommandPalette } from "@/components/CommandPalette";
 import {
   CENTER_PANE_MIN_WIDTH,
   LEFT_PANE_DEFAULT_WIDTH,
@@ -258,6 +259,7 @@ function Shell() {
         )}
         {state.pluginsOpen && <PluginsPanel />}
         {state.appSettingsOpen && <AppSettingsCenter />}
+        <CommandPalette />
       </div>
       {cloudDesktopBot && <CloudDesktopView key={cloudDesktopBot.id} bot={cloudDesktopBot} />}
     </div>

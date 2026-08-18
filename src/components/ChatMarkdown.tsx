@@ -2,17 +2,18 @@
 // strikethrough, autolinks) with a chromed code block — language label, copy
 // button, lazy Shiki highlighting. Model output never reaches the DOM as raw
 // HTML: no rehype-raw, so HTML in the text renders as text; Shiki's output is
-// generator-escaped. While a message is still streaming, code blocks render
-// as plain <pre> and nothing is cached — partial fences would poison it.
+// generator-escaped. During streaming, a block highlights after its content
+// stays unchanged briefly; that cached final result prevents a visual pop
+// when the settled message replaces the streaming bubble.
 import { memo, useEffect, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
 
-// tiny highlight cache so revisiting a thread doesn't re-tokenize settled
-// blocks; keys are content-hashed, capped, never written while streaming
+// tiny highlight cache so revisiting a thread doesn't re-tokenize blocks
 const highlightCache = new Map<string, string>();
 const CACHE_MAX = 200;
+const STREAM_SETTLE_MS = 250;
 const hash = (s: string) => {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -27,32 +28,41 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (streaming) return;
     const key = `${lang}:${hash(code)}`;
     const cached = highlightCache.get(key);
     if (cached) return setHtml(cached);
     let alive = true;
-    import("shiki")
-      .then((shiki) =>
-        shiki.codeToHtml(code, {
-          lang: lang || "text",
-          theme: "github-dark-default",
-        }),
-      )
-      .then((out) => {
-        if (!alive) return;
-        if (highlightCache.size >= CACHE_MAX) {
-          const first = highlightCache.keys().next().value;
-          if (first) highlightCache.delete(first);
-        }
-        highlightCache.set(key, out);
-        setHtml(out);
-      })
-      .catch(() => {
-        /* unknown language or shiki failed — the plain <pre> stays */
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const highlight = () => {
+      import("shiki")
+        .then((shiki) =>
+          shiki.codeToHtml(code, {
+            lang: lang || "text",
+            theme: "github-dark-default",
+          }),
+        )
+        .then((out) => {
+          if (!alive) return;
+          if (highlightCache.size >= CACHE_MAX) {
+            const first = highlightCache.keys().next().value;
+            if (first) highlightCache.delete(first);
+          }
+          highlightCache.set(key, out);
+          setHtml(out);
+        })
+        .catch(() => {
+          /* unknown language or shiki failed — the plain <pre> stays */
+        });
+    };
+    if (streaming) {
+      setHtml(null);
+      timer = setTimeout(highlight, STREAM_SETTLE_MS);
+    } else {
+      highlight();
+    }
     return () => {
       alive = false;
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, [code, lang, streaming]);
 

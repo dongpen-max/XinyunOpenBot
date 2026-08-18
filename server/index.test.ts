@@ -439,6 +439,24 @@ describe("harness HTTP API", () => {
       tools: [{ name: "search_docs", allowed: true, policy: "ask" }],
     });
 
+    const bots = (await api("GET", "/api/bots")).body.bots;
+    const scoped = await api("PATCH", `/api/mcp/servers/${id}`, { botIds: [bots[0].id] });
+    expect(scoped.body.server.botIds).toEqual([bots[0].id]);
+
+    const exported = await api("GET", "/api/mcp/config/export");
+    expect(exported.status).toBe(200);
+    expect(exported.body.servers.find((server: { id: string }) => server.id === id)).toMatchObject({
+      botNames: [bots[0].name],
+      authType: "apiKey",
+    });
+    expect(JSON.stringify(exported.body)).not.toContain("mcp_secret");
+
+    const imported = await api("POST", "/api/mcp/config/import", exported.body);
+    expect(imported).toMatchObject({ status: 200, body: { imported: 1 } });
+    const retested = await api("POST", `/api/mcp/servers/${id}/test`);
+    expect(retested.status).toBe(200);
+    expect(mcpRequests.at(-1)?.headers["x-domestic-key"]).toBe("mcp_secret");
+
     const disabled = await api("PATCH", `/api/mcp/servers/${id}`, { enabled: false });
     expect(disabled.body.server.enabled).toBe(false);
     expect((await api("DELETE", `/api/mcp/servers/${id}`)).status).toBe(200);

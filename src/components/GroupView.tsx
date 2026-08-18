@@ -1,7 +1,7 @@
 // A room: several bots + you in one shared thread. Avatars inside the room
 // stay still so a busy group does not become a wall of competing motion.
 // Plain messages go to the room's default responder; @mentions override it.
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ChevronDown, Pin, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import {
   useStore,
@@ -10,6 +10,7 @@ import {
   type Bot,
   type Group,
   type GroupDefaultResponder,
+  type Message,
 } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
@@ -22,6 +23,7 @@ import { cn } from "@/lib/cn";
 import { SpeakButton } from "./VoiceControls";
 import { GroupCallButton, GroupCallOverlay } from "./GroupVoiceControls";
 import { addGroupMember, canRemoveGroupMember, removeGroupMember } from "@/lib/group-membership";
+import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/lib/transcript-window";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -89,12 +91,14 @@ function GroupHeaderAvatars({ members, busyBotId, compact }: { members: Bot[]; b
 const Transcript = memo(function Transcript({
   group,
   members,
+  messages,
 }: {
   group: Group;
   members: Bot[];
+  messages: Message[];
 }) {
   const memberOf = (id?: string) => members.find((b) => b.id === id);
-  const textMessages = group.messages;
+  const textMessages = messages;
   return (
     <>
       {textMessages.map((m, i) => {
@@ -433,6 +437,23 @@ export function GroupView({
   );
   const speaker = members.find((b) => b.id === group.busyBotId);
 
+  const transcriptKey = `${group.id}:${group.threadId}`;
+  const [transcriptWindow, setTranscriptWindow] = useState(() => ({
+    key: transcriptKey,
+    start: tailWindowStart(group.messages.length),
+  }));
+  if (transcriptWindow.key !== transcriptKey) {
+    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(group.messages.length) });
+  }
+  const {
+    visible: windowedMessages,
+    hiddenCount,
+    startIndex,
+  } = useMemo(
+    () => resolveTranscriptWindow(group.messages, transcriptWindow.start),
+    [group.messages, transcriptWindow.start],
+  );
+
   useEffect(() => setFollow(true), [group.id]);
   useEffect(() => setCallOpen(false), [group.id]);
   useEffect(() => setBulletinDraft(group.bulletin), [group.id, group.bulletin]);
@@ -444,6 +465,22 @@ export function GroupView({
     const el = scrollRef.current;
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   };
+
+  const preExpandHeight = useRef<number | null>(null);
+  const showEarlier = () => {
+    preExpandHeight.current = scrollRef.current?.scrollHeight ?? null;
+    setFollow(false);
+    setTranscriptWindow((window) => ({
+      key: window.key,
+      start: expandWindowStart(startIndex),
+    }));
+  };
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || preExpandHeight.current === null) return;
+    element.scrollTop += element.scrollHeight - preExpandHeight.current;
+    preExpandHeight.current = null;
+  }, [transcriptWindow.start]);
 
   const saveBulletin = () => {
     setBulletinOpen(false);
@@ -566,7 +603,17 @@ export function GroupView({
               </div>
             </div>
           )}
-          <Transcript group={group} members={members} />
+          {hiddenCount > 0 && (
+            <div className="flex justify-center pt-2">
+              <button
+                onClick={showEarlier}
+                className="ui-pressable rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+              >
+                显示更早消息（还有 {hiddenCount} 条）
+              </button>
+            </div>
+          )}
+          <Transcript group={group} members={members} messages={windowedMessages} />
           {speaker && !streaming && (
             <article className="flex w-full items-start gap-2.5">
               <SenderAvatar bot={speaker} color={speaker.color} />

@@ -6,8 +6,20 @@
 // long job and a quick question can sit side by side under one agent.
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Plus, Trash2 } from "lucide-react";
-import { useStore, formatTime, type Bot } from "@/state/store";
+import { useStore, formatTime, type Bot, type Task } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { formatTokens } from "@/lib/format-tokens";
+
+function TaskUsage({ usage }: { usage: Task["usage"] }) {
+  if (!usage) return null;
+  const label = formatTokens(usage.input + usage.output);
+  if (!label) return null;
+  return (
+    <span title={`输入 ${usage.input.toLocaleString()} · 输出 ${usage.output.toLocaleString()} · ${usage.turns} 次任务`}>
+      {" · "}{label}
+    </span>
+  );
+}
 
 export function TaskPicker({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
@@ -18,6 +30,11 @@ export function TaskPicker({ bot }: { bot: Bot }) {
 
   const tasks = bot.tasks ?? [];
   const current = tasks.find((t) => t.threadId === bot.threadId);
+  const currentUsage = current?.usage;
+  const currentUsageLabel = currentUsage ? formatTokens(currentUsage.input + currentUsage.output) : null;
+  const usageTitle = currentUsage && currentUsageLabel
+    ? `${currentUsageLabel}（输入 ${currentUsage.input.toLocaleString()} · 输出 ${currentUsage.output.toLocaleString()} · ${currentUsage.turns} 次任务）`
+    : null;
 
   useEffect(() => {
     if (!open) return;
@@ -40,10 +57,11 @@ export function TaskPicker({ bot }: { bot: Bot }) {
       <button
         onClick={() => dispatch({ type: "newTask", botId: bot.id })}
         disabled={bot.busy}
-        title={bot.busy ? "Let this turn finish first" : "New task — a fresh context on this bot"}
+        title={bot.busy ? "请先等待当前任务完成" : usageTitle ? `新建任务 · 当前任务已使用 ${usageTitle}` : "新建任务 — 为这个机器人创建全新上下文"}
         className="flex items-center gap-1 rounded-full border border-hairline/40 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
       >
         <Plus size={12} /> Task
+        {currentUsageLabel && <span className="tabular-nums opacity-60">· {currentUsageLabel}</span>}
       </button>
     );
   }
@@ -54,11 +72,15 @@ export function TaskPicker({ bot }: { bot: Bot }) {
     if (title) dispatch({ type: "renameTask", botId: bot.id, threadId, title });
   };
 
+  const switchTitle = currentUsage && currentUsageLabel
+    ? `切换任务 · ${currentUsageLabel}（输入 ${currentUsage.input.toLocaleString()} · 输出 ${currentUsage.output.toLocaleString()}）`
+    : "切换任务";
+
   return (
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
-        title="Switch task"
+        title={switchTitle}
         className="flex max-w-[220px] items-center gap-1.5 rounded-full border border-hairline/40 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
       >
         <span className="truncate">{current?.title ?? "Task"}</span>
@@ -103,7 +125,10 @@ export function TaskPicker({ bot }: { bot: Bot }) {
                       title="Click to switch · double-click to rename"
                     >
                       <div className="truncate text-[13px] text-ink">{task.title}</div>
-                      <div className="text-[11px] text-ink-secondary">{formatTime(task.createdAt)}</div>
+                      <div className="text-[11px] text-ink-secondary">
+                        {formatTime(task.createdAt)}
+                        <TaskUsage usage={task.usage} />
+                      </div>
                     </button>
                   )}
                   <button

@@ -32,6 +32,9 @@ export interface McpServerConfig {
   name: string;
   url: string;
   enabled?: boolean;
+  /** Absent means every bot. An explicit empty array keeps the service
+   * configured but prevents it from being mounted by any bot. */
+  botIds?: string[];
   auth?: {
     type: "bearer" | "apiKey";
     /** API-key header name; Bearer always uses Authorization. */
@@ -49,6 +52,8 @@ export interface McpServerConfig {
   tools?: Array<{ name: string; description?: string }>;
   lastCheckedAt?: string;
   lastCheckStatus?: "ok" | "error";
+  /** Redacted, bounded connection failure summary safe to show in settings. */
+  lastCheckError?: string;
 }
 
 export interface AppConfig {

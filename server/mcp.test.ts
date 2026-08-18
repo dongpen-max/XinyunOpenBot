@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AppConfig } from "./config.ts";
-import { autoApprovedMcpTools, mcpStdioConfigs, publicMcpServers, recordMcpProbe, upsertMcpServer } from "./mcp.ts";
+import { activeMcpIntegrations, autoApprovedMcpTools, exportMcpConfig, importMcpConfig, mcpStdioConfigs, publicMcpServers, recordMcpProbe, safeMcpError, upsertMcpServer } from "./mcp.ts";
 import { parseMcpMessages } from "./mcp-http.ts";
 
 describe("remote MCP bridge", () => {
@@ -102,5 +102,41 @@ describe("remote MCP bridge", () => {
       allowedTools: server.allowedTools ?? undefined,
       toolPolicies: Object.fromEntries(server.tools.map((tool) => [tool.name, tool.policy])),
     })).toEqual(["mcp__feishu__search_docs"]);
+  });
+
+  it("scopes services per bot while keeping absent scope compatible with all bots", () => {
+    const cfg: AppConfig = { mcp: { servers: {
+      global: { name: "Global", url: "https://global.invalid/mcp" },
+      scoped: { name: "Scoped", url: "https://scoped.invalid/mcp", botIds: ["bot-a"] },
+      nobody: { name: "Nobody", url: "https://none.invalid/mcp", botIds: [] },
+    } } };
+    expect(activeMcpIntegrations(cfg, "bot-a").map((server) => server.id)).toEqual(["global", "scoped"]);
+    expect(activeMcpIntegrations(cfg, "bot-b").map((server) => server.id)).toEqual(["global"]);
+  });
+
+  it("exports no credentials and imports by bot name while preserving local tokens", () => {
+    const cfg: AppConfig = { mcp: { servers: { feishu: {
+      name: "飞书",
+      url: "https://example.invalid/mcp?region=cn&token=url-secret",
+      enabled: true,
+      botIds: ["bot-a"],
+      auth: { type: "apiKey", header: "X-App-Key", token: "local-secret" },
+      toolPolicies: { search_docs: "auto" },
+    } } } };
+    const bundle = exportMcpConfig(cfg, new Map([["bot-a", "研究员"]]));
+    expect(bundle.servers[0]).toMatchObject({ id: "feishu", botNames: ["研究员"], authType: "apiKey" });
+    expect(JSON.stringify(bundle)).not.toContain("local-secret");
+    expect(JSON.stringify(bundle)).not.toContain("url-secret");
+    expect(bundle.servers[0]?.url).toContain("region=cn");
+
+    const imported = importMcpConfig(cfg, bundle, new Map([["研究员", "bot-b"]]));
+    expect(imported.servers.feishu).toMatchObject({ botIds: ["bot-b"], auth: { token: "local-secret" } });
+  });
+
+  it("redacts connection errors before persistence or display", () => {
+    const credential = "a".repeat(40);
+    const message = safeMcpError(`HTTP 401 Bearer ${credential} token=top-secret`);
+    expect(message).not.toContain(credential);
+    expect(message).not.toContain("top-secret");
   });
 });

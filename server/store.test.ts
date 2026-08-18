@@ -82,6 +82,20 @@ describe("Store", () => {
     expect(messages.at(-1)).toMatchObject({ role: "user", text: "hi there" });
   });
 
+  it("accumulates settled token usage per task and persists it", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(store.addTaskUsage(bot.id, bot.threadId, { input: 1200, output: 300 })).toMatchObject({
+      usage: { input: 1200, output: 300, turns: 1 },
+    });
+    store.addTaskUsage(bot.id, bot.threadId, { input: 800, output: 100 });
+    store.addTaskUsage(bot.id, bot.threadId, { input: Number.NaN, output: -20 });
+    expect(store.addTaskUsage(bot.id, "missing", { input: 1, output: 1 })).toBeNull();
+
+    const reloaded = new Store(selection);
+    expect(reloaded.taskByThread(bot.id, bot.threadId)?.usage).toEqual({ input: 2000, output: 400, turns: 3 });
+  });
+
   it("keeps exactly one persisted Chief of Staff and supports handoff", () => {
     const store = new Store(selection);
     const first = store.createBot();

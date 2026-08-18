@@ -19,6 +19,8 @@ export interface PublicMcpServer {
   name: string;
   url: string;
   enabled: boolean;
+  /** null means every bot; [] means no bots. */
+  botIds: string[] | null;
   authConfigured: boolean;
   authType: "bearer" | "apiKey" | null;
   /** null means all advertised tools; [] means no tools. */
@@ -26,6 +28,23 @@ export interface PublicMcpServer {
   tools: Array<{ name: string; description: string; allowed: boolean; policy: McpToolPolicy }>;
   lastCheckedAt: string | null;
   health: "unknown" | "online" | "error";
+  lastCheckError: string | null;
+}
+
+export interface McpConfigExport {
+  version: 1;
+  exportedAt: string;
+  servers: Array<{
+    id: string;
+    name: string;
+    url: string;
+    enabled: boolean;
+    authType: "bearer" | "apiKey" | null;
+    authHeader?: string;
+    botNames: string[] | null;
+    allowedTools?: string[];
+    toolPolicies?: Record<string, McpToolPolicy>;
+  }>;
 }
 
 const validId = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -69,6 +88,26 @@ function validateUrl(value: unknown): string {
   return parsed.toString();
 }
 
+export function safeMcpError(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value ?? "连接失败");
+  return raw
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, "$1[redacted]")
+    .replace(/([?&](?:token|key|secret|authorization)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\b(token|api[_-]?key|secret|authorization)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted]")
+    .trim()
+    .slice(0, 240) || "连接失败";
+}
+
+function safeMcpExportUrl(value: string): string {
+  const parsed = new URL(value);
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (/(token|key|secret|auth|signature|credential)/i.test(key)) parsed.searchParams.delete(key);
+  }
+  parsed.hash = "";
+  return parsed.toString();
+}
+
 export function publicMcpServers(cfg: AppConfig): PublicMcpServer[] {
   return Object.entries(cfg.mcp?.servers ?? {})
     .filter(([id, server]) => validId.test(id) && Boolean(server?.url))
@@ -78,8 +117,9 @@ export function publicMcpServers(cfg: AppConfig): PublicMcpServer[] {
       return {
         id,
         name: server.name || id,
-        url: server.url,
+        url: safeMcpExportUrl(server.url),
         enabled: server.enabled !== false,
+        botIds: server.botIds ?? null,
         authConfigured: Boolean(server.auth?.token),
         authType: server.auth?.type ?? null,
         allowedTools: server.tools?.length ? allowedTools : server.allowedTools ?? null,
@@ -91,14 +131,20 @@ export function publicMcpServers(cfg: AppConfig): PublicMcpServer[] {
         })),
         lastCheckedAt: server.lastCheckedAt ?? null,
         health: server.lastCheckStatus === "ok" ? "online" as const : server.lastCheckStatus === "error" ? "error" as const : "unknown" as const,
+        lastCheckError: server.lastCheckError ?? null,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
 }
 
-export function activeMcpIntegrations(cfg: AppConfig): McpIntegration[] {
+export function activeMcpIntegrations(cfg: AppConfig, botId?: string): McpIntegration[] {
   return Object.entries(cfg.mcp?.servers ?? {})
-    .filter(([id, server]) => validId.test(id) && server.enabled !== false && Boolean(server.url))
+    .filter(([id, server]) => (
+      validId.test(id)
+      && server.enabled !== false
+      && Boolean(server.url)
+      && (server.botIds === undefined || botId === undefined || server.botIds.includes(botId))
+    ))
     .map(([id, server]) => {
       const toolPolicies = effectiveToolPolicies(server);
       const allowedTools = server.tools?.length
@@ -124,6 +170,12 @@ export function upsertMcpServer(
   const url = input.url === undefined ? current?.url : validateUrl(input.url);
   if (!url) throw new Error("MCP 服务地址不能为空");
   const enabled = input.enabled === undefined ? current?.enabled !== false : input.enabled === true;
+  const botIds = input.botIds === null
+    ? undefined
+    : Array.isArray(input.botIds)
+      ? [...new Set(input.botIds
+        .filter((botId): botId is string => typeof botId === "string" && /^[\w-]{1,120}$/.test(botId)))].slice(0, 200)
+      : current?.botIds;
   const knownTools = new Set((current?.tools ?? []).map((tool) => tool.name));
   const allowedTools = Array.isArray(input.allowedTools)
     ? [...new Set(input.allowedTools
@@ -160,12 +212,14 @@ export function upsertMcpServer(
       name,
       url,
       enabled,
+      ...(botIds !== undefined ? { botIds } : {}),
       ...(auth ? { auth } : {}),
       ...(derivedAllowedTools !== undefined ? { allowedTools: derivedAllowedTools } : {}),
       ...(toolPolicies !== undefined ? { toolPolicies } : {}),
       ...(current?.tools ? { tools: current.tools } : {}),
       ...(current?.lastCheckedAt ? { lastCheckedAt: current.lastCheckedAt } : {}),
       ...(current?.lastCheckStatus ? { lastCheckStatus: current.lastCheckStatus } : {}),
+      ...(current?.lastCheckError ? { lastCheckError: current.lastCheckError } : {}),
     },
   };
   return { id, servers };
@@ -185,7 +239,7 @@ function normalizedTools(tools: Array<{ name: string; description?: string }>): 
 export function recordMcpProbe(
   cfg: AppConfig,
   id: string,
-  result: { status: "ok"; tools: Array<{ name: string; description?: string }> } | { status: "error" },
+  result: { status: "ok"; tools: Array<{ name: string; description?: string }> } | { status: "error"; error?: unknown },
 ): Record<string, McpServerConfig> | null {
   const current = cfg.mcp?.servers?.[id];
   if (!current || !validId.test(id)) return null;
@@ -195,6 +249,7 @@ export function recordMcpProbe(
     lastCheckStatus: result.status,
   };
   if (result.status === "ok") {
+    delete next.lastCheckError;
     next.tools = normalizedTools(result.tools);
     const firstDiscovery = !current.tools?.length;
     const legacySelection = current.allowedTools === undefined ? null : new Set(current.allowedTools);
@@ -209,8 +264,69 @@ export function recordMcpProbe(
       const known = new Set(next.tools.map((tool) => tool.name));
       next.allowedTools = next.allowedTools.filter((name) => known.has(name));
     }
+  } else {
+    next.lastCheckError = safeMcpError(result.error);
   }
   return { ...(cfg.mcp?.servers ?? {}), [id]: next };
+}
+
+export function exportMcpConfig(cfg: AppConfig, botNameById: ReadonlyMap<string, string>): McpConfigExport {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    servers: Object.entries(cfg.mcp?.servers ?? {})
+      .filter(([id, server]) => validId.test(id) && Boolean(server.url))
+      .map(([id, server]) => ({
+        id,
+        name: server.name || id,
+        url: safeMcpExportUrl(server.url),
+        enabled: server.enabled !== false,
+        authType: server.auth?.type ?? null,
+        ...(server.auth?.type === "apiKey" && server.auth.header ? { authHeader: server.auth.header } : {}),
+        botNames: server.botIds === undefined
+          ? null
+          : server.botIds.flatMap((botId) => botNameById.get(botId) ? [botNameById.get(botId)!] : []),
+        ...(server.allowedTools !== undefined ? { allowedTools: [...server.allowedTools] } : {}),
+        ...(server.toolPolicies ? { toolPolicies: { ...server.toolPolicies } } : {}),
+      })),
+  };
+}
+
+export function importMcpConfig(
+  cfg: AppConfig,
+  input: unknown,
+  botIdByName: ReadonlyMap<string, string>,
+): { servers: Record<string, McpServerConfig>; imported: number } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("MCP 配置文件格式无效");
+  const bundle = input as { version?: unknown; servers?: unknown };
+  if (bundle.version !== 1 || !Array.isArray(bundle.servers)) throw new Error("不支持的 MCP 配置版本");
+  if (bundle.servers.length > 100) throw new Error("MCP 配置最多包含 100 个服务");
+
+  let working: AppConfig = { ...cfg, mcp: { servers: { ...(cfg.mcp?.servers ?? {}) } } };
+  let imported = 0;
+  for (const item of bundle.servers) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("MCP 服务配置无效");
+    const source = item as Record<string, unknown>;
+    const botIds = source.botNames === null
+      ? null
+      : Array.isArray(source.botNames)
+        ? [...new Set(source.botNames.flatMap((name) => typeof name === "string" && botIdByName.get(name) ? [botIdByName.get(name)!] : []))]
+        : undefined;
+    const next = upsertMcpServer(working, {
+      id: source.id,
+      name: source.name,
+      url: source.url,
+      enabled: source.enabled,
+      authType: source.authType,
+      authHeader: source.authHeader,
+      allowedTools: source.allowedTools,
+      toolPolicies: source.toolPolicies,
+      ...(botIds !== undefined ? { botIds } : {}),
+    });
+    working = { ...working, mcp: { servers: next.servers } };
+    imported += 1;
+  }
+  return { servers: working.mcp?.servers ?? {}, imported };
 }
 
 export function deleteMcpServer(cfg: AppConfig, id: string): Record<string, McpServerConfig> | null {

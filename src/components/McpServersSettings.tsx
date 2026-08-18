@@ -1,8 +1,9 @@
-import { Check, Clock3, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Bot, Check, Clock3, Download, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/cn";
-import { api } from "@/state/store";
+import { MAUS_COLORS } from "@/lib/mascot";
+import { api, useStore } from "@/state/store";
 
 interface McpTool {
   name: string;
@@ -26,6 +27,8 @@ interface McpServer {
   name: string;
   url: string;
   enabled: boolean;
+  /** null means every bot; [] means no bots. */
+  botIds: string[] | null;
   authConfigured: boolean;
   authType: "bearer" | "apiKey" | null;
   /** null means all advertised tools; [] means no tools. */
@@ -33,6 +36,7 @@ interface McpServer {
   tools: McpTool[];
   lastCheckedAt: string | null;
   health: "unknown" | "online" | "error";
+  lastCheckError: string | null;
 }
 
 const inputCls = "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
@@ -51,6 +55,7 @@ function healthLabel(server: McpServer) {
 }
 
 export function McpServersSettings() {
+  const { state } = useStore();
   const [servers, setServers] = useState<McpServer[]>([]);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -60,8 +65,10 @@ export function McpServersSettings() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [tested, setTested] = useState<Record<string, string>>({});
   const [audit, setAudit] = useState<McpAuditEntry[]>([]);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => api("/api/mcp/servers")
     .then((result) => setServers(result.servers ?? []))
@@ -126,6 +133,59 @@ export function McpServersSettings() {
       .finally(() => setBusy(null));
   };
 
+  const updateBotScope = (server: McpServer, botIds: string[] | null) => {
+    setBusy(`bots:${server.id}`);
+    setError(null);
+    api(`/api/mcp/servers/${server.id}`, { method: "PATCH", body: JSON.stringify({ botIds }) })
+      .then((result) => result.server ? replaceServer(result.server) : refresh())
+      .catch((reason) => setError(`${server.name}：${reason.message}`))
+      .finally(() => setBusy(null));
+  };
+
+  const toggleBot = (server: McpServer, botId: string) => {
+    const allBotIds = state.bots.map((bot) => bot.id);
+    const selected = server.botIds === null ? allBotIds : server.botIds;
+    updateBotScope(server, selected.includes(botId) ? selected.filter((id) => id !== botId) : [...selected, botId]);
+  };
+
+  const exportConfig = () => {
+    setBusy("export");
+    setError(null);
+    setNotice(null);
+    api("/api/mcp/config/export")
+      .then((bundle) => {
+        const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+        const href = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.download = `xinyunopen-mcp-${new Date().toISOString().slice(0, 10)}.json`;
+        anchor.click();
+        URL.revokeObjectURL(href);
+        setNotice(`已导出 ${bundle.servers?.length ?? 0} 个服务，访问令牌已自动排除`);
+      })
+      .catch((reason) => setError(reason.message))
+      .finally(() => setBusy(null));
+  };
+
+  const importConfig = (file: File | undefined) => {
+    if (!file) return;
+    setBusy("import");
+    setError(null);
+    setNotice(null);
+    file.text()
+      .then((text) => JSON.parse(text))
+      .then((bundle) => api("/api/mcp/config/import", { method: "POST", body: JSON.stringify(bundle) }))
+      .then((result) => {
+        setServers(result.servers ?? []);
+        setNotice(`已导入 ${result.imported ?? 0} 个服务；同名机器人范围已自动匹配，本机令牌保持不变`);
+      })
+      .catch((reason) => setError(reason instanceof SyntaxError ? "配置文件不是有效的 JSON" : reason.message))
+      .finally(() => {
+        if (importInputRef.current) importInputRef.current.value = "";
+        setBusy(null);
+      });
+  };
+
   const updateToolPolicies = (server: McpServer, toolPolicies: Record<string, McpTool["policy"]>) => {
     setBusy(`tools:${server.id}`);
     setError(null);
@@ -155,7 +215,18 @@ export function McpServersSettings() {
   return (
     <div className="flex flex-col gap-3">
       <div className="rounded-lg border border-hairline/40 bg-inset p-3">
-        <div className="mb-2 text-[12px] leading-relaxed text-ink-secondary">支持 Streamable HTTP MCP。令牌仅保存在本机；连接成功后可逐项控制模型能够使用的工具。</div>
+        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+          <div className="max-w-xl text-[12px] leading-relaxed text-ink-secondary">支持 Streamable HTTP MCP。令牌仅保存在本机；连接成功后可逐项控制模型能够使用的工具。</div>
+          <div className="flex items-center gap-1">
+            <button type="button" onClick={exportConfig} disabled={busy !== null} className="ui-pressable flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50">
+              {busy === "export" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} 脱敏导出
+            </button>
+            <button type="button" onClick={() => importInputRef.current?.click()} disabled={busy !== null} className="ui-pressable flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50">
+              {busy === "import" ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} 导入
+            </button>
+            <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => importConfig(event.target.files?.[0])} />
+          </div>
+        </div>
         <div className="grid gap-2 sm:grid-cols-2">
           <input className={inputCls} value={name} onChange={(event) => setName(event.target.value)} placeholder="服务名称，例如：飞书" />
           <input className={inputCls} type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://mcp.example.com/mcp" />
@@ -206,6 +277,12 @@ export function McpServersSettings() {
                   <span aria-hidden="true">·</span>
                   <span>{checkedAtLabel(server.lastCheckedAt)}</span>
                 </div>
+                {server.health === "error" && server.lastCheckError && (
+                  <div className="mt-1.5 flex items-start gap-2 rounded-md bg-danger/8 px-2 py-1.5 text-[10px] text-danger">
+                    <span className="min-w-0 flex-1 break-words">{server.lastCheckError}</span>
+                    <button type="button" onClick={() => test(server)} disabled={busy !== null} className="ui-pressable shrink-0 font-medium hover:underline disabled:opacity-50">重试</button>
+                  </div>
+                )}
                 {tested[server.id] && <div className="mt-1 flex items-center gap-1 text-[11px] text-success"><Check size={12} />{tested[server.id]}</div>}
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -219,6 +296,48 @@ export function McpServersSettings() {
                   {busy === `delete:${server.id}` ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                 </button>
               </div>
+            </div>
+
+            <div className="border-t border-hairline/30 px-3 py-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Bot size={15} className="shrink-0 text-ink-secondary" />
+                  <div>
+                    <div className="text-[12px] font-medium text-ink">适用机器人</div>
+                    <div className="text-[10px] text-ink-secondary">
+                      {server.botIds === null ? "全部机器人均可使用" : `已启用 ${server.botIds.length}/${state.bots.length} 个机器人`}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button type="button" disabled={busy !== null || server.botIds === null} onClick={() => updateBotScope(server, null)} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部启用</button>
+                  <button type="button" disabled={busy !== null || server.botIds?.length === 0} onClick={() => updateBotScope(server, [])} className="ui-pressable rounded-md px-2 py-1 text-[10px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">全部关闭</button>
+                </div>
+              </div>
+              {state.bots.length > 0 && (
+                <div className="mt-2 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+                  {state.bots.map((bot) => {
+                    const selected = server.botIds === null || server.botIds.includes(bot.id);
+                    return (
+                      <button
+                        key={bot.id}
+                        type="button"
+                        disabled={busy !== null}
+                        onClick={() => toggleBot(server, bot.id)}
+                        className={cn(
+                          "ui-pressable flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] disabled:opacity-50",
+                          selected ? "border-success/35 bg-success/10 text-success" : "border-hairline/35 bg-inset text-ink-secondary hover:text-ink",
+                        )}
+                        aria-pressed={selected}
+                      >
+                        <span className="size-1.5 rounded-full" style={{ backgroundColor: MAUS_COLORS[bot.color] }} />
+                        <span className="max-w-32 truncate">{bot.name}</span>
+                        {selected && <Check size={11} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="border-t border-hairline/30 px-3 py-2.5">
@@ -275,6 +394,7 @@ export function McpServersSettings() {
         );
       })}
       {!servers.length && <div className="py-3 text-center text-[12px] text-ink-secondary">尚未添加 MCP 服务。添加后可检测并管理它提供的工具。</div>}
+      {notice && <div role="status" className="text-[12px] text-success">{notice}</div>}
       {error && <div role="alert" className="text-[12px] text-danger">{error}</div>}
       <div className="rounded-lg border border-hairline/40 bg-card">
         <div className="flex items-center justify-between border-b border-hairline/30 px-3 py-2.5">

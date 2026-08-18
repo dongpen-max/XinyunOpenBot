@@ -1,4 +1,4 @@
-import { Component, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -31,6 +31,7 @@ import { actionableRuntimeError, deriveWorkStatus } from "@/lib/work-status";
 import { zhCN } from "@/locales/zh-CN";
 import { CallButton, CallOverlay, SpeakButton } from "./VoiceControls";
 import { voiceSpeaker } from "@/lib/voice/speaker";
+import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/lib/transcript-window";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
@@ -568,6 +569,22 @@ export function ChatView({
 
   // only the active branch is rendered; forks stay reachable via ‹ › nav
   const messages = useMemo(() => visibleMessages(bot), [bot]);
+  const transcriptKey = `${bot.id}:${bot.threadId}`;
+  const [transcriptWindow, setTranscriptWindow] = useState(() => ({
+    key: transcriptKey,
+    start: tailWindowStart(messages.length),
+  }));
+  if (transcriptWindow.key !== transcriptKey) {
+    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length) });
+  }
+  const {
+    visible: windowedMessages,
+    hiddenCount,
+    startIndex,
+  } = useMemo(
+    () => resolveTranscriptWindow(messages, transcriptWindow.start),
+    [messages, transcriptWindow.start],
+  );
   const workStatus = useMemo(
     () => deriveWorkStatus({ bot, messages, streaming, reasoning, computerActivity }),
     [bot, messages, streaming, reasoning, computerActivity],
@@ -648,6 +665,23 @@ export function ChatView({
     setFollow(true);
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   };
+
+  // Prepending older rows must keep the message under the cursor stationary.
+  const preExpandHeight = useRef<number | null>(null);
+  const showEarlier = () => {
+    preExpandHeight.current = scrollRef.current?.scrollHeight ?? null;
+    setFollow(false);
+    setTranscriptWindow((window) => ({
+      key: window.key,
+      start: expandWindowStart(startIndex),
+    }));
+  };
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || preExpandHeight.current === null) return;
+    element.scrollTop += element.scrollHeight - preExpandHeight.current;
+    preExpandHeight.current = null;
+  }, [transcriptWindow.start]);
 
   // on Windows the frameless window's min/max/close overlay sits at the
   // top-right: the header becomes the drag strip and clears room for it
@@ -759,11 +793,21 @@ export function ChatView({
           className="conversation-content mx-auto flex flex-col gap-3 pb-4"
           role="log"
           aria-live="polite"
-            aria-label={`与 ${bot.name} 的对话`}
+          aria-label={`与 ${bot.name} 的对话`}
         >
+          {hiddenCount > 0 && (
+            <div className="flex justify-center pt-2">
+              <button
+                onClick={showEarlier}
+                className="ui-pressable rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+              >
+                显示更早消息（还有 {hiddenCount} 条）
+              </button>
+            </div>
+          )}
           <MessagesList
             bot={bot}
-            messages={messages}
+            messages={windowedMessages}
             editingId={editingId}
             lastBotTextId={lastBotTextId}
             canRetryLast={!bot.busy && Boolean(lastUserMessage)}

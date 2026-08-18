@@ -93,6 +93,8 @@ export interface Task {
   threadId: string;
   title: string;
   createdAt: number;
+  /** cumulative token usage across settled turns */
+  usage?: { input: number; output: number; turns: number };
 }
 
 export interface Bot {
