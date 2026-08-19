@@ -27,4 +27,10 @@ describe("inferModelVendor", () => {
     expect(inferModelVendor({ driverKind: "claudeAgent", modelId: "default" })).toBe("anthropic");
     expect(inferModelVendor({ driverKind: "boxAgent", modelId: "computer" })).toBe("computer");
   });
+
+  it("marks OpenCode-owned models without hiding the underlying provider marks", () => {
+    expect(inferModelVendor({ driverKind: "opencodeAgent", modelId: "opencode/big-pickle" })).toBe("opencode");
+    expect(inferModelVendor({ driverKind: "opencodeAgent", modelId: "local/custom-model" })).toBe("opencode");
+    expect(inferModelVendor({ driverKind: "opencodeAgent", modelId: "openai/gpt-5.6" })).toBe("openai");
+  });
 });

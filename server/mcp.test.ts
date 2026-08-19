@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { AppConfig } from "./config.ts";
-import { activeMcpIntegrations, autoApprovedMcpTools, exportMcpConfig, importMcpConfig, mcpStdioConfigs, publicMcpServers, recordMcpProbe, safeMcpError, upsertMcpServer } from "./mcp.ts";
+import { autoDecision } from "./auto-approve.ts";
+import { activeMcpIntegrations, autoApprovedMcpTools, exportMcpConfig, importMcpConfig, managedMcpToolRequiresHuman, mcpStdioConfigs, publicMcpServers, recordMcpProbe, safeMcpError, upsertMcpServer } from "./mcp.ts";
 import { parseMcpMessages } from "./mcp-http.ts";
 
 describe("remote MCP bridge", () => {
@@ -112,6 +113,60 @@ describe("remote MCP bridge", () => {
     } } };
     expect(activeMcpIntegrations(cfg, "bot-a").map((server) => server.id)).toEqual(["global", "scoped"]);
     expect(activeMcpIntegrations(cfg, "bot-b").map((server) => server.id)).toEqual(["global"]);
+  });
+
+  it("keeps managed ask tools human-gated while auto tools follow normal auto mode", () => {
+    const cfg: AppConfig = {
+      mcp: {
+        servers: {
+          configured: {
+            name: "Configured",
+            url: "https://example.invalid/mcp",
+            tools: [{ name: "search_docs" }, { name: "write.docs" }],
+            toolPolicies: { search_docs: "auto", "write.docs": "ask" },
+          },
+        },
+      },
+    };
+    expect(managedMcpToolRequiresHuman(cfg, "mcp__configured__write.docs", "resolved")).toBe(true);
+    expect(managedMcpToolRequiresHuman(cfg, "mcp__configured__search_docs", "resolved")).toBe(false);
+    expect(autoDecision({ autoApprove: true }, "mcp__configured__search_docs", "search docs")).toBe(
+      "auto-approved mcp__configured__search_docs",
+    );
+  });
+
+  it("fails closed for ambiguous sanitized MCP names instead of auto-approving them", () => {
+    const cfg: AppConfig = {
+      mcp: {
+        servers: {
+          configured: {
+            name: "Configured",
+            url: "https://example.invalid/mcp",
+            tools: [{ name: "write.docs" }, { name: "write_docs" }],
+            toolPolicies: { "write.docs": "auto", write_docs: "auto" },
+          },
+        },
+      },
+    };
+    expect(managedMcpToolRequiresHuman(cfg, "configured_write_docs", "ambiguous")).toBe(true);
+  });
+
+  it("keeps denied MCP tools out of the attached proxy allowlist", () => {
+    const cfg: AppConfig = {
+      mcp: {
+        servers: {
+          configured: {
+            name: "Configured",
+            url: "https://example.invalid/mcp",
+            tools: [{ name: "search_docs" }, { name: "delete_docs" }],
+            toolPolicies: { search_docs: "auto", delete_docs: "deny" },
+          },
+        },
+      },
+    };
+    const [integration] = activeMcpIntegrations(cfg, "bot-a");
+    expect(integration?.allowedTools).toEqual(["search_docs"]);
+    expect(JSON.parse(mcpStdioConfigs([integration!])[0]!.env!.XINYUN_MCP_ALLOWED_TOOLS!)).toEqual(["search_docs"]);
   });
 
   it("exports no credentials and imports by bot name while preserving local tokens", () => {

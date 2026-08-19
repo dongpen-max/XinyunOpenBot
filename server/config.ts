@@ -250,6 +250,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // `enabled: false` is the explicit way to drop one from the fleet.
   const map: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
+    opencode: { driver: "opencodeAgent" },
     kimi: { driver: "kimiAgent" },
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
@@ -300,7 +301,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // Config-file keys are injected as per-instance environment so drivers
   // see them without needing real process env vars.
   for (const entry of Object.values(map)) {
-    entry.environment = {
+    // OpenCode owns its provider credentials and can use arbitrary providers;
+    // only explicit per-instance environment is passed to it.
+    const inherited = entry.driver === "opencodeAgent" ? {} : {
       // xAI — for both grokApi (REST) and grokAgent (CLI gateway)
       ...(cfg.xai?.key ? { XAI_API_KEY: cfg.xai.key } : {}),
       ...(cfg.xai?.url ? { XAI_BASE_URL: cfg.xai.url } : {}),
@@ -311,6 +314,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       ...(cfg.openai?.key ? { OPENAI_API_KEY: cfg.openai.key } : {}),
       ...(cfg.openai?.url ? { OPENAI_BASE_URL: cfg.openai.url } : {}),
       ...(cfg.box?.token ? { BOX_TOKEN: cfg.box.token } : {}),
+    };
+    entry.environment = {
+      ...inherited,
       ...entry.environment,
     };
   }

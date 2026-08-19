@@ -284,7 +284,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // whole point of asking is that a person decides — and anything that
       // looks destructive stops even in auto mode.
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
-      const forceAsk = permission && mcp.managedMcpToolPolicy(cfg, event.tool) === "ask";
+      const forceAsk = permission && mcp.managedMcpToolRequiresHuman(cfg, event.tool, event.mcpToolResolution);
       const settled = permission && !forceAsk && asker && event.requestId
         ? autoDecision(asker, event.tool, event.summary)
         : null;
