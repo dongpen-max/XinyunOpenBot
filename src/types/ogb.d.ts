@@ -25,8 +25,11 @@ declare global {
       cloudDesktop?: {
         open(botId: string): Promise<{ ok: boolean }>;
         reconnect(botId: string): Promise<{ ok: boolean }>;
+        openInBrowser(botId: string): Promise<{ ok: boolean }>;
         setBounds(bounds: CloudDesktopBounds): Promise<void>;
         reload(): Promise<void>;
+        focus(): Promise<boolean>;
+        paste(): Promise<boolean>;
         close(): Promise<void>;
         toggleFullscreen(): Promise<boolean>;
         onState(cb: (state: CloudDesktopState) => void): () => void;

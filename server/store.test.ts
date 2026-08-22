@@ -96,6 +96,22 @@ describe("Store", () => {
     expect(reloaded.taskByThread(bot.id, bot.threadId)?.usage).toEqual({ input: 2000, output: 400, turns: 3 });
   });
 
+  it("persists the latest provider instance dispatched per task", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const firstThreadId = bot.threadId;
+    store.markTaskDispatched(bot.id, firstThreadId, "claude");
+
+    const second = store.createTask(bot.id)!;
+    store.markTaskDispatched(bot.id, second.threadId, "codex");
+    expect(store.taskByThread(bot.id, firstThreadId)?.lastInstanceId).toBe("claude");
+    expect(store.taskByThread(bot.id, second.threadId)?.lastInstanceId).toBe("codex");
+
+    const reloaded = new Store(selection);
+    expect(reloaded.taskByThread(bot.id, firstThreadId)?.lastInstanceId).toBe("claude");
+    expect(reloaded.taskByThread(bot.id, second.threadId)?.lastInstanceId).toBe("codex");
+  });
+
   it("keeps exactly one persisted Chief of Staff and supports handoff", () => {
     const store = new Store(selection);
     const first = store.createBot();
@@ -147,6 +163,18 @@ describe("Store", () => {
 
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
+  });
+
+  it("stores a late session cursor on the task that produced it", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const firstThreadId = bot.threadId;
+    const second = store.createTask(bot.id)!;
+
+    store.setResumeCursor(bot.id, "claude", "first-session", firstThreadId);
+    expect(store.taskByThread(bot.id, firstThreadId)?.resumeCursors).toEqual({ claude: "first-session" });
+    expect(store.taskByThread(bot.id, second.threadId)?.resumeCursors).toEqual({});
+    expect(store.bot(bot.id)?.resumeCursors).toEqual({});
   });
 
   it("seedIfEmpty creates exactly one starter bot, once", () => {

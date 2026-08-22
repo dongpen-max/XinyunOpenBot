@@ -268,6 +268,7 @@ function RelaySettingsContent() {
     <div className="flex flex-col gap-5">
       <ProxyRow section="anthropic" label="Claude (Anthropic)" keyPlaceholder="sk-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
       <ProxyRow section="openai" label="Codex (OpenAI)" keyPlaceholder="sk-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
+      <ProxyRow section="gemini" label="Gemini (Google)" keyPlaceholder="AIza… 或中转站密钥" urlPlaceholder="https://generativelanguage.googleapis.com/v1beta/openai" />
       <ProxyRow section="xai" label="Grok (xAI)" keyPlaceholder="xai-… 中转站密钥" urlPlaceholder="https://your-proxy.com/v1" />
     </div>
   );
@@ -322,7 +323,7 @@ export function AppSettingsPanel() {
           <SettingsDisclosure icon={BrainCircuit} title="国产模型 API" description="直接连接 DeepSeek、智谱 GLM、通义千问和 Kimi。" summary="4 个服务预设" open={openSection === "domestic"} onToggle={() => toggle("domestic")}>
             <DomesticModelsContent />
           </SettingsDisclosure>
-          <SettingsDisclosure icon={Cloud} title="AI 中转站配置" description="配置 Claude、Codex 和 Grok 的兼容中转站。" summary="3 个服务" open={openSection === "relay"} onToggle={() => toggle("relay")}>
+          <SettingsDisclosure icon={Cloud} title="AI 中转站配置" description="配置 Claude、Codex、Gemini 和 Grok 的兼容中转站。" summary="4 个服务" open={openSection === "relay"} onToggle={() => toggle("relay")}>
             <RelaySettingsContent />
           </SettingsDisclosure>
           <SettingsDisclosure icon={Link2} title={zhCN.appSettings.connections} description={zhCN.appSettings.connectionsDesc} summary="Composio 与 Box" open={openSection === "connections"} onToggle={() => toggle("connections")}>
@@ -392,7 +393,7 @@ function SettingsCategoryPage({ category }: { category: SettingsCategoryId }) {
         <SettingsBlock icon={BrainCircuit} title="国产模型 API" description="直接连接 DeepSeek、智谱 GLM、通义千问和 Kimi。">
           <DomesticModelsContent />
         </SettingsBlock>
-        <SettingsBlock icon={Cloud} title="AI 中转站配置" description="配置 Claude、Codex 和 Grok 的兼容中转站。">
+        <SettingsBlock icon={Cloud} title="AI 中转站配置" description="配置 Claude、Codex、Gemini 和 Grok 的兼容中转站。">
           <RelaySettingsContent />
         </SettingsBlock>
       </>

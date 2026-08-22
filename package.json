@@ -15,14 +15,14 @@
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
     "test": "vitest run && pnpm test:updater",
-    "test:updater": "node --test electron/updater-coordinator.node-test.mjs",
+    "test:updater": "node --test electron/updater-coordinator.node-test.mjs electron/cloud-desktop-utils.node-test.mjs",
     "test:watch": "vitest",
     "preview": "vite preview",
     "build:server": "tsc -p tsconfig.server.build.json",
     "build:speech": "swiftc -O electron/resources/speech-helper.swift -o electron/resources/speech-helper",
     "build:updater": "node scripts/bundle-updater.mjs",
     "package": "pnpm build && pnpm build:server && pnpm build:speech && pnpm build:updater && electron-builder --mac --publish never",
-    "package:win": "pnpm build && pnpm build:server && pnpm build:updater && electron-builder --win --publish never"
+    "package:win": "pnpm build && pnpm build:server && pnpm build:updater && node scripts/stage-cua-sdk.mjs && electron-builder --win --publish never"
   },
   "dependencies": {
     "@trycua/cua-driver": "^0.19.3",

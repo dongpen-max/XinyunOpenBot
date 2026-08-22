@@ -198,14 +198,16 @@ describe("harness HTTP API", () => {
     expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("never serializes provider resume cursors to the client", async () => {
+  it("never serializes provider session bookkeeping to the client", async () => {
     const listed = await api("GET", "/api/bots");
     expect(JSON.stringify(listed.body)).not.toContain("resumeCursors");
+    expect(JSON.stringify(listed.body)).not.toContain("lastInstanceId");
     const bot = listed.body.bots[0];
 
     const created = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Cursor-safe task" });
     expect(created.status).toBe(201);
     expect(JSON.stringify(created.body)).not.toContain("resumeCursors");
+    expect(JSON.stringify(created.body)).not.toContain("lastInstanceId");
 
     const renamed = await api("PATCH", `/api/bots/${bot.id}/tasks/${created.body.task.threadId}`, { title: "Renamed task" });
     expect(renamed.status).toBe(200);

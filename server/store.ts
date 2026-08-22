@@ -109,6 +109,8 @@ export interface TaskRecord {
   createdAt: number;
   /** provider-native continuation per instance, for THIS task only */
   resumeCursors: Record<string, unknown>;
+  /** Provider instance that dispatched the most recent turn on this task. */
+  lastInstanceId?: string;
   /** cumulative token usage across settled turns; informational, not billing */
   usage?: { input: number; output: number; turns: number };
 }
@@ -598,13 +600,14 @@ export class Store {
     return changed;
   }
 
-  setResumeCursor(botId: string, instanceId: string, cursor: unknown) {
+  setResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {
     const bot = this.bot(botId);
     if (!bot) return;
     // the cursor belongs to the task that produced it, not to the bot
-    const task = this.activeTask(botId);
+    const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
     if (task) task.resumeCursors[instanceId] = cursor;
-    bot.resumeCursors[instanceId] = cursor; // legacy mirror
+    // The legacy mirror follows only the task currently visible in chat.
+    if (!threadId || bot.threadId === threadId) bot.resumeCursors[instanceId] = cursor;
     this.saveBots();
   }
 
@@ -626,6 +629,14 @@ export class Store {
 
   taskByThread(botId: string, threadId: string): TaskRecord | undefined {
     return this.bot(botId)?.tasks?.find((task) => task.threadId === threadId);
+  }
+
+  /** Record the instance that most recently dispatched a turn. */
+  markTaskDispatched(botId: string, threadId: string, instanceId: string) {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || task.lastInstanceId === instanceId) return;
+    task.lastInstanceId = instanceId;
+    this.saveBots();
   }
 
   /** A fresh context on the same bot: new thread, new session, same

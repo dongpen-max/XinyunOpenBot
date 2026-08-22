@@ -3,6 +3,7 @@ export const CLOUD_DESKTOP_MIN_WIDTH: number;
 export const CLOUD_DESKTOP_MIN_HEIGHT: number;
 
 export function isValidCloudDesktopBotId(value: unknown): value is string;
+export function isAllowedCloudDesktopPermission(permission: unknown): boolean;
 export function parseCloudDesktopUrl(value: unknown): URL | null;
 export function prepareCloudDesktopUrl(value: unknown): URL | null;
 export function isAllowedCloudDesktopNavigation(value: unknown, allowedOrigins: ReadonlySet<string>): boolean;

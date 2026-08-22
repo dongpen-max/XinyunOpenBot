@@ -4,6 +4,9 @@ import {
   Maximize2,
   Minimize2,
   Moon,
+  ClipboardPaste,
+  ExternalLink,
+  Keyboard,
   RefreshCw,
   RotateCw,
   X,
@@ -135,6 +138,39 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
     }
   };
 
+  const focusDesktop = async () => {
+    setActionError(null);
+    try {
+      const focused = await bridge?.focus();
+      if (!focused) setActionError("云端桌面尚未就绪，请稍后重试");
+    } catch {
+      setActionError("无法获取云端桌面的键盘焦点");
+    }
+  };
+
+  const pasteDesktop = async () => {
+    setActionError(null);
+    try {
+      const pasted = await bridge?.paste();
+      if (!pasted) setActionError("云端桌面尚未就绪，请稍后重试");
+    } catch {
+      setActionError("粘贴失败，请先重新获取键盘焦点后再试");
+    }
+  };
+
+  const openInBrowser = async () => {
+    if (!bridge) return;
+    setActionError(null);
+    try {
+      const result = await bridge.openInBrowser(bot.id);
+      if (!result.ok) throw new Error();
+      await bridge.close();
+      dispatch({ type: "closeCloudDesktop" });
+    } catch {
+      setActionError("无法在默认浏览器中打开云端桌面");
+    }
+  };
+
   const toggleFullscreen = async () => {
     try {
       await bridge?.toggleFullscreen();
@@ -200,6 +236,33 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           <span className="hidden min-w-0 truncate text-[11.5px] text-ink-secondary md:block">云端桌面</span>
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
+            onClick={() => void openInBrowser()}
+            disabled={!bridge || sleeping}
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            title="在默认浏览器中打开（支持完整键盘和剪贴板）"
+            aria-label="在默认浏览器中打开云端桌面"
+          >
+            <ExternalLink size={15} />
+          </button>
+          <button
+            onClick={() => void focusDesktop()}
+            disabled={!bridge || busy || sleeping || desktop.state !== "ready"}
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            title="重新获取键盘焦点"
+            aria-label="重新获取键盘焦点"
+          >
+            <Keyboard size={15} />
+          </button>
+          <button
+            onClick={() => void pasteDesktop()}
+            disabled={!bridge || busy || sleeping || desktop.state !== "ready"}
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
+            title="粘贴本机剪贴板"
+            aria-label="粘贴本机剪贴板"
+          >
+            <ClipboardPaste size={15} />
+          </button>
+          <button
             onClick={() => void reconnect()}
             disabled={!bridge || busy || sleeping}
             className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
@@ -241,7 +304,11 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
         </div>
         </div>
 
-        <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#05080d]">
+        <div
+          ref={surfaceRef}
+          className="relative min-h-0 flex-1 overflow-hidden bg-[#05080d]"
+          onMouseDown={() => void bridge?.focus()}
+        >
           {(busy || sleeping) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-secondary">
               <Loader2 size={22} className="animate-spin" />
@@ -260,6 +327,11 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
                   重新连接
                 </button>
               </div>
+            </div>
+          )}
+          {desktop.state === "ready" && !sleeping && !failedMessage && (
+            <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1.5 text-[11.5px] text-white/80 shadow-sm">
+              输入异常时，点击上方↗按钮可在浏览器中获得完整键盘和剪贴板支持
             </div>
           )}
         </div>

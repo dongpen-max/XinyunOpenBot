@@ -21,6 +21,7 @@ import { discoverModels, saveDiscoveredModels } from "./models-discover.js";
 import { modelForReasoningLevel } from "./model-downgrade.js";
 import { parseReasoningRequest, reasoningEffortForLevel } from "./reasoning.js";
 import { shouldUseCloudComputer } from "./turn-computer.js";
+import { buildTurnContext, engineIsFresh } from "./turn-context.js";
 import { SseReplayBuffer } from "./sse-replay.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
@@ -120,7 +121,7 @@ const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 /** Provider-native continuation tokens never cross the server boundary. */
-const wireTask = ({ resumeCursors: _resumeCursors, ...task }) => task;
+const wireTask = ({ resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, ...task }) => task;
 /** Strip both the legacy active-task cursor mirror and all per-task cursors. */
 const wireBot = (bot) => {
     const { resumeCursors: _resumeCursors, tasks, ...rest } = bot;
@@ -181,7 +182,7 @@ bus.subscribe((event) => {
     switch (event.type) {
         case "session.started":
             if (bot && event.sessionId && event.providerInstanceId) {
-                store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId);
+                store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId, event.threadId);
             }
             break;
         case "item.completed":
@@ -481,6 +482,26 @@ function userDataRoot() {
 // %APPDATA% on Windows — <dir>/cua-connection.json). Read fresh each turn —
 // Electron may restart or permissions may change.
 function readCuaConnection() {
+    // Windows packages the Cua SDK as a native Node module rather than a
+    // `cua-driver` executable. Run our tiny stdio MCP bridge with Electron's
+    // Node so it uses the exact same architecture and DLL search path as the
+    // desktop app. This must be returned before the legacy descriptor: old
+    // installs can leave an unavailable macOS-style descriptor behind.
+    if (process.platform === "win32") {
+        const proxy = join(dirname(fileURLToPath(import.meta.url)), "local-computer-proxy.ts");
+        const compiled = proxy.replace(/\.ts$/, ".js");
+        const packaged = !existsSync(proxy);
+        return {
+            command: process.execPath,
+            args: [existsSync(proxy) ? "--experimental-strip-types" : "", existsSync(proxy) ? proxy : compiled].filter(Boolean),
+            env: {
+                ELECTRON_RUN_AS_NODE: "1",
+                ...(packaged
+                    ? { OMB_CUA_SDK_ROOT: join(dirname(fileURLToPath(import.meta.url)), "cua-sdk") }
+                    : {}),
+            },
+        };
+    }
     // new name first; pre-rename desktop builds used the old directory
     for (const dir of ["XinyunOpen Bot", "openmausbot", "OpenGrokBot", "opengrokbot"]) {
         try {
@@ -503,6 +524,10 @@ async function startTurn(botId, text, opts) {
         throw Object.assign(new Error("no such bot"), { status: 404 });
     if (bot.busy)
         throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
+    const threadId = bot.threadId;
+    const task = store.taskByThread(bot.id, threadId);
+    if (!task)
+        throw Object.assign(new Error("no such task"), { status: 404 });
     const commsDepth = opts?.commsDepth ?? 0;
     // a task takes its name from the first thing you asked it to do
     if (text.trim())
@@ -511,18 +536,19 @@ async function startTurn(botId, text, opts) {
     if (!instance) {
         throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
     }
+    const instanceId = instance.instanceId;
     const reasoningEffort = reasoningEffortForLevel(opts?.reasoningLevel);
     const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, opts?.reasoningLevel);
     // an edit hands us its already-branched user message; a plain send appends
     let userMessage = opts?.userMessage;
     if (!userMessage) {
-        userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
-        broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
+        userMessage = store.appendMessage(threadId, { role: "user", kind: "text", text });
+        broadcast({ kind: "message", threadId, message: userMessage });
     }
     // transcript for API-backed drivers: settled text turns on the ACTIVE
     // branch only — abandoned forks never reach the model
     const transcript = store
-        .activePath(bot.threadId)
+        .activePath(threadId)
         .filter((m) => m.kind === "text" && m.text && m.id !== userMessage.id)
         .slice(-40)
         .map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
@@ -533,17 +559,20 @@ async function startTurn(botId, text, opts) {
     // cleared only once the turn is actually dispatched — clearing it here
     // would cost the next attempt its history if this dispatch fails.
     const rewound = Boolean(bot.rewound);
-    const turnText = rewound && instance.driverKind !== "grok" && transcript.length
-        ? [
-            "[The user rewound this conversation (edited a message or switched to another version). Everything before this point was replaced by the following history:]",
-            "",
-            ...transcript.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`),
-            "",
-            "[Now reply to the user's latest message:]",
-            "",
-            text,
-        ].join("\n")
-        : text;
+    const fresh = !rewound &&
+        engineIsFresh({
+            instanceId,
+            lastInstanceId: task.lastInstanceId,
+            resumeCursors: task.resumeCursors,
+            transcript,
+        });
+    const { turnText, resume } = buildTurnContext({
+        text,
+        transcript,
+        rewound,
+        fresh,
+        replaysNatively: instance.driverKind === "grok",
+    });
     const persona = [
         `You are ${bot.name}, a personal bot in XinyunOpen Bot.`,
         bot.title && `Role: ${bot.title}.`,
@@ -644,25 +673,26 @@ async function startTurn(botId, text, opts) {
                     : "";
             if (integrations.computer) {
                 const leaseAbort = new AbortController();
-                pendingCloudLeaseByThread.set(bot.threadId, leaseAbort);
+                pendingCloudLeaseByThread.set(threadId, leaseAbort);
                 try {
                     const release = await cloudComputerLeases.acquire(integrations.computer.boxId, () => broadcast({ kind: "computer", botId: bot.id, state: "waiting" }), leaseAbort.signal);
-                    cloudLeaseByThread.set(bot.threadId, release);
+                    cloudLeaseByThread.set(threadId, release);
                     broadcast({ kind: "computer", botId: bot.id, state: "ready" });
                 }
                 finally {
-                    pendingCloudLeaseByThread.delete(bot.threadId);
+                    pendingCloudLeaseByThread.delete(threadId);
                 }
             }
             await instance.adapter.sendTurn({
-                threadId: bot.threadId,
+                threadId,
                 text: turnText,
+                permissionMode: bot.autoApprove ? "auto" : "ask",
                 model: turnModel,
                 reasoningEffort,
                 // a rewound thread never resumes the abandoned branch's session
                 // the active task's own session — another task's cursor would
                 // resume the wrong conversation and defeat the context bubble
-                resumeCursor: rewound ? undefined : store.activeTask(bot.id)?.resumeCursors[bot.modelSelection.instanceId],
+                resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
                 transcript,
                 system: persona +
                     (integrations.computer && computerMode === "mcp"
@@ -684,19 +714,20 @@ async function startTurn(botId, text, opts) {
             // dispatched: the rewind is spent, and the old cursors are dead
             if (rewound)
                 store.patchBot(bot.id, { rewound: false, resumeCursors: {} });
+            store.markTaskDispatched(bot.id, threadId, instanceId);
             if (previewBoxId)
                 startScreenPoller(bot.id, previewBoxId);
         }
         catch (e) {
-            cloudLeaseByThread.get(bot.threadId)?.();
-            cloudLeaseByThread.delete(bot.threadId);
+            cloudLeaseByThread.get(threadId)?.();
+            cloudLeaseByThread.delete(threadId);
             const message = e instanceof Error ? e.message : String(e);
-            const failure = store.appendMessage(bot.threadId, {
+            const failure = store.appendMessage(threadId, {
                 role: "bot",
                 kind: "activity",
                 tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
             });
-            broadcast({ kind: "message", threadId: bot.threadId, message: failure });
+            broadcast({ kind: "message", threadId, message: failure });
             store.patchBot(bot.id, { busy: false });
             broadcastBot(store.bot(bot.id));
         }
@@ -790,7 +821,14 @@ reasoningLevel, spoken = new Set()) {
         });
         const timer = setTimeout(finish, 5 * 60_000);
         instance.adapter
-            .sendTurn({ threadId: group.threadId, text, system, model: turnModel, reasoningEffort })
+            .sendTurn({
+            threadId: group.threadId,
+            text,
+            system,
+            permissionMode: bot.autoApprove ? "auto" : "ask",
+            model: turnModel,
+            reasoningEffort,
+        })
             .catch((err) => {
             const failure = store.appendMessage(group.threadId, {
                 role: "bot",
@@ -851,6 +889,7 @@ function startGroupTurn(groupId, text, reasoningLevel) {
 function configStatus() {
     return {
         xai: { configured: Boolean(cfg.xai?.key) },
+        gemini: { configured: Boolean(cfg.gemini?.key) },
         anthropic: { configured: Boolean(cfg.anthropic?.key) },
         openai: { configured: Boolean(cfg.openai?.key) },
         domestic: Object.fromEntries(DOMESTIC_PROVIDER_IDS.map((providerId) => [
@@ -1569,7 +1608,7 @@ const server = createServer(async (req, res) => {
         if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
             const body = await readBody(req);
             const patch = {};
-            for (const key of ["xai", "anthropic", "openai", "domestic", "composio", "box", "profile", "voice"]) {
+            for (const key of ["xai", "gemini", "anthropic", "openai", "domestic", "composio", "box", "profile", "voice"]) {
                 if (body[key] && typeof body[key] === "object")
                     patch[key] = body[key];
             }
@@ -1628,7 +1667,7 @@ const server = createServer(async (req, res) => {
             return res.end(audio.bytes);
         }
         // ── discover relay models ──
-        m = path.match(/^\/api\/relay\/(anthropic|openai|xai|deepseek|zhipu|dashscope|moonshot)\/discover-models$/);
+        m = path.match(/^\/api\/relay\/(anthropic|openai|gemini|xai|deepseek|zhipu|dashscope|moonshot)\/discover-models$/);
         if (m && method === "POST") {
             const section = m[1];
             try {

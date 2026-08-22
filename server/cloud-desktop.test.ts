@@ -29,8 +29,21 @@ describe("cloud desktop URL validation", () => {
       "https://desktop.example.test/vnc.html?autoconnect=true&resize=remote&token=rotating",
     );
     expect(url?.searchParams.get("resize")).toBe("scale");
+    expect(url?.searchParams.get("view_only")).toBe("false");
+    expect(url?.searchParams.get("viewOnly")).toBe("false");
+    expect(url?.searchParams.get("interactive")).toBe("true");
     expect(url?.searchParams.get("autoconnect")).toBe("true");
     expect(url?.searchParams.get("token")).toBe("rotating");
+  });
+
+  it("also clears view-only flags placed in the noVNC hash", () => {
+    const url = prepareCloudDesktopUrl(
+      "https://desktop.example.test/vnc.html#token=rotating&view_only=true&path=websockify",
+    );
+    const hash = new URLSearchParams(url?.hash.slice(1));
+    expect(hash.get("view_only")).toBe("false");
+    expect(hash.get("viewOnly")).toBe("false");
+    expect(hash.get("path")).toBe("websockify");
   });
 
   it("accepts only server-compatible bot ids", () => {

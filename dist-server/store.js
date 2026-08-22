@@ -426,15 +426,17 @@ export class Store {
             this.saveBots();
         return changed;
     }
-    setResumeCursor(botId, instanceId, cursor) {
+    setResumeCursor(botId, instanceId, cursor, threadId) {
         const bot = this.bot(botId);
         if (!bot)
             return;
         // the cursor belongs to the task that produced it, not to the bot
-        const task = this.activeTask(botId);
+        const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
         if (task)
             task.resumeCursors[instanceId] = cursor;
-        bot.resumeCursors[instanceId] = cursor; // legacy mirror
+        // The legacy mirror follows only the task currently visible in chat.
+        if (!threadId || bot.threadId === threadId)
+            bot.resumeCursors[instanceId] = cursor;
         this.saveBots();
     }
     // ── tasks ─────────────────────────────────────────────────────────────
@@ -452,6 +454,14 @@ export class Store {
     }
     taskByThread(botId, threadId) {
         return this.bot(botId)?.tasks?.find((task) => task.threadId === threadId);
+    }
+    /** Record the instance that most recently dispatched a turn. */
+    markTaskDispatched(botId, threadId, instanceId) {
+        const task = this.taskByThread(botId, threadId);
+        if (!task || task.lastInstanceId === instanceId)
+            return;
+        task.lastInstanceId = instanceId;
+        this.saveBots();
     }
     /** A fresh context on the same bot: new thread, new session, same
      * persona/tools/computer. Becomes the active task. */

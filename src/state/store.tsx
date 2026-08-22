@@ -163,6 +163,7 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
+  gemini?: { configured: boolean };
   anthropic?: { configured: boolean };
   openai?: { configured: boolean };
   domestic?: Record<DomesticModelProviderId, { configured: boolean }>;
@@ -327,7 +328,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "chiefOfStaff" | "voiceProfile"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "autoApprove" | "alwaysAllow" | "chiefOfStaff" | "voiceProfile"
         >
       >;
     }

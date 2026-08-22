@@ -90,6 +90,8 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 export interface SendTurnInput {
   threadId: ThreadId;
   text: string;
+  /** How provider-hosted tool calls should be approved for this bot turn. */
+  permissionMode?: "ask" | "auto";
   model?: string;
   /** Per-message model thinking budget. Unsupported adapters ignore it. */
   reasoningEffort?: ReasoningEffort;

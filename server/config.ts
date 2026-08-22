@@ -58,6 +58,8 @@ export interface McpServerConfig {
 
 export interface AppConfig {
   xai?: { key?: string; url?: string };
+  /** Google Gemini OpenAI-compatible gateway (direct Gemini API or relay). */
+  gemini?: { key?: string; url?: string };
   anthropic?: { key?: string; url?: string };
   openai?: { key?: string; url?: string };
   domestic?: Partial<Record<DomesticProviderId, DomesticProviderConfig>>;
@@ -122,6 +124,7 @@ export function loadConfig(): AppConfig {
   // Env vars from .env.local (loaded by server/load-env.ts before this runs)
   // take lowest priority — disk config wins when set.
   cfg.xai = { key: process.env.XAI_API_KEY, url: process.env.XAI_BASE_URL, ...cfg.xai };
+  cfg.gemini = { key: process.env.GEMINI_API_KEY, url: process.env.GEMINI_BASE_URL, ...cfg.gemini };
   cfg.anthropic = { key: process.env.ANTHROPIC_API_KEY, url: process.env.ANTHROPIC_BASE_URL, ...cfg.anthropic };
   cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
   cfg.domestic = {
@@ -166,7 +169,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   } catch {
     /* first write */
   }
-  for (const key of ["xai", "anthropic", "openai", "composio", "box", "profile"] as const) {
+  for (const key of ["xai", "gemini", "anthropic", "openai", "composio", "box", "profile"] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
@@ -256,6 +259,30 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     antigravity: { driver: "antigravityAgent" },
     computer: { driver: "boxAgent" },
   };
+  const geminiKey = cfg.gemini?.key?.trim();
+  const geminiUrl = cfg.gemini?.url?.trim();
+  if (geminiKey || geminiUrl) {
+    map.geminiApi = {
+      driver: "grok",
+      displayName: "心云 Gemini (Google)",
+      config: {
+        url: (geminiUrl || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, ""),
+        apiKeyEnv: "GEMINI_API_KEY",
+        models: {
+          default: "gemini-2.5-flash",
+          options: [
+            { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+            { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+            { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+          ],
+        },
+        computerTools: true,
+        agentTools: true,
+        reasoningEffort: false,
+      },
+      environment: geminiKey ? { GEMINI_API_KEY: geminiKey } : {},
+    };
+  }
   for (const providerId of DOMESTIC_PROVIDER_IDS) {
     const provider = cfg.domestic?.[providerId];
     const key = provider?.key?.trim();
@@ -284,6 +311,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     map[instanceId] = {
       ...previous,
       ...entry,
+      ...(typeof entry.displayName === "string"
+        ? { displayName: entry.displayName.replace(/^星云(?=\s)/, "心云") }
+        : {}),
       ...(previous?.config && entry.config
         ? { config: { ...(previous.config as object), ...(entry.config as object) } }
         : {}),
@@ -304,6 +334,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       // xAI — for both grokApi (REST) and grokAgent (CLI gateway)
       ...(cfg.xai?.key ? { XAI_API_KEY: cfg.xai.key } : {}),
       ...(cfg.xai?.url ? { XAI_BASE_URL: cfg.xai.url } : {}),
+      ...(cfg.gemini?.key ? { GEMINI_API_KEY: cfg.gemini.key } : {}),
+      ...(cfg.gemini?.url ? { GEMINI_BASE_URL: cfg.gemini.url } : {}),
       // Anthropic — forwarded to claudeAgent when a custom gateway is set
       ...(cfg.anthropic?.key ? { ANTHROPIC_API_KEY: cfg.anthropic.key } : {}),
       ...(cfg.anthropic?.url ? { ANTHROPIC_BASE_URL: cfg.anthropic.url } : {}),

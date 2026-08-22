@@ -13,6 +13,7 @@ import { attachmentsFromFiles, composeMessage, isLongPaste, pasteAttachment, typ
 import { useComposerDraft, useReasoningLevel, type ReasoningLevel } from "@/lib/drafts";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { ReasoningEffortControl } from "./ReasoningEffortControl";
+import { PermissionModeControl } from "./PermissionModeControl";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -399,6 +400,7 @@ export function Composer({
                 : "当前模型暂不支持调整思考强度"
           }
         />
+        <PermissionModeControl bot={bot} disabled={Boolean(approval)} />
         {busy && (
           <button
             onClick={() => {

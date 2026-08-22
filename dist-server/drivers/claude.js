@@ -9,6 +9,7 @@
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
 import { existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -43,6 +44,7 @@ const PERM_PROXY_PATH = proxyPath("permission-proxy");
 const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 const DENY_TIMEOUT_NOTE = "XinyunOpen Bot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 const QUESTION_TIMEOUT_NOTE = "XinyunOpen Bot: nobody answered in time. Use your best judgment and continue.";
+const DUPLICATE_ASK_ID_NOTE = "XinyunOpen Bot: duplicate ask id — skipping this request.";
 /** One human-readable line for an ask — what the card subtitle shows. */
 function askSummary(ask) {
     const input = ask.input ?? {};
@@ -55,11 +57,13 @@ function askSummary(ask) {
     const text = JSON.stringify(input);
     return text === "{}" ? (ask.tool ?? "tool") : text.slice(0, 200);
 }
-function permissionSocketPath(threadId) {
-    const tag = threadId.replace(/[^\w-]/g, "").slice(0, 8);
+export function permissionSocketPath(threadId) {
+    const prefix = threadId.replace(/[^\w-]/g, "").slice(0, 4);
+    const digest = createHash("sha256").update(threadId).digest("hex").slice(0, 4);
+    const tag = `${prefix}${digest}`;
     return brokerSocketPath(DATA_DIR, tag);
 }
-function createPermissionBroker(opts) {
+export function createPermissionBroker(opts) {
     const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
     const pending = new Map();
     try {
@@ -85,6 +89,14 @@ function createPermissionBroker(opts) {
                 if (msg.t !== "ask")
                     continue;
                 const askId = String(msg.id ?? newId());
+                if (pending.has(askId)) {
+                    console.error(`permission broker on ${opts.socketPath}: duplicate ask id ${JSON.stringify(askId)} — denying`);
+                    try {
+                        conn.write(JSON.stringify({ t: "answer", id: askId, behavior: "deny", message: DUPLICATE_ASK_ID_NOTE }) + "\n");
+                    }
+                    catch { }
+                    continue;
+                }
                 const kind = msg.kind === "question" ? "question" : "permission";
                 const ask = { id: askId, kind, tool: msg.tool ?? "tool", input: msg.input ?? {}, at: Date.now() };
                 const finish = (behavior, message, source) => {

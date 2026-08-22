@@ -18,6 +18,7 @@ import { DOMESTIC_PROVIDER_PRESETS, isDomesticProviderId } from "./domestic-mode
 export const RELAY_TARGETS = {
   anthropic: { instanceId: "claude", label: "Claude (Anthropic)" },
   openai: { instanceId: "codex", label: "Codex (OpenAI)" },
+  gemini: { instanceId: "geminiApi", label: "Gemini (Google)" },
   xai: { instanceId: "grokApi", label: "Grok (xAI)" },
   deepseek: { instanceId: "deepseek", label: DOMESTIC_PROVIDER_PRESETS.deepseek.displayName },
   zhipu: { instanceId: "zhipu", label: DOMESTIC_PROVIDER_PRESETS.zhipu.displayName },

@@ -36,14 +36,46 @@ describe("Codex cloud tool configuration", () => {
     const args = codexAppServerArgs({
       threadId: "codex-cloud",
       text: "work on the server",
+      permissionMode: "auto",
       integrations: { computer: { boxId: "box-primary", token: "box_secret" } },
     });
 
     expect(args.at(-1)).toBe("app-server");
     expect(args.join("\n")).toContain("mcp_servers.computer.command");
     expect(args.join("\n")).toContain("OGB_BOX_ID");
+    expect(args.join("\n")).toContain('mcp_servers.computer.default_tools_approval_mode="auto"');
     expect(args.join("\n")).toContain("box-primary");
     expect(args.join("\n")).toContain("OGB_BOX_TOKEN");
+  });
+
+  it("keeps computer MCP approval interactive in ask mode", () => {
+    const args = codexAppServerArgs({
+      threadId: "codex-cloud-ask",
+      text: "work on the server",
+      permissionMode: "ask",
+      integrations: { computer: { boxId: "box-primary", token: "box_secret" } },
+    });
+    expect(args.join("\n")).not.toContain("default_tools_approval_mode");
+  });
+
+  it("mounts the Windows local computer bridge instead of a cloud Box", () => {
+    const args = codexAppServerArgs({
+      threadId: "codex-local",
+      text: "inspect this computer",
+      permissionMode: "auto",
+      integrations: {
+        localComputer: {
+          command: "electron.exe",
+          args: ["server/local-computer-proxy.js"],
+          env: { ELECTRON_RUN_AS_NODE: "1", OMB_CUA_SDK_ROOT: "C:/app/cua-sdk" },
+        },
+      },
+    });
+
+    expect(args.join("\n")).toContain("local-computer-proxy.js");
+    expect(args.join("\n")).toContain("OMB_CUA_SDK_ROOT");
+    expect(args.join("\n")).toContain('mcp_servers.computer.default_tools_approval_mode="auto"');
+    expect(args.join("\n")).not.toContain("OGB_BOX_TOKEN");
   });
 
   it("declares cloud computer support from capabilities rather than driver names", async () => {
@@ -193,6 +225,48 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     await recorder.until((e) => e.type === "turn.completed");
     // legacy method name → legacy decision vocabulary
     expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
+  });
+
+  it("answers Codex MCP elicitation approvals with the MCP action shape", async () => {
+    await create({ mode: "mcp-approval" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-mcp-approve",
+      text: "inspect the computer",
+      permissionMode: "ask",
+    });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "permission",
+      tool: "mcp__computer__browser_state",
+    });
+
+    await instance.adapter.respondToRequest("t-mcp-approve", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "accept", content: {} });
+  });
+
+  it("keeps the full command when a Windows interpreter prefix is long", async () => {
+    await create({ mode: "windows-command" });
+    await instance.adapter.sendTurn({ threadId: "t-windows-command", text: "read notes" });
+
+    const command = [
+      "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\"",
+      "-Command",
+      `\"Get-Content -Raw -LiteralPath 'C:\\Users\\Ada\\workspaces\\${"very-long-folder\\".repeat(8)}NOTES.md'\"`,
+    ].join(" ");
+    expect(command.length).toBeGreaterThan(200);
+    const opened = await recorder.until((event) => event.type === "request.opened");
+    expect(recorder.events.find((event) => event.type === "item.started")).toMatchObject({
+      type: "item.started",
+      title: command,
+    });
+    expect(opened).toMatchObject({ requestType: "permission", summary: command });
+
+    await instance.adapter.respondToRequest("t-windows-command", opened.requestId!, { behavior: "allow" });
+    await recorder.until((event) => event.type === "turn.completed");
   });
 
   it("auto-approves commands in fullAuto without opening a request", async () => {

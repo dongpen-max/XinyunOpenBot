@@ -38,8 +38,11 @@ contextBridge.exposeInMainWorld("ogb", {
   cloudDesktop: {
     open: (botId) => ipcRenderer.invoke("cloud-desktop:open", botId),
     reconnect: (botId) => ipcRenderer.invoke("cloud-desktop:reconnect", botId),
+    openInBrowser: (botId) => ipcRenderer.invoke("cloud-desktop:open-in-browser", botId),
     setBounds: (bounds) => ipcRenderer.invoke("cloud-desktop:set-bounds", bounds),
     reload: () => ipcRenderer.invoke("cloud-desktop:reload"),
+    focus: () => ipcRenderer.invoke("cloud-desktop:focus"),
+    paste: () => ipcRenderer.invoke("cloud-desktop:paste"),
     close: () => ipcRenderer.invoke("cloud-desktop:close"),
     toggleFullscreen: () => ipcRenderer.invoke("cloud-desktop:toggle-fullscreen"),
     onState: (cb) => {

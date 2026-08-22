@@ -1,6 +1,7 @@
-import { BrowserWindow, WebContentsView, ipcMain } from "electron";
+import { BrowserWindow, WebContentsView, ipcMain, shell } from "electron";
 import {
   isAllowedCloudDesktopNavigation,
+  isAllowedCloudDesktopPermission,
   isValidCloudDesktopBotId,
   prepareCloudDesktopUrl,
   sanitizeCloudDesktopBounds,
@@ -33,8 +34,63 @@ class CloudDesktopController {
     this.bounds = null;
 
     this.onFullscreenChanged = () => this.emit();
+    // A WebContentsView is drawn above the renderer, but on Windows the
+    // parent BrowserWindow can retain the native keyboard target after an
+    // overlay transition. Relay parent key events only while this remote
+    // desktop is active, so noVNC receives the same events as a standalone
+    // browser tab. This also keeps the app's global shortcuts out of a live
+    // remote session.
+    this.forwardKeyboardInput = (event, input) => {
+      const view = this.view;
+      if (
+        this.state !== "ready" ||
+        !view ||
+        view.webContents.isDestroyed() ||
+        !["keyDown", "keyUp", "char", "rawKeyDown"].includes(input.type)
+      ) {
+        return;
+      }
+      try {
+        view.webContents.sendInputEvent(input);
+        event.preventDefault();
+      } catch {
+        // A view can be torn down between the check and native dispatch.
+      }
+    };
+    this.primeInputTarget = (webContents = this.view?.webContents) => {
+      if (!webContents || webContents.isDestroyed()) return;
+      // noVNC versions in Box use one of these focusable targets. Chromium's
+      // native focus is necessary but not sufficient after a WebContentsView
+      // is re-attached: the RFB client also needs its hidden keyboard input
+      // element focused before it starts translating DOM key events.
+      void webContents
+        .executeJavaScript(
+          `(() => {
+            const selectors = [
+              "#noVNC_keyboardinput",
+              "#noVNC_keyboardinput_helper",
+              "input[autofocus]",
+              "textarea[autofocus]",
+              "canvas[tabindex]",
+              "[tabindex=0]",
+              "body",
+            ];
+            for (const selector of selectors) {
+              const node = document.querySelector(selector);
+              if (!node || typeof node.focus !== "function") continue;
+              try { node.focus({ preventScroll: true }); } catch { node.focus(); }
+              break;
+            }
+            window.focus();
+            return document.activeElement?.id || document.activeElement?.tagName || "";
+          })()`,
+          true,
+        )
+        .catch(() => {});
+    };
     win.on("enter-full-screen", this.onFullscreenChanged);
     win.on("leave-full-screen", this.onFullscreenChanged);
+    win.webContents.on("before-input-event", this.forwardKeyboardInput);
     win.once("closed", () => {
       this.operation += 1;
       this.destroyView();
@@ -92,8 +148,12 @@ class CloudDesktopController {
       }
     };
 
-    webContents.session.setPermissionCheckHandler(() => false);
-    webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    webContents.session.setPermissionCheckHandler((_webContents, permission) =>
+      isAllowedCloudDesktopPermission(permission),
+    );
+    webContents.session.setPermissionRequestHandler((_webContents, permission, callback) =>
+      callback(isAllowedCloudDesktopPermission(permission)),
+    );
     webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     webContents.on("will-navigate", denyNavigation);
     webContents.on("will-redirect", denyNavigation);
@@ -105,6 +165,20 @@ class CloudDesktopController {
     webContents.on("did-finish-load", () => {
       if (operation !== this.operation || view !== this.view) return;
       view.setVisible(true);
+      // A WebContentsView does not always become the active input target after
+      // a React overlay opens. Focus it explicitly so keyboard input reaches
+      // the noVNC/Chromium client immediately.
+      this.win.focus({ steal: true });
+      webContents.focus();
+      // noVNC listens on a hidden keyboard target. Focusing the document after
+      // the native view is attached avoids a compositor focus race on Windows.
+      this.primeInputTarget(webContents);
+      // The noVNC page can mount its keyboard target a tick after the initial
+      // load event. Repeat once after layout so a reconnect does not regress
+      // to a mouse-only session.
+      setTimeout(() => {
+        if (operation === this.operation && view === this.view) this.primeInputTarget(webContents);
+      }, 250);
       this.emit("ready");
     });
     webContents.on("did-fail-load", (_event, errorCode, errorDescription, _url, isMainFrame) => {
@@ -161,6 +235,25 @@ class CloudDesktopController {
     }
   }
 
+  async openInBrowser(botId) {
+    if (!isValidCloudDesktopBotId(botId)) {
+      this.emit("failed", "机器人标识无效，无法打开云端桌面");
+      return { ok: false };
+    }
+
+    try {
+      // Use the operating system's browser as a robust input fallback for
+      // Windows builds where an embedded WebContentsView cannot receive RFB
+      // keyboard events. The rotating join URL stays in the main process.
+      const url = await this.requestJoinUrl(botId);
+      await shell.openExternal(url.href);
+      return { ok: true };
+    } catch (error) {
+      this.emit("failed", sanitizeCloudDesktopError(error));
+      return { ok: false };
+    }
+  }
+
   setBounds(bounds) {
     if (this.win.isDestroyed()) return;
     const [width, height] = this.win.getContentSize();
@@ -175,6 +268,20 @@ class CloudDesktopController {
     this.emit("connecting", undefined);
     this.view.setVisible(false);
     this.view.webContents.reload();
+  }
+
+  focus() {
+    if (!this.view || this.view.webContents.isDestroyed()) return false;
+    this.view.webContents.focus();
+    return true;
+  }
+
+  paste() {
+    if (!this.focus()) return false;
+    // This is Electron's native paste command. The clipboard text never
+    // crosses IPC, is never sent to the app server, and is never logged.
+    this.view.webContents.paste();
+    return true;
   }
 
   close() {
@@ -198,6 +305,7 @@ class CloudDesktopController {
     if (!this.win.isDestroyed()) {
       this.win.removeListener("enter-full-screen", this.onFullscreenChanged);
       this.win.removeListener("leave-full-screen", this.onFullscreenChanged);
+      this.win.webContents.removeListener("before-input-event", this.forwardKeyboardInput);
     }
   }
 }
@@ -220,10 +328,15 @@ export function registerCloudDesktopIpc(getServerPort) {
   ipcMain.handle("cloud-desktop:reconnect", (event, botId) =>
     controllerFor(event, getServerPort).open(botId, true),
   );
+  ipcMain.handle("cloud-desktop:open-in-browser", (event, botId) =>
+    controllerFor(event, getServerPort).openInBrowser(botId),
+  );
   ipcMain.handle("cloud-desktop:set-bounds", (event, bounds) => {
     controllerFor(event, getServerPort).setBounds(bounds);
   });
   ipcMain.handle("cloud-desktop:reload", (event) => controllerFor(event, getServerPort).reload());
+  ipcMain.handle("cloud-desktop:focus", (event) => controllerFor(event, getServerPort).focus());
+  ipcMain.handle("cloud-desktop:paste", (event) => controllerFor(event, getServerPort).paste());
   ipcMain.handle("cloud-desktop:close", (event) => controllerFor(event, getServerPort).close());
   ipcMain.handle("cloud-desktop:toggle-fullscreen", (event) =>
     controllerFor(event, getServerPort).toggleFullscreen(),

@@ -49,6 +49,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [retry, setRetry] = useState(0);
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canWorkInCloud = engine?.capabilities?.computerTools === true;
+  const localComputerLabel = window.ogb?.platform === "win32" ? zhCN.computer.thisComputer : zhCN.computer.thisMac;
 
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
@@ -215,7 +216,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         <div className="mx-5 mb-1 flex items-center gap-2 rounded-lg border border-accent/25 bg-accent/10 px-3 py-2 text-[12px] text-ink-secondary" aria-live="polite">
           <Loader2 size={13} className="animate-spin text-accent" />
           <span>{activityLabel}</span>
-          <span className="ml-auto text-[11px] text-ink-secondary/70">云端优先</span>
+          <span className="ml-auto text-[11px] text-ink-secondary/70">{bot.computer === "local" ? "本地运行" : "云端优先"}</span>
         </div>
       )}
 
@@ -229,7 +230,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {/* Screen preview */}
         <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
           <span>{bot.name}{zhCN.computer.screenLabel}</span>
-          {phase === "local" && <span className="text-[11px]">{zhCN.computer.thisMac}</span>}
+          {phase === "local" && <span className="text-[11px]">{localComputerLabel}</span>}
         </div>
         <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-xl bg-card">
           {frameSrc ? (
@@ -319,7 +320,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             {(
               [
                 ["cloud", zhCN.computer.cloudBox],
-                ["local", zhCN.computer.localBox],
+                ["local", localComputerLabel],
                 ["off", zhCN.computer.offBox],
               ] as const
             ).map(([mode, label], i) => (

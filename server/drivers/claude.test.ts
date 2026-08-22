@@ -7,19 +7,60 @@
 // fake CLI is a shebang script, which Windows cannot exec directly (the
 // same reason claude.cmd needs special handling — see the Windows PRs).
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { connect } from "node:net";
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { DATA_DIR, ensureDirs } from "../config.ts";
+import { ensureDirs } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import { claudeEnvironment, ClaudeDriver } from "./claude.ts";
+import { claudeEnvironment, ClaudeDriver, permissionSocketPath } from "./claude.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
+
+function connectSocket(path: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const conn = connect(path);
+    conn.once("connect", () => resolve(conn));
+    conn.once("error", reject);
+  });
+}
+
+function answerQueue(conn: Socket) {
+  const answers: unknown[] = [];
+  const waiters: Array<(answer: any) => void> = [];
+  let buf = "";
+  conn.on("data", (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const answer = JSON.parse(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      const waiter = waiters.shift();
+      if (waiter) waiter(answer);
+      else answers.push(answer);
+    }
+  });
+  return () =>
+    new Promise<any>((resolve) => {
+      const answer = answers.shift();
+      if (answer !== undefined) resolve(answer);
+      else waiters.push(resolve);
+    });
+}
+
+describe("permissionSocketPath", () => {
+  it("distinguishes thread ids that share the same readable prefix", () => {
+    const first = permissionSocketPath("t-perm-dup-1");
+    const second = permissionSocketPath("t-perm-dup-2");
+
+    expect(first).not.toBe(second);
+    expect(permissionSocketPath("t-perm-dup-1")).toBe(first);
+  });
+});
 
 describe("ClaudeDriver.decodeConfig", () => {
   it("defaults to the claude binary with acceptEdits", () => {
@@ -300,23 +341,9 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await instance.adapter.sendTurn({ threadId: "t-perm-abc", text: "go" });
     await recorder.until((e) => e.type === "session.started");
 
-    // connect as the MCP proxy would and raise an ask (same tag rule as
-    // permissionSocketPath in claude.ts)
-    const tag = "t-perm-abc".replace(/[^\w-]/g, "").slice(0, 8);
-    const socketPath = join(DATA_DIR, `perm-${tag}.sock`);
-    const conn = connect(socketPath);
-    const answered = new Promise<{ behavior: string }>((resolve) => {
-      let buf = "";
-      conn.on("data", (c) => {
-        buf += c;
-        const nl = buf.indexOf("\n");
-        if (nl !== -1) resolve(JSON.parse(buf.slice(0, nl)));
-      });
-    });
-    await new Promise<void>((resolve, reject) => {
-      conn.on("connect", resolve);
-      conn.on("error", reject);
-    });
+    // connect as the MCP proxy would and raise an ask
+    const conn = await connectSocket(permissionSocketPath("t-perm-abc"));
+    const answered = answerQueue(conn)();
     conn.write(JSON.stringify({ t: "ask", id: "ask-1", tool: "Bash", input: { command: "rm -rf scratch" } }) + "\n");
 
     const opened = await recorder.until((e) => e.type === "request.opened");

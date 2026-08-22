@@ -21,6 +21,11 @@ describe("instanceConfigs", () => {
     expect(map.computer?.driver).toBe("boxAgent");
   });
 
+  it("uses the 心云 brand for legacy 星云 relay labels", () => {
+    expect(instanceConfigs({ instances: { relay: { driver: "grok", displayName: "星云 Gemini" } } }).relay?.displayName)
+      .toBe("心云 Gemini");
+  });
+
   it("merges into a default entry rather than clobbering its driver", () => {
     const map = instanceConfigs({
       instances: { claude: { config: { url: "https://relay.example/v1" } } as never },
@@ -71,6 +76,20 @@ describe("instanceConfigs", () => {
     });
     expect(map.dashscope).toBeUndefined();
     expect(map.moonshot).toBeUndefined();
+  });
+
+  it("adds a Google Gemini-compatible relay when configured", () => {
+    const map = instanceConfigs({ gemini: { key: "gemini-secret" } });
+    expect(map.geminiApi).toMatchObject({
+      driver: "grok",
+      displayName: "心云 Gemini (Google)",
+      environment: { GEMINI_API_KEY: "gemini-secret" },
+      config: {
+        url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        apiKeyEnv: "GEMINI_API_KEY",
+        reasoningEffort: false,
+      },
+    });
   });
 
   it("lets an explicit instance override a domestic preset", () => {

@@ -4,6 +4,20 @@ export const CLOUD_DESKTOP_MIN_HEIGHT = 180;
 
 const BOT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
+// The remote-desktop client needs browser clipboard events for Ctrl+V and its
+// own clipboard synchronisation. Keep the embedded desktop locked down: every
+// other Electron permission (media, notifications, geolocation, etc.) remains
+// denied by the caller below.
+const CLOUD_DESKTOP_PERMISSIONS = new Set([
+  "clipboard-read",
+  "clipboard-sanitized-write",
+  "clipboard-write",
+]);
+
+export function isAllowedCloudDesktopPermission(permission) {
+  return typeof permission === "string" && CLOUD_DESKTOP_PERMISSIONS.has(permission);
+}
+
 export function isValidCloudDesktopBotId(value) {
   return typeof value === "string" && BOT_ID.test(value);
 }
@@ -26,6 +40,30 @@ export function prepareCloudDesktopUrl(value) {
   const url = parseCloudDesktopUrl(value);
   if (!url) return null;
   url.searchParams.set("resize", "scale");
+  // Box returns a noVNC-compatible viewer. Explicitly clear the noVNC
+  // view-only mode because a reused desktop URL can inherit that UI state,
+  // leaving a fully visible desktop that rejects every keyboard and clipboard
+  // event in both Electron and an external browser.
+  url.searchParams.set("view_only", "false");
+  // Gateways have used several spellings over time. Unknown noVNC options are
+  // ignored, while the matching spelling is honored by that deployment.
+  url.searchParams.set("viewOnly", "false");
+  url.searchParams.set("readonly", "false");
+  url.searchParams.set("read_only", "false");
+  url.searchParams.set("interactive", "true");
+  // Some Box deployments put noVNC options in the hash instead of the query
+  // string. Update that copy too; otherwise the hash's `view_only=true` wins
+  // and the framebuffer remains watch-only even though the query looks right.
+  const hash = url.hash.startsWith("#") ? url.hash.slice(1) : "";
+  if (hash) {
+    const hashParams = new URLSearchParams(hash);
+    hashParams.set("view_only", "false");
+    hashParams.set("viewOnly", "false");
+    hashParams.set("readonly", "false");
+    hashParams.set("read_only", "false");
+    hashParams.set("interactive", "true");
+    url.hash = hashParams.toString();
+  }
   return url;
 }
 

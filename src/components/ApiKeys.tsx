@@ -96,7 +96,7 @@ export function ApiKeyRow({
 
 // ── proxy sections (Claude / Codex / Grok): key + base URL pair ───────────
 
-export type ProxySection = "anthropic" | "openai" | "xai" | DomesticModelProviderId;
+export type ProxySection = "anthropic" | "openai" | "gemini" | "xai" | DomesticModelProviderId;
 
 const fields = (key: string, url: string, clear: boolean) =>
   clear
@@ -124,6 +124,10 @@ const PROXY_SECTIONS: Record<
   xai: {
     body: (k, u, clear) => ({ xai: fields(k, u, clear) }),
     flag: (c) => c.xai?.configured ?? false,
+  },
+  gemini: {
+    body: (k, u, clear) => ({ gemini: fields(k, u, clear) }),
+    flag: (c) => c.gemini?.configured ?? false,
   },
   deepseek: {
     body: (k, u, clear) => ({ domestic: { deepseek: fields(k, u, clear) } }),

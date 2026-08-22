@@ -4,7 +4,7 @@
 // initialize/thread/turn handshake, then plays a scripted turn. Like the
 // real app-server, it never exits on its own — the driver kills it.
 //
-//   FAKE_CODEX_MODE   happy (default) | approval | resume | stream
+//   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -55,7 +55,7 @@ process.stdin.on("data", (chunk) => {
     }
 
     // response to our own server->client request (approval decision)
-    if (msg.id === 100 && (msg.result !== undefined || msg.error !== undefined)) {
+    if ((msg.id === 100 || msg.id === 101) && (msg.result !== undefined || msg.error !== undefined)) {
       decision = msg.result ?? { error: msg.error };
       finishTurn();
       continue;
@@ -77,16 +77,42 @@ process.stdin.on("data", (chunk) => {
       case "thread/start":
         out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model" } });
         break;
-      case "turn/start":
+      case "turn/start": {
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
-        notify("item/started", { item: { id: "i1", type: "commandExecution", command: "ls -la" } });
-        if (mode === "approval") {
-          out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
+        const command = mode === "windows-command"
+          ? [
+              "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\"",
+              "-Command",
+              `\"Get-Content -Raw -LiteralPath 'C:\\Users\\Ada\\workspaces\\${"very-long-folder\\".repeat(8)}NOTES.md'\"`,
+            ].join(" ")
+          : "ls -la";
+        notify("item/started", { item: { id: "i1", type: "commandExecution", command } });
+        if (mode === "approval" || mode === "windows-command") {
+          const approvalCommand = mode === "windows-command" ? command : "rm -rf scratch";
+          out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: approvalCommand } });
+          // turn continues from the approval response handler above
+        } else if (mode === "mcp-approval") {
+          out({
+            jsonrpc: "2.0",
+            id: 101,
+            method: "mcpServer/elicitation/request",
+            params: {
+              serverName: "computer",
+              mode: "form",
+              _meta: {
+                codex_approval_kind: "mcp_tool_call",
+                tool_description: "Read the cloud computer screen.",
+                tool_params_display: [{ name: "browser_state", value: "{}" }],
+              },
+              requestedSchema: { type: "object", properties: {} },
+            },
+          });
           // turn continues from the approval response handler above
         } else {
           finishTurn();
         }
         break;
+      }
       default:
         if (msg.id !== undefined) out({ jsonrpc: "2.0", id: msg.id, result: {} });
     }

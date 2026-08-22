@@ -26,11 +26,19 @@ const proxyPath = (basename) => {
 const COMPUTER_PROXY_PATH = proxyPath("computer-proxy");
 const tomlString = (value) => JSON.stringify(value);
 const tomlKey = (value) => (/^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value));
-function appendMcpOverrides(args, name, config) {
+function appendMcpOverrides(args, name, config, permissionMode) {
     const root = `mcp_servers.${name}`;
     args.push("-c", `${root}.command=${tomlString(config.command)}`);
     args.push("-c", `${root}.args=[${config.args.map(tomlString).join(",")}]`);
     args.push("-c", `${root}.startup_timeout_sec=30`);
+    // The computer and peer proxies are scoped to this turn and own their
+    // tool-level policy. Without this, Codex applies an interactive approval
+    // gate to every MCP call and can return `user rejected MCP tool call`
+    // before the proxy runs. Keep user-managed MCP servers on their configured
+    // policy instead of widening them here.
+    if ((name === "computer" || name === "agents") && permissionMode === "auto") {
+        args.push("-c", `${root}.default_tools_approval_mode="auto"`);
+    }
     for (const [key, value] of Object.entries(config.env ?? {})) {
         args.push("-c", `${root}.env.${tomlKey(key)}=${tomlString(value)}`);
     }
@@ -48,15 +56,15 @@ export function codexAppServerArgs(turn) {
                 OGB_BOX_ID: turn.integrations.computer.boxId,
                 OGB_BOX_TOKEN: turn.integrations.computer.token,
             },
-        });
+        }, turn.permissionMode);
     }
     else if (turn.integrations?.localComputer) {
-        appendMcpOverrides(args, "computer", turn.integrations.localComputer);
+        appendMcpOverrides(args, "computer", turn.integrations.localComputer, turn.permissionMode);
     }
     if (turn.integrations?.agents)
-        appendMcpOverrides(args, "agents", turn.integrations.agents);
+        appendMcpOverrides(args, "agents", turn.integrations.agents, turn.permissionMode);
     for (const [index, remote] of mcpStdioConfigs(turn.integrations?.mcp, { inheritCredentials: true }).entries()) {
-        appendMcpOverrides(args, turn.integrations.mcp[index].id, remote);
+        appendMcpOverrides(args, turn.integrations.mcp[index].id, remote, turn.permissionMode);
     }
     args.push("app-server");
     return args;
@@ -168,23 +176,54 @@ export const CodexDriver = {
                 const method = msg.method;
                 const params = msg.params ?? {};
                 const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
+                // Codex 0.147+ routes MCP tool approvals through MCP elicitation.
+                // It expects `{ action: "accept", content: {} }`, not the
+                // `{ decision: "accept" }` shape used by shell approvals.
+                const isMcpElicitation = method === "mcpServer/elicitation/request";
+                const mcpMeta = isMcpElicitation && params._meta && typeof params._meta === "object" ? params._meta : null;
+                const mcpServer = typeof params.serverName === "string" ? params.serverName : "mcp";
+                const mcpTool = Array.isArray(mcpMeta?.tool_params_display) && typeof mcpMeta.tool_params_display[0]?.name === "string"
+                    ? mcpMeta.tool_params_display[0].name
+                    : "tool";
                 const isQuestion = method === "item/tool/requestUserInput";
-                const tool = method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
-                    ? "edit"
-                    : isQuestion
-                        ? "ask_user"
-                        : "shell";
+                const tool = isMcpElicitation
+                    ? `mcp__${mcpServer}__${mcpTool}`
+                    : method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
+                        ? "edit"
+                        : isQuestion
+                            ? "ask_user"
+                            : "shell";
+                const sendDecision = (behavior) => {
+                    if (isMcpElicitation) {
+                        send({
+                            jsonrpc: "2.0",
+                            id: msg.id,
+                            result: behavior === "allow" ? { action: "accept", content: {} } : { action: "decline" },
+                        });
+                        return;
+                    }
+                    send({
+                        jsonrpc: "2.0",
+                        id: msg.id,
+                        result: {
+                            decision: behavior === "allow" ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline",
+                        },
+                    });
+                };
                 if (config.fullAuto && !isQuestion) {
-                    return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
+                    sendDecision("allow");
+                    return;
                 }
                 const requestId = newId();
                 const summary = typeof params.command === "string"
                     ? params.command.slice(0, 200)
                     : Array.isArray(params.questions)
                         ? params.questions.map((q) => q.question ?? q.header).filter(Boolean).join(" · ")
-                        : typeof params.reason === "string"
-                            ? params.reason
-                            : tool;
+                        : isMcpElicitation
+                            ? `${mcpServer}/${mcpTool}${typeof mcpMeta?.tool_description === "string" ? `: ${mcpMeta.tool_description}` : ""}`.slice(0, 200)
+                            : typeof params.reason === "string"
+                                ? params.reason
+                                : tool;
                 const choices = isQuestion
                     ? (params.questions?.[0]?.options ?? []).map((o) => o.label).slice(0, 5)
                     : undefined;
@@ -199,13 +238,8 @@ export const CodexDriver = {
                         }
                         send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
                     }
-                    else {
-                        send({
-                            jsonrpc: "2.0",
-                            id: msg.id,
-                            result: { decision: behavior === "allow" ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" },
-                        });
-                    }
+                    else
+                        sendDecision(behavior);
                     emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source: "user" });
                 };
                 const timer = setTimeout(() => (isQuestion ? finish("answer", QUESTION_TIMEOUT_NOTE) : finish("deny", DENY_TIMEOUT_NOTE)), 15 * 60_000);
