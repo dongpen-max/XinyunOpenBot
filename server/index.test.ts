@@ -63,6 +63,7 @@ beforeAll(async () => {
       instances: {
         ghost: { driver: "not-a-real-driver", displayName: "Ghost" },
         grok: off,
+        opencode: off,
         kimi: off,
         claude: off,
         codex: off,

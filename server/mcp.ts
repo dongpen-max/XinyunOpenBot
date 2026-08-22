@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AppConfig, McpServerConfig, McpToolPolicy } from "./config.ts";
+import type { McpToolResolution } from "./contracts.ts";
 import { closeRemoteMcp, requestRemoteMcp } from "./mcp-http.ts";
 import type { McpStdioConfig } from "./tools/mcp-stdio.ts";
 
@@ -409,6 +410,14 @@ export function managedMcpToolPolicy(cfg: AppConfig, title: string | undefined):
   const resolved = resolveManagedMcpTool(cfg, title);
   if (!resolved) return null;
   return effectiveToolPolicies(cfg.mcp!.servers![resolved.serverId]!)[resolved.tool] ?? null;
+}
+
+export function managedMcpToolRequiresHuman(
+  cfg: AppConfig,
+  title: string | undefined,
+  resolution?: McpToolResolution,
+): boolean {
+  return resolution === "ambiguous" || managedMcpToolPolicy(cfg, title) === "ask";
 }
 
 function mcpTokenEnvName(id: string): string {
