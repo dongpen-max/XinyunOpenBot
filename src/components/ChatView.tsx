@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Copy,
   Crown,
+  ListTree,
   Loader2,
   Monitor,
   Pencil,
@@ -32,11 +33,34 @@ import { zhCN } from "@/locales/zh-CN";
 import { CallButton, CallOverlay, SpeakButton } from "./VoiceControls";
 import { voiceSpeaker } from "@/lib/voice/speaker";
 import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/lib/transcript-window";
+import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
+import { timelineEvents } from "@/lib/taskTimeline";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
+
+function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const events = useMemo(() => timelineEvents(messages), [messages]);
+  if (events.length === 0) return null;
+  return (
+    <div className="mx-auto w-full max-w-[900px] px-5 pt-1">
+      <button onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[12.5px] text-ink-secondary hover:bg-raised/50 hover:text-ink">
+        <span className="flex items-center gap-1.5"><ListTree size={14} /> 执行时间线{busy ? " · 执行中" : ""}</span>
+        <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {open && <ol className="ml-2 border-l border-hairline/40 pb-2 pl-3">
+        {events.slice(-10).map((event) => <li key={event.id} className="relative flex items-center gap-2 py-1 text-[12px] text-ink-secondary">
+          <span className={cn("absolute -left-[17px] size-2 rounded-full", event.state === "failed" ? "bg-danger" : event.state === "complete" ? "bg-success" : "bg-ink-secondary")} />
+          <span className="truncate">{event.label}</span>
+          <time className="ml-auto shrink-0 text-[11px] text-ink-secondary/70">{formatTime(event.at)}</time>
+        </li>)}
+      </ol>}
+    </div>
+  );
+}
 
 /** "Today" / "Yesterday" / "Mon, Aug 11" — real dates, not a hardcoded label. */
 function dayLabel(at: number): string {
@@ -249,8 +273,10 @@ function Bubble({
   const user = message.role === "user";
   const [expanded, setExpanded] = useState(false);
   const text = message.text ?? "";
+  const attachedImages = user && message.kind === "text" ? splitAttachedImages(text) : null;
+  const visibleText = attachedImages?.display ?? text;
   const collapsible =
-    user && !expanded && (text.length > USER_COLLAPSE_CHARS || text.split("\n").length > USER_COLLAPSE_LINES);
+    user && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
 
   if (user && editing) {
     return (
@@ -295,10 +321,20 @@ function Bubble({
         >
           {user ? (
             <>
+              {attachedImages && attachedImages.images.length > 0 && (
+                <div className="mb-2 flex flex-wrap justify-end gap-2">
+                  {attachedImages.images.map((path) => {
+                    const src = `/api/attachments/${encodeURIComponent(attachmentBasename(path))}`;
+                    return <a key={path} href={src} target="_blank" rel="noreferrer" className="block max-w-[260px] overflow-hidden rounded-lg border border-hairline/40">
+                      <img src={src} alt="图片附件" loading="lazy" className="block max-h-[220px] w-full object-cover" />
+                    </a>;
+                  })}
+                </div>
+              )}
               <div
                 className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
               >
-                {text}
+                {visibleText}
               </div>
               {collapsible && (
                 <button onClick={() => setExpanded(true)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
@@ -770,6 +806,8 @@ export function ChatView({
           </div>
         </div>
       )}
+
+      <TaskTimeline messages={messages} busy={bot.busy ?? false} />
 
       {/* Messages */}
       <div

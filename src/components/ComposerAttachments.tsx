@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { ClipboardPaste, File as FileIcon, X } from "lucide-react";
+import { ClipboardPaste, File as FileIcon, Image as ImageIcon, X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { attachmentsFromFiles, formatSize, pasteSummary, type Attachment } from "@/lib/composer-attachments";
+import {
+  attachmentBasename,
+  attachmentsFromFiles,
+  formatSize,
+  imageAttachmentFromFile,
+  isImageFile,
+  pasteSummary,
+  type Attachment,
+} from "@/lib/composer-attachments";
 
 export function pathForFile(file: File): string {
   return window.ogb?.getPathForFile?.(file) ?? "";
@@ -41,10 +49,26 @@ export function ComposerAttachments({
       event.preventDefault();
       depth.current = 0;
       setDragging(false);
-      const result = await attachmentsFromFiles(Array.from(event.dataTransfer?.files ?? []), pathForFile);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      const images = files.filter(isImageFile);
+      const result = await attachmentsFromFiles(files.filter((file) => !isImageFile(file)), pathForFile);
+      const uploaded: Attachment[] = [];
+      const imageErrors: string[] = [];
+      for (const file of images) {
+        try {
+          const attachment = await imageAttachmentFromFile(file);
+          if (attachment) uploaded.push(attachment);
+        } catch (error) {
+          imageErrors.push(`${file.name}: ${error instanceof Error ? error.message : "上传失败"}`);
+        }
+      }
       if (!active) return;
-      if (result.attachments.length) onAdd(result.attachments);
-      setNotice(result.rejectedNames.length ? `${result.rejectedNames.join("、")} 无法读取；请先保存到本机后再添加。` : null);
+      if (result.attachments.length || uploaded.length) onAdd([...result.attachments, ...uploaded]);
+      const notices = [
+        result.rejectedNames.length ? `${result.rejectedNames.join("、")} 无法读取；请先保存到本机后再添加。` : "",
+        ...imageErrors,
+      ].filter(Boolean);
+      setNotice(notices.length ? notices.join("；") : null);
     };
     window.addEventListener("dragenter", onEnter);
     window.addEventListener("dragleave", onLeave);
@@ -79,7 +103,7 @@ export function ComposerAttachments({
           {items.map((attachment) => (
             <div
               key={attachment.id}
-              title={attachment.kind === "file" ? attachment.path : attachment.name ?? attachment.text.slice(0, 2000)}
+              title={attachment.kind === "file" || attachment.kind === "image" ? attachment.path : attachment.name ?? attachment.text.slice(0, 2000)}
               className={cn("group relative w-[172px] rounded-xl border border-hairline/40 bg-raised px-2.5 py-2", "transition-colors hover:border-hairline")}
             >
               {attachment.kind === "paste" ? (
@@ -90,6 +114,17 @@ export function ComposerAttachments({
                   </div>
                   <div className="mt-1 truncate text-[10.5px] text-ink-secondary/70">{attachment.name ?? pasteSummary(attachment)}</div>
                 </>
+              ) : attachment.kind === "image" ? (
+                <>
+                  <div className="flex h-[60px] items-center justify-center overflow-hidden rounded-md bg-panel">
+                    <img
+                      src={`/api/attachments/${encodeURIComponent(attachmentBasename(attachment.path))}`}
+                      alt={attachment.name}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <div className="mt-1 truncate text-[10.5px] text-ink-secondary/70">{formatSize(attachment.size)}</div>
+                </>
               ) : (
                 <div className="flex h-[60px] items-center gap-2">
                   <FileIcon size={17} className="shrink-0 text-ink-secondary" />
@@ -97,8 +132,8 @@ export function ComposerAttachments({
                 </div>
               )}
               <div className="mt-1 flex items-center gap-1 text-[9.5px] font-medium tracking-wide text-ink-secondary">
-                {attachment.kind === "paste" ? <ClipboardPaste size={11} /> : <FileIcon size={11} />}
-                {attachment.kind === "paste" ? (attachment.name ? "文本文件" : "长文本") : "本地文件"}
+                {attachment.kind === "paste" ? <ClipboardPaste size={11} /> : attachment.kind === "image" ? <ImageIcon size={11} /> : <FileIcon size={11} />}
+                {attachment.kind === "paste" ? (attachment.name ? "文本文件" : "长文本") : attachment.kind === "image" ? "图片附件" : "本地文件"}
               </div>
               <button onClick={() => onRemove(attachment.id)} aria-label="移除附件" className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full border border-hairline/60 bg-panel text-ink-secondary opacity-0 transition-opacity hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"><X size={11} /></button>
             </div>

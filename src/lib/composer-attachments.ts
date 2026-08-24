@@ -15,7 +15,16 @@ export type FileAttachment = {
   size: number;
 };
 
-export type Attachment = PasteAttachment | FileAttachment;
+export type ImageAttachment = {
+  kind: "image";
+  id: string;
+  path: string;
+  name: string;
+  size: number;
+  mime: string;
+};
+
+export type Attachment = PasteAttachment | FileAttachment | ImageAttachment;
 
 function validSize(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -32,6 +41,15 @@ export function isAttachment(value: unknown): value is Attachment {
       Number.isInteger(attachment.lines) &&
       attachment.lines >= 1 &&
       (attachment.name === undefined || typeof attachment.name === "string")
+    );
+  }
+  if (attachment.kind === "image") {
+    return (
+      typeof attachment.path === "string" &&
+      attachment.path.length > 0 &&
+      typeof attachment.name === "string" &&
+      typeof attachment.mime === "string" &&
+      attachment.mime.startsWith("image/")
     );
   }
   return (
@@ -68,6 +86,36 @@ export function pasteAttachment(text: string, name?: string): PasteAttachment {
 
 export function fileAttachment(name: string, path: string, size: number): FileAttachment {
   return { kind: "file", id: newId(), path, name, size };
+}
+
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+export function isImageFile(file: { type: string; size: number }): boolean {
+  const mime = file.type.split(";")[0]!.trim().toLowerCase();
+  return file.size >= 0 && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime);
+}
+
+export async function imageAttachmentFromFile(file: File): Promise<ImageAttachment | null> {
+  if (!isImageFile(file)) return null;
+  if (file.size > IMAGE_MAX_BYTES) throw new Error(`${file.name} 超过 10 MB 限制`);
+  const response = await fetch("/api/attachments", {
+    method: "POST",
+    headers: { "content-type": file.type },
+    body: new Uint8Array(await file.arrayBuffer()),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "图片上传失败");
+  }
+  const saved = (await response.json()) as { path: string; mime: string; bytes: number };
+  return {
+    kind: "image",
+    id: newId(),
+    path: saved.path,
+    name: file.name || "图片附件",
+    size: saved.bytes,
+    mime: saved.mime,
+  };
 }
 
 export type DroppedFile = Pick<File, "name" | "size" | "type" | "text">;
@@ -123,11 +171,31 @@ export function composeMessage(text: string, attachments: Attachment[]): string 
     if (attachment.kind === "paste") {
       const name = attachment.name ? ` name="${escapeAttribute(attachment.name)}"` : "";
       parts.push(`<pasted-text index="${index + 1}"${name}>\n${attachment.text}\n</pasted-text>`);
+    } else if (attachment.kind === "image") {
+      parts.push(`<attached-image path="${escapeAttribute(attachment.path)}" />`);
     } else {
       parts.push(`<attached-file path="${escapeAttribute(attachment.path)}" name="${escapeAttribute(attachment.name)}" />`);
     }
   });
   return parts.filter(Boolean).join("\n\n");
+}
+
+export function splitAttachedImages(text: string): { display: string; images: string[] } {
+  const images: string[] = [];
+  const display = text.replace(/<attached-image\s+path="([^"]*)"\s*\/?>(?:\s*\n)?/g, (_match, raw: string) => {
+    const path = raw
+      .replaceAll("&quot;", '"')
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&amp;", "&");
+    if (path) images.push(path);
+    return "";
+  });
+  return { display: display.trim(), images };
+}
+
+export function attachmentBasename(path: string): string {
+  return path.split(/[\\/]/).at(-1) ?? "";
 }
 
 export function escapeAttribute(value: string): string {

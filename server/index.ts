@@ -26,6 +26,7 @@ import { shouldUseCloudComputer } from "./turn-computer.ts";
 import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { SseReplayBuffer } from "./sse-replay.ts";
 import { ComputerControl } from "./computer-control.ts";
+import { extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -1226,6 +1227,50 @@ const server = createServer(async (req, res) => {
         sseClients.delete(client);
       });
       return;
+    }
+
+    // Image attachments are stored outside the transcript and referenced by
+    // generated filenames, so prompt paths never expose an original name.
+    if (method === "POST" && path === "/api/attachments") {
+      const rawType = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"][0] : req.headers["content-type"];
+      const mime = rawType?.split(";")[0]?.trim().toLowerCase();
+      if (!mime || !extensionForMime(mime)) return json(res, 400, { error: "content-type must be a supported image type" });
+      const saved = await new Promise<SavedAttachment>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let received = 0;
+        let settled = false;
+        const fail = (status: number, message: string) => {
+          if (settled) return;
+          settled = true;
+          reject(Object.assign(new Error(message), { status }));
+        };
+        req.on("data", (chunk: Buffer) => {
+          if (settled) return;
+          received += chunk.byteLength;
+          if (received > IMAGE_MAX_BYTES) return fail(413, `image exceeds ${IMAGE_MAX_BYTES} bytes`);
+          chunks.push(chunk);
+        });
+        req.on("end", () => {
+          if (settled) return;
+          settled = true;
+          try { resolve(saveImage(Buffer.concat(chunks), mime)); }
+          catch (error) { reject(error); }
+        });
+        req.on("error", (error) => fail(400, error instanceof Error ? error.message : String(error)));
+      });
+      return json(res, 201, saved);
+    }
+    const attachmentMatch = path.match(/^\/api\/attachments\/([\w.-]+)$/);
+    if (method === "GET" && attachmentMatch) {
+      const attachment = readAttachment(attachmentMatch[1]!);
+      if (!attachment) return json(res, 404, { error: "no such attachment" });
+      res.writeHead(200, {
+        "content-type": attachment.mime,
+        "content-length": String(attachment.bytes.byteLength),
+        "cache-control": "private, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      });
+      return res.end(attachment.bytes);
     }
 
     // Global palette search. It is intentionally read-only and scans only

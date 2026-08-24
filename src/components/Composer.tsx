@@ -9,7 +9,7 @@ import { groupComposerHint } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { zhCN } from "@/locales/zh-CN";
 import { transcribeVoice, VoiceRecorder } from "@/lib/voice/recorder";
-import { attachmentsFromFiles, composeMessage, isLongPaste, pasteAttachment, type Attachment } from "@/lib/composer-attachments";
+import { attachmentsFromFiles, composeMessage, imageAttachmentFromFile, isImageFile, isLongPaste, pasteAttachment, type Attachment } from "@/lib/composer-attachments";
 import { useComposerDraft, useReasoningLevel, type ReasoningLevel } from "@/lib/drafts";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { ReasoningEffortControl } from "./ReasoningEffortControl";
@@ -295,10 +295,22 @@ export function Composer({
           onChange={(event) => {
             const files = Array.from(event.target.files ?? []);
             event.target.value = "";
-            void attachmentsFromFiles(files, pathForFile).then(({ attachments: next, rejectedNames }) => {
-              if (next.length) addAttachments(next);
-              if (rejectedNames.length) setSpeechError(`${rejectedNames.join("、")} 无法读取，请先保存到本机。`);
-            });
+            void (async () => {
+              const images = files.filter(isImageFile);
+              const { attachments: next, rejectedNames } = await attachmentsFromFiles(files.filter((file) => !isImageFile(file)), pathForFile);
+              const uploaded: Attachment[] = [];
+              const errors: string[] = [];
+              for (const file of images) {
+                try {
+                  const attachment = await imageAttachmentFromFile(file);
+                  if (attachment) uploaded.push(attachment);
+                } catch (error) {
+                  errors.push(error instanceof Error ? error.message : `${file.name} 上传失败`);
+                }
+              }
+              if (next.length || uploaded.length) addAttachments([...next, ...uploaded]);
+              if (rejectedNames.length || errors.length) setSpeechError([...rejectedNames.map((name) => `${name} 无法读取，请先保存到本机。`), ...errors].join("；"));
+            })();
           }}
         />
         <button
