@@ -10,6 +10,7 @@ import {
   Mic,
   Palette,
   PlugZap,
+  Search,
   Settings2,
   UserRound,
   X,
@@ -346,13 +347,19 @@ const settingsCategories: Array<{
   label: string;
   description: string;
   icon: LucideIcon;
+  keywords: string[];
 }> = [
-  { id: "general", label: "常规", description: "个人资料与外观", icon: Settings2 },
-  { id: "engines", label: "AI 引擎", description: "模型、状态与中转", icon: BrainCircuit },
-  { id: "voice", label: "语音", description: "识别、合成与输入", icon: Mic },
-  { id: "connections", label: "连接与工具", description: "Composio、Box 与 MCP", icon: Link2 },
-  { id: "updates", label: "更新", description: "版本检查与安装", icon: Download },
+  { id: "general", label: "常规", description: "个人资料与外观", icon: Settings2, keywords: ["个人", "姓名", "邮箱", "主题", "外观", "颜色"] },
+  { id: "engines", label: "AI 引擎", description: "模型、状态与中转", icon: BrainCircuit, keywords: ["模型", "Claude", "Codex", "Gemini", "Grok", "DeepSeek", "中转站", "国产模型"] },
+  { id: "voice", label: "语音", description: "识别、合成与输入", icon: Mic, keywords: ["语音", "麦克风", "语音输入", "TTS", "转写"] },
+  { id: "connections", label: "连接与工具", description: "Composio、Box 与 MCP", icon: Link2, keywords: ["API", "密钥", "Composio", "Box", "MCP", "云电脑"] },
+  { id: "updates", label: "更新", description: "版本检查与安装", icon: Download, keywords: ["版本", "自动更新", "下载", "安装"] },
 ];
+
+function settingsCategoryMatches(category: (typeof settingsCategories)[number], query: string): boolean {
+  if (!query) return true;
+  return [category.label, category.description, ...category.keywords].some((value) => value.toLocaleLowerCase().includes(query));
+}
 
 function SettingsBlock({ icon: Icon, title, description, children }: { icon: LucideIcon; title: string; description: string; children: ReactNode }) {
   return (
@@ -429,8 +436,11 @@ function SettingsCategoryPage({ category }: { category: SettingsCategoryId }) {
 export function AppSettingsCenter() {
   const { dispatch } = useStore();
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>("general");
+  const [query, setQuery] = useState("");
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const active = settingsCategories.find((category) => category.id === activeCategory)!;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleCategories = settingsCategories.filter((category) => settingsCategoryMatches(category, normalizedQuery));
   const isWin = window.ogb?.platform === "win32";
 
   useEffect(() => {
@@ -445,6 +455,11 @@ export function AppSettingsCenter() {
       syncWindowTitleBarColor("app");
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    if (visibleCategories.some((category) => category.id === activeCategory)) return;
+    if (visibleCategories[0]) setActiveCategory(visibleCategories[0].id);
+  }, [activeCategory, visibleCategories]);
 
   return (
     <div
@@ -465,8 +480,24 @@ export function AppSettingsCenter() {
               <div className="text-[11px] text-ink-secondary">XinyunOpen Bot</div>
             </div>
           </div>
+          <label className="app-settings-center__search">
+            <Search size={14} className="shrink-0 text-ink-secondary" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.stopPropagation();
+                if (query) setQuery("");
+                else dispatch({ type: "toggleAppSettings", open: false });
+              }}
+              placeholder="搜索设置"
+              aria-label="搜索设置"
+              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none"
+            />
+          </label>
           <div className="app-settings-center__nav-list">
-            {settingsCategories.map((category) => {
+            {visibleCategories.map((category) => {
               const selected = category.id === activeCategory;
               const Icon = category.icon;
               return (
@@ -485,6 +516,7 @@ export function AppSettingsCenter() {
                 </button>
               );
             })}
+            {visibleCategories.length === 0 && <div className="px-2 py-3 text-[12px] leading-relaxed text-ink-secondary">没有匹配的设置</div>}
           </div>
         </nav>
 

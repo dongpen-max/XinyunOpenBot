@@ -71,10 +71,10 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
       {open && (
         <div
           data-model-picker-content
-          className="absolute right-0 top-full z-30 mt-2 flex w-[320px] overflow-hidden rounded-xl border border-hairline/50 bg-card shadow-2xl shadow-black/50"
+          className="absolute right-0 top-full z-30 mt-2 flex max-h-[min(70vh,520px)] w-[min(320px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-auto rounded-xl border border-hairline/50 bg-card shadow-2xl shadow-black/50"
         >
           {/* instance rail */}
-          <div className="flex flex-col gap-1 border-r border-hairline/40 bg-panel p-2">
+          <div className="flex max-h-full shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
             {state.instances.map((instance) => {
               const health = engineHealth(instance);
               const unavailable = !isEngineSelectable(instance);
