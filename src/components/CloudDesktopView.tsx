@@ -6,6 +6,7 @@ import {
   Moon,
   ClipboardPaste,
   ExternalLink,
+  Hand,
   Keyboard,
   RefreshCw,
   RotateCw,
@@ -31,7 +32,7 @@ function sameBounds(a: CloudDesktopBounds | null, b: CloudDesktopBounds) {
 }
 
 export function CloudDesktopView({ bot }: { bot: Bot }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const bridge = window.ogb?.cloudDesktop;
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [desktop, setDesktop] = useState<CloudDesktopState>({
@@ -41,6 +42,8 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
   });
   const [sleeping, setSleeping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const control = state.computerControl[bot.id] ?? { held: false, helpReason: null };
+  const [controlPending, setControlPending] = useState(false);
   const noDrag = window.ogb?.platform === "win32"
     ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties)
     : undefined;
@@ -198,6 +201,31 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
     }
   };
 
+  const controlAction = async (action: "take" | "release" | "dismiss-help") => {
+    setControlPending(true);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/bots/${bot.id}/computer/control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const snapshot = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(snapshot?.error ?? "云电脑控制权操作失败");
+      dispatch({
+        type: "computerControl",
+        botId: bot.id,
+        held: snapshot?.held === true,
+        helpReason: typeof snapshot?.helpReason === "string" ? snapshot.helpReason : null,
+        heldSinceMs: typeof snapshot?.heldSinceMs === "number" ? snapshot.heldSinceMs : null,
+      });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "云电脑控制权操作失败");
+    } finally {
+      setControlPending(false);
+    }
+  };
+
   const busy = desktop.state === "connecting" || desktop.state === "reconnecting";
   const failedMessage = actionError ?? (desktop.state === "failed" ? desktop.message : null);
 
@@ -309,6 +337,31 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           className="relative min-h-0 flex-1 overflow-hidden bg-[#05080d]"
           onMouseDown={() => void bridge?.focus()}
         >
+          {(control.helpReason || control.held) && (
+            <div className="absolute left-3 right-3 top-3 z-10 flex items-center gap-2 rounded-lg border border-accent/30 bg-[#101722]/95 px-3 py-2 text-[12px] text-white shadow-lg">
+              <Hand size={14} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 truncate">
+                {control.held ? "你正在接管云电脑，机器人操作已暂停" : `机器人请求接管：${control.helpReason}`}
+              </span>
+              {control.held ? (
+                <button
+                  onClick={() => void controlAction("release")}
+                  disabled={controlPending}
+                  className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50"
+                >
+                  交还控制权
+                </button>
+              ) : (
+                <button
+                  onClick={() => void controlAction("take")}
+                  disabled={controlPending}
+                  className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50"
+                >
+                  接管
+                </button>
+              )}
+            </div>
+          )}
           {(busy || sleeping) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-secondary">
               <Loader2 size={22} className="animate-spin" />

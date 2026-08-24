@@ -35,10 +35,13 @@ import {
   type BrowserTarget,
   type CropRegion,
 } from "./computer-observation.ts";
+import { COMPUTER_CONTROL_REFUSAL } from "./computer-control.ts";
 
 const BOX_API = process.env.OGB_BOX_API ?? "https://ascii.dev/api/box/v1";
 const boxId = process.env.OGB_BOX_ID ?? "";
 const token = process.env.OGB_BOX_TOKEN ?? "";
+const controlUrl = process.env.OMB_CONTROL_URL ?? "";
+const controlToken = process.env.OMB_CONTROL_TOKEN ?? "";
 
 /** The coordinate space the model sees: frames are downscaled to this
  * width, and clicks are scaled back up to the real display box-side. */
@@ -394,6 +397,11 @@ const OBSERVE_PROPS = {
 
 const TOOLS = [
   {
+    name: "computer_request_help",
+    description: "Ask the person to take over the visible cloud computer for a sign-in, CAPTCHA, or uncertain choice. Pause until they hand control back.",
+    inputSchema: { type: "object", properties: { reason: { type: "string" } } },
+  },
+  {
     name: "screenshot",
     description:
       "See the bot's cloud computer screen when visual state is needed. First prefer browser_state for Chrome title/URL checks. The frame is captured fresh; byte-identical pixels are not resent.",
@@ -547,6 +555,48 @@ const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 const settleOf = (args: any) => Math.min(Math.max(Number(args?.settle_ms) || SETTLE_MS, 0), 3000);
 const wantsFrame = (args: any) => args?.observe !== false;
 
+async function controlState(): Promise<{ held: boolean; helpOpen: boolean }> {
+  if (!controlUrl || !controlToken) return { held: false, helpOpen: false };
+  try {
+    const response = await fetch(controlUrl, {
+      headers: { authorization: `Bearer ${controlToken}` },
+      signal: AbortSignal.timeout(1_500),
+    });
+    const body: any = await response.json().catch(() => null);
+    return { held: response.ok && body?.held === true, helpOpen: response.ok && Boolean(body?.helpReason) };
+  } catch {
+    // This is a cooperative hand-off, not a security boundary. Fail open if
+    // the harness is restarting so a bot is not bricked mid-turn.
+    return { held: false, helpOpen: false };
+  }
+}
+
+async function requestHumanHelp(reason: string): Promise<string | null> {
+  if (!controlUrl || !controlToken) return null;
+  try {
+    const response = await fetch(controlUrl, {
+      method: "POST",
+      headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(1_500),
+    });
+    const body: any = await response.json().catch(() => null);
+    return response.ok && typeof body?.requestId === "string" ? body.requestId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForHumanRelease(): Promise<"released" | "timeout"> {
+  const deadline = Date.now() + 15 * 60_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const state = await controlState();
+    if (!state.held && !state.helpOpen) return "released";
+  }
+  return "timeout";
+}
+
 /** One action → the shell that performs it (scaling clicks box-side). */
 function actionShell(a: any): string | { error: string } {
   const kind = String(a?.action ?? "");
@@ -624,6 +674,27 @@ async function actAndObserve(
 }
 
 async function call(id: unknown, name: string, args: any) {
+  if (name === "computer_request_help") {
+    const requestId = await requestHumanHelp(String(args.reason ?? "机器人请求你接管云电脑"));
+    if (requestId) {
+      const outcome = await waitForHumanRelease();
+      return text(
+        id,
+        outcome === "released"
+          ? "用户已完成接管或忽略请求。请先重新截图，再继续操作。"
+          : "等待用户接管超时。请暂停当前任务，并在回复中说明仍需要人工操作。",
+        outcome === "timeout",
+      );
+    }
+    return text(
+      id,
+      requestId
+        ? "已请求用户接管云电脑。请暂停操作，等待用户完成后再继续。"
+        : "暂时无法通知用户接管云电脑，请在回复中说明需要人工操作。",
+      !requestId,
+    );
+  }
+  if ((await controlState()).held) return text(id, COMPUTER_CONTROL_REFUSAL, true);
   if (name === "screenshot") {
     let crop: CropRegion | null = null;
     if (args.region !== undefined) {

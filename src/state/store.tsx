@@ -254,6 +254,8 @@ interface AppState {
   provisioning: Record<string, boolean>;
   /** short-lived cloud-computer lifecycle shown while a turn/panel starts it */
   computerActivity: Record<string, ComputerActivityState | undefined>;
+  /** who currently owns the cloud computer keyboard/mouse */
+  computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null }>;
   connected: boolean;
   error: string | null;
   mascotMotion: {
@@ -311,6 +313,7 @@ type Action =
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
   | { type: "computerActivity"; botId: string; state?: ComputerActivityState }
+  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null; heldSinceMs?: number | null }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
@@ -587,6 +590,14 @@ function reducer(state: AppState, action: Action): AppState {
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
+    case "computerControl":
+      return {
+        ...state,
+        computerControl: {
+          ...state.computerControl,
+          [action.botId]: { held: action.held, helpReason: action.helpReason, heldSinceMs: action.heldSinceMs ?? null },
+        },
+      };
     case "openCloudDesktop":
       return {
         ...state,
@@ -726,6 +737,7 @@ const initialState: AppState = {
   screens: {},
   provisioning: {},
   computerActivity: {},
+  computerControl: {},
   connected: false,
   error: null,
   mascotMotion: null,
@@ -1181,6 +1193,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "computer":
           rawDispatch({ type: "computerActivity", botId: frame.botId, state: frame.state });
           break;
+        case "computer-control": {
+          const control = frame.control as { held?: unknown; helpReason?: unknown; heldSinceMs?: unknown } | undefined;
+          rawDispatch({
+            type: "computerControl",
+            botId: frame.botId,
+            held: control?.held === true,
+            helpReason: typeof control?.helpReason === "string" ? control.helpReason : null,
+            heldSinceMs: typeof control?.heldSinceMs === "number" ? control.heldSinceMs : null,
+          });
+          break;
+        }
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;

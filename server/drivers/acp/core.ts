@@ -164,6 +164,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               ELECTRON_RUN_AS_NODE: "1",
               OGB_BOX_ID: computer.boxId,
               OGB_BOX_TOKEN: computer.token,
+              ...(computer.control
+                ? { OMB_CONTROL_URL: computer.control.url, OMB_CONTROL_TOKEN: computer.control.token }
+                : {}),
             }),
           });
         } else if (turn.integrations?.localComputer) {

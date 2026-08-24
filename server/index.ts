@@ -25,6 +25,7 @@ import { parseReasoningRequest, reasoningEffortForLevel, type ReasoningLevel } f
 import { shouldUseCloudComputer } from "./turn-computer.ts";
 import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { SseReplayBuffer } from "./sse-replay.ts";
+import { ComputerControl } from "./computer-control.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -66,6 +67,7 @@ bus.attach(registry.instances());
 // A shared secret guards the localhost-only /api/internal endpoints the
 // agents-proxy calls; regenerated each boot (the proxy gets it via env).
 const COMMS_TOKEN = randomBytes(24).toString("hex");
+const computerControl = new ComputerControl();
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
 // a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
 // A→B is allowed but B→C (and A→B→A loops) never start.
@@ -178,6 +180,10 @@ function broadcast(payload: Record<string, unknown>) {
 
 function broadcastBot(bot: StoredBot | null | undefined, withThread = false) {
   if (bot) broadcast({ kind: "bot", bot: withThread ? wireBotWithThread(bot) : wireBot(bot) });
+}
+
+function broadcastComputerControl(botId: string) {
+  broadcast({ kind: "computer-control", botId, control: computerControl.snapshot(botId) });
 }
 
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
@@ -666,7 +672,15 @@ async function startTurn(
               throw new Error(`云端电脑当前状态为 ${b.state ?? "unknown"}，未能进入可工作状态`);
             }
             previewBoxId = b.id;
-            integrations.computer = { boxId: b.id, token: cfg.box!.token! };
+            integrations.computer = {
+              boxId: b.id,
+              token: cfg.box!.token!,
+              control: {
+                botId: bot.id,
+                url: `http://127.0.0.1:${PORT}/api/internal/computer-control/${encodeURIComponent(bot.id)}`,
+                token: COMMS_TOKEN,
+              },
+            };
           } catch (error) {
             cloudFailure = error instanceof Error ? error : new Error(String(error));
             if (wants === "cloud") throw cloudFailure;
@@ -740,7 +754,7 @@ async function startTurn(
         system:
           persona +
           (integrations.computer && computerMode === "mcp"
-            ? " You have your own cloud computer — use the computer tools (screenshot, click, type_text, open_url, computer_exec) whenever browsing or acting on a desktop helps. Every action tool already returns the resulting screen, so don't follow one with a screenshot call, and batch predictable sequences with computer_batch."
+            ? " You have your own cloud computer — use the computer tools (screenshot, click, type_text, open_url, computer_exec) whenever browsing or acting on a desktop helps. Every action tool already returns the resulting screen, so don't follow one with a screenshot call, and batch predictable sequences with computer_batch. At sign-in, CAPTCHA, protected input, or an uncertain visual choice, call computer_request_help with a short reason and wait for the user to finish before continuing."
             : integrations.localComputer
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
@@ -1086,6 +1100,18 @@ const server = createServer(async (req, res) => {
     if (path.startsWith("/api/internal/")) {
       if (req.headers.authorization !== `Bearer ${COMMS_TOKEN}`) {
         return json(res, 401, { error: "unauthorized" });
+      }
+      const controlMatch = path.match(/^\/api\/internal\/computer-control\/([\w-]+)$/);
+      if (controlMatch && (method === "GET" || method === "POST" || method === "DELETE")) {
+        const botId = controlMatch[1];
+        if (!store.bot(botId)) return json(res, 404, { error: "no such bot" });
+        if (method === "GET") return json(res, 200, computerControl.snapshot(botId));
+        const body = await readBody(req);
+        const snapshot = method === "POST"
+          ? computerControl.requestHelp(botId, body.reason)
+          : computerControl.expireHelp(botId, String(body.requestId ?? ""));
+        broadcastComputerControl(botId);
+        return json(res, 200, snapshot);
       }
       if (method === "GET" && path === "/api/internal/agents") {
         const self = url.searchParams.get("self");
@@ -1804,6 +1830,22 @@ const server = createServer(async (req, res) => {
     }
 
     // ── the bot's cloud computer (Box) ──
+    m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/control$/);
+    if (m && (method === "GET" || method === "POST")) {
+      const botId = m[1];
+      if (!store.bot(botId)) return json(res, 404, { error: "no such bot" });
+      if (method === "GET") return json(res, 200, computerControl.snapshot(botId));
+      const body = await readBody(req);
+      const action = String(body.action ?? "");
+      let snapshot;
+      if (action === "take") snapshot = computerControl.take(botId);
+      else if (action === "release") snapshot = computerControl.release(botId);
+      else if (action === "dismiss-help") snapshot = computerControl.dismissHelp(botId);
+      else return json(res, 400, { error: "action must be take, release, or dismiss-help" });
+      broadcastComputerControl(botId);
+      return json(res, 200, snapshot);
+    }
+
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer$/);
     if (m && method === "GET") return json(res, 200, await box.boxStatus(cfg, m[1]));
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|replace|join|sleep|exec|screenshot)$/);

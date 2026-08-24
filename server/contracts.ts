@@ -113,7 +113,13 @@ export interface SendTurnInput {
       toolPolicies?: Record<string, "auto" | "ask" | "deny">;
     }>;
     /** The bot's cloud computer (box.ascii.dev) for desktop/browser use. */
-    computer?: { boxId: string; token: string };
+    computer?: {
+      boxId: string;
+      token: string;
+      /** Internal harness endpoint used to pause computer actions while a
+       * person is driving. Never returned to the renderer. */
+      control?: { botId: string; url: string; token: string };
+    };
     /** Local computer use via the Electron-hosted cua-driver daemon —
      * spawn config comes verbatim from cua-connection.json (the daemon
      * MUST be spawned by Electron main; the harness only points the agent

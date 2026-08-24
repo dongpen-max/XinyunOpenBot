@@ -77,6 +77,12 @@ export function codexAppServerArgs(turn: SendTurnInput): string[] {
           ELECTRON_RUN_AS_NODE: "1",
           OGB_BOX_ID: turn.integrations.computer.boxId,
           OGB_BOX_TOKEN: turn.integrations.computer.token,
+          ...(turn.integrations.computer.control
+            ? {
+                OMB_CONTROL_URL: turn.integrations.computer.control.url,
+                OMB_CONTROL_TOKEN: turn.integrations.computer.control.token,
+              }
+            : {}),
         },
     }, turn.permissionMode);
   } else if (turn.integrations?.localComputer) {

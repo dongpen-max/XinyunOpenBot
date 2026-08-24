@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
+  Hand,
   Loader2,
   Monitor,
   Moon,
@@ -45,6 +46,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [localFrame, setLocalFrame] = useState<string | null>(null);
   const [pending, setPending] = useState<"join" | "sleep" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const control = state.computerControl[bot.id] ?? { held: false, helpReason: null };
+  const [controlPending, setControlPending] = useState(false);
   // bumped when a Box token is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
@@ -93,6 +96,47 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
     };
   }, [bot.id, bot.computer, retry]);
+
+  useEffect(() => {
+    let alive = true;
+    api(`/api/bots/${bot.id}/computer/control`)
+      .then((snapshot) => {
+        if (!alive) return;
+        dispatch({
+          type: "computerControl",
+          botId: bot.id,
+          held: snapshot.held === true,
+          helpReason: typeof snapshot.helpReason === "string" ? snapshot.helpReason : null,
+          heldSinceMs: typeof snapshot.heldSinceMs === "number" ? snapshot.heldSinceMs : null,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bot.id, dispatch]);
+
+  const controlAction = async (action: "take" | "release" | "dismiss-help") => {
+    setControlPending(true);
+    setError(null);
+    try {
+      const snapshot = await api(`/api/bots/${bot.id}/computer/control`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
+      dispatch({
+        type: "computerControl",
+        botId: bot.id,
+        held: snapshot.held === true,
+        helpReason: typeof snapshot.helpReason === "string" ? snapshot.helpReason : null,
+        heldSinceMs: typeof snapshot.heldSinceMs === "number" ? snapshot.heldSinceMs : null,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "云电脑控制权操作失败");
+    } finally {
+      setControlPending(false);
+    }
+  };
 
   // cloud preview: SSE frames win while the bot works; otherwise poll
   const live = state.screens[bot.id];
@@ -270,6 +314,41 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             {error}
           </div>
         )}
+        {phase === "ready" && control.helpReason && !control.held && (
+          <div className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-4">
+            <div className="text-[13px] leading-relaxed text-warning">
+              <b>{bot.name}</b> 请求你接管云电脑：{control.helpReason}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => void controlAction("take")}
+                disabled={controlPending}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
+              >
+                <Hand size={14} /> 接管操作
+              </button>
+              <button
+                onClick={() => void controlAction("dismiss-help")}
+                disabled={controlPending}
+                className="rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+              >
+                忽略
+              </button>
+            </div>
+          </div>
+        )}
+        {phase === "ready" && control.held && (
+          <div className="mt-3 rounded-xl border border-accent/30 bg-accent/10 p-4">
+            <div className="text-[13px] leading-relaxed text-ink">你正在操作云电脑，机器人点击和键盘输入已暂停。</div>
+            <button
+              onClick={() => void controlAction("release")}
+              disabled={controlPending}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
+            >
+              <Hand size={14} /> 交还控制权
+            </button>
+          </div>
+        )}
         {phase === "unconfigured" && (
           <div className="mt-3 rounded-xl bg-card p-4">
             <div className="mb-3 text-[13px] text-ink-secondary">
@@ -287,6 +366,16 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {/* Cloud-only actions */}
         {phase === "ready" && (
           <div className="mt-3 flex gap-2">
+            {!control.held && !control.helpReason && (
+              <button
+                onClick={() => void controlAction("take")}
+                disabled={controlPending}
+                className="flex items-center justify-center gap-2 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+                title="暂停机器人操作并接管云电脑"
+              >
+                <Hand size={14} /> 接管
+              </button>
+            )}
             <button
               onClick={() => void run("join")}
               disabled={pending === "join"}
