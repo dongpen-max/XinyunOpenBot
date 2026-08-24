@@ -133,14 +133,16 @@ export function Composer({
     });
   };
 
-  // One message may be queued while the bot works; it auto-sends the moment
-  // the turn settles. Enter during a turn queues instead of silently dying.
+  // Rooms still use a small client-side buffer because their responder engine
+  // intentionally serializes the whole room.  1:1 Bot messages go straight
+  // to the server scheduler, so users can send multiple messages safely.
   const [queued, setQueued] = useState<{ text: string; preview: string; reasoningLevel: ReasoningLevel } | null>(null);
+  const serverQueueDepth = bot?.execution?.queueDepth ?? 0;
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
     const t = composeMessage(text, attachments);
     if (!t) return;
-    if (busy) {
+    if (busy && group) {
       setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningLevel });
       setText("");
       setAttachments([]);
@@ -157,13 +159,12 @@ export function Composer({
     setAttachments([]);
   };
   useEffect(() => {
-    if (!busy && queued) {
-      if (group) dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
-      else if (bot) dispatch({ type: "send", botId: bot.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
+    if (!busy && queued && group) {
+      dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
       track("message_sent", { queued: true });
       setQueued(null);
     }
-  }, [busy, queued, bot, group, dispatch]);
+  }, [busy, queued, group, dispatch]);
 
   useEffect(() => {
     return () => {
@@ -218,6 +219,14 @@ export function Composer({
         </div>
       )}
       <div className="conversation-content relative mx-auto">
+        {!group && serverQueueDepth > 0 && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-accent/25 bg-accent/5 px-3 py-2 text-[12.5px] text-ink-secondary">
+            <Clock size={13} className="shrink-0 text-accent" />
+            <span className="min-w-0 flex-1 truncate">
+              已排队 {serverQueueDepth} 条消息，将按顺序交给 {busyName} 执行
+            </span>
+          </div>
+        )}
         {queued && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
@@ -421,7 +430,7 @@ export function Composer({
             }}
             aria-label="Stop this turn"
             className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
-            title="Stop"
+            title={group ? "停止当前发言" : "停止当前任务并清空排队"}
           >
             <Square size={14} className="fill-current" />
           </button>

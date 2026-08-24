@@ -1750,11 +1750,16 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      const cancelled = turnScheduler.cancelQueued(bot.id);
       const instance = registry.get(bot.modelSelection.instanceId);
       pendingCloudLeaseByThread.get(bot.threadId)?.abort();
       pendingCloudLeaseByThread.delete(bot.threadId);
       await instance?.adapter.interruptTurn(bot.threadId);
-      return json(res, 200, { ok: true });
+      if (!turnScheduler.isActive(bot.id)) {
+        store.patchBot(bot.id, { busy: false });
+        broadcastBot(store.bot(bot.id));
+      }
+      return json(res, 200, { ok: true, cancelled: cancelled.length });
     }
 
     // ── tasks: a bot's separate contexts ────────────────────────────────
