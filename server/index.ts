@@ -27,6 +27,7 @@ import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { SseReplayBuffer } from "./sse-replay.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { TurnScheduler } from "./turn-scheduler.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -40,6 +41,7 @@ import {
   type Message,
   type TaskRecord,
 } from "./store.ts";
+import { newId } from "./contracts.ts";
 import { describeVoice, synthesize, transcribe } from "./voice/index.ts";
 import { toUtterances } from "./voice/speech-text.ts";
 
@@ -73,6 +75,22 @@ const computerControl = new ComputerControl();
 // a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
 // A→B is allowed but B→C (and A→B→A loops) never start.
 const MAX_COMMS_DEPTH = 1;
+const turnScheduler = new TurnScheduler<{
+  text: string;
+  options?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel };
+}>();
+type HandoffStatus = "queued" | "running" | "completed" | "failed";
+type HandoffRecord = {
+  id: string;
+  fromBotId: string;
+  toBotId: string;
+  status: HandoffStatus;
+  createdAt: number;
+  finishedAt?: number;
+  result?: string;
+  error?: string;
+};
+const handoffs = new Map<string, HandoffRecord>();
 // proxy entry: .ts in dev (node type-strips), .js in the packaged dist-server
 const agentsProxyPath = (() => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "drivers", "agents-proxy.ts");
@@ -104,6 +122,7 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
   const threadId = target.threadId;
   return new Promise((resolve) => {
     let text = "";
+    let started = false;
     let done = false;
     const finish = (out: string) => {
       if (done) return;
@@ -114,9 +133,11 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
     };
     const unsub = bus.subscribe((e: RuntimeEvent) => {
       if (e.threadId !== threadId) return;
-      if (e.type === "item.completed" && e.itemType === "assistant_text") {
+      if (e.type === "turn.started") {
+        started = true;
+      } else if (e.type === "item.completed" && e.itemType === "assistant_text" && started) {
         text += (text ? "\n" : "") + e.text;
-      } else if (e.type === "turn.completed") {
+      } else if (e.type === "turn.completed" && started) {
         finish(text || "(the bot finished without a text reply)");
       }
     });
@@ -147,7 +168,14 @@ const wireTask = ({ resumeCursors: _resumeCursors, lastInstanceId: _lastInstance
 /** Strip both the legacy active-task cursor mirror and all per-task cursors. */
 const wireBot = (bot: StoredBot) => {
   const { resumeCursors: _resumeCursors, tasks, ...rest } = bot;
-  return { ...rest, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+  return {
+    ...rest,
+    execution: {
+      status: turnScheduler.isActive(bot.id) ? "running" : turnScheduler.hasPending(bot.id) ? "queued" : "idle",
+      queueDepth: turnScheduler.pending(bot.id),
+    },
+    ...(tasks ? { tasks: tasks.map(wireTask) } : {}),
+  };
 };
 
 const wireBotWithThread = (bot: StoredBot) => ({
@@ -394,7 +422,7 @@ bus.subscribe((event: RuntimeEvent) => {
         mcpAuditByItem.delete(key);
       }
       if (bot) {
-        store.patchBot(bot.id, { busy: false, unread: true });
+        store.patchBot(bot.id, { unread: true });
         broadcastBot(store.bot(bot.id));
         if (screenPollers.has(bot.id)) {
           // the last live frame becomes a settled inline screen message —
@@ -414,6 +442,7 @@ bus.subscribe((event: RuntimeEvent) => {
           cloudLeaseByThread.get(event.threadId)?.();
           cloudLeaseByThread.delete(event.threadId);
         }
+        finishScheduledTurn(bot.id);
       }
       // group busy/unread settle in the group turn engine, which knows
       // whether more member turns are queued behind this one
@@ -554,14 +583,19 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 }
 
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
-async function startTurn(
+async function runTurnNow(
   botId: string,
   text: string,
   opts?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel },
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
-  if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
+  if (!registry.get(bot.modelSelection.instanceId)) {
+    throw Object.assign(
+      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
+      { status: 409 },
+    );
+  }
   const threadId = bot.threadId;
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
@@ -786,8 +820,66 @@ async function startTurn(
       broadcast({ kind: "message", threadId, message: failure });
       store.patchBot(bot.id, { busy: false });
       broadcastBot(store.bot(bot.id));
+      finishScheduledTurn(bot.id);
     }
   })();
+}
+
+function finishScheduledTurn(botId: string) {
+  if (!turnScheduler.isActive(botId)) return;
+  turnScheduler.complete(botId);
+  if (turnScheduler.hasPending(botId)) {
+    store.patchBot(botId, { busy: true });
+    broadcastBot(store.bot(botId));
+    void drainBotQueue(botId);
+  } else {
+    store.patchBot(botId, { busy: false });
+    broadcastBot(store.bot(botId));
+  }
+}
+
+async function drainBotQueue(botId: string) {
+  const next = turnScheduler.begin(botId);
+  if (!next) return;
+  try {
+    await runTurnNow(botId, next.value.text, next.value.options);
+  } catch (error) {
+    const bot = store.bot(botId);
+    if (bot) {
+      const message = store.appendMessage(bot.threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: `error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 180), ok: false },
+      });
+      broadcast({ kind: "message", threadId: bot.threadId, message });
+    }
+    finishScheduledTurn(botId);
+  }
+}
+
+async function startTurn(
+  botId: string,
+  text: string,
+  opts?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel },
+): Promise<{ queued: boolean; queueDepth: number }> {
+  const bot = store.bot(botId);
+  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  if (!registry.get(bot.modelSelection.instanceId)) {
+    throw Object.assign(
+      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
+      { status: 409 },
+    );
+  }
+  if (!opts?.userMessage) {
+    const message = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
+    broadcast({ kind: "message", threadId: bot.threadId, message });
+    opts = { ...opts, userMessage: message };
+  }
+  turnScheduler.enqueue(botId, { text, options: opts }, opts?.commsDepth ? "background" : "normal");
+  store.patchBot(botId, { busy: true, unread: false });
+  broadcastBot(store.bot(botId));
+  if (!turnScheduler.isActive(botId)) void drainBotQueue(botId);
+  return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0) };
 }
 
 // ── config hot-reload ─────────────────────────────────────────────────
@@ -1141,7 +1233,6 @@ const server = createServer(async (req, res) => {
         if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
-        if (target.busy) return json(res, 200, { busy: true });
         const from = store.bot(fromBotId);
         const fromName = from?.name ?? "another bot";
 
@@ -1189,15 +1280,33 @@ const server = createServer(async (req, res) => {
           }
         }
         const prefixed = `[Message from @${fromName}, another bot in this XinyunOpen Bot workspace. Reply to them.]\n\n${message}`;
-        const reply = await askBotAndWait(toBotId, prefixed, depth);
-        if (from) {
-          mirror(target, reply);
-          if (channel) {
-            store.patchGroup(channel.id, { unread: true });
-            broadcastGroup(channel.id);
+        const handoff: HandoffRecord = {
+          id: newId(),
+          fromBotId,
+          toBotId,
+          status: "queued",
+          createdAt: Date.now(),
+        };
+        handoffs.set(handoff.id, handoff);
+        broadcast({ kind: "handoff", handoff });
+        void (async () => {
+          handoff.status = "running";
+          broadcast({ kind: "handoff", handoff });
+          const reply = await askBotAndWait(toBotId, prefixed, depth);
+          handoff.status = reply.startsWith("(couldn't") || reply.startsWith("(timed out") ? "failed" : "completed";
+          handoff.result = reply;
+          handoff.finishedAt = Date.now();
+          if (from) {
+            mirror(target, reply);
+            chip(from.threadId, `@${target.name} 已完成交接`, target);
+            if (channel) {
+              store.patchGroup(channel.id, { unread: true });
+              broadcastGroup(channel.id);
+            }
           }
-        }
-        return json(res, 200, { botName: target.name, text: reply });
+          broadcast({ kind: "handoff", handoff });
+        })();
+        return json(res, 202, { handoffId: handoff.id, status: handoff.status, botName: target.name });
       }
       return json(res, 404, { error: "unknown internal endpoint" });
     }
@@ -1554,8 +1663,8 @@ const server = createServer(async (req, res) => {
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
       const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
-      await startTurn(m[1], text, { reasoningLevel });
-      return json(res, 202, { ok: true });
+      const queued = await startTurn(m[1], text, { reasoningLevel });
+      return json(res, 202, { ok: true, ...queued });
     }
 
     // edit a user message → fork the conversation there and rerun the turn.
@@ -1588,8 +1697,8 @@ const server = createServer(async (req, res) => {
       store.patchBot(bot.id, { rewound: true });
       broadcast({ kind: "message", threadId: bot.threadId, message });
       broadcast({ kind: "thread", threadId: bot.threadId, activeLeafId: message.id });
-      await startTurn(bot.id, text, { userMessage: message });
-      return json(res, 202, { ok: true });
+      const queued = await startTurn(bot.id, text, { userMessage: message });
+      return json(res, 202, { ok: true, ...queued });
     }
 
     // switch which fork of the conversation is visible (no new turn)

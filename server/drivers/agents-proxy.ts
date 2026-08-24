@@ -4,7 +4,7 @@
 // stays the single owner of turns, permissions, and recursion limits:
 //
 //   list_bots()            → the other bots in this workspace + their status
-//   ask_bot(bot_id, msg)   → send msg to that bot, wait, return its reply
+//   ask_bot(bot_id, msg)   → enqueue an asynchronous handoff to that bot
 //
 // Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
 // computer-proxy / permission-proxy). All state comes from env, injected by
@@ -30,7 +30,7 @@ const TOOLS = [
   {
     name: "ask_bot",
     description:
-      "Send a message to another bot in this workspace and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text. Returns promptly with a note if that bot is busy.",
+      "Hand off a task to another bot in this workspace. The other bot runs asynchronously under its own model and permissions; this returns a handoff id immediately. Continue your work; the result is posted to the shared bot channel when complete.",
     inputSchema: {
       type: "object",
       properties: {
@@ -79,9 +79,10 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
       method: "POST",
       body: JSON.stringify({ fromBotId: BOT_ID, toBotId, message, depth: DEPTH }),
     });
-    if (r.busy) return { text: `That bot is busy right now — try again after it finishes.` };
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
-    return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
+    if (r.busy) return { text: `That bot is busy right now — the handoff will be queued.`, isError: false };
+    if (r.text) return { text: `${r.botName ?? "Bot"} replied:\n${r.text}` };
+    return { text: `已将任务异步交给 ${r.botName ?? "Bot"}，handoffId=${r.handoffId ?? "unknown"}。请继续当前工作，结果会在共享协作频道中回传。` };
   }
   return { text: `Unknown tool: ${name}`, isError: true };
 }

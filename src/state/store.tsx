@@ -131,6 +131,18 @@ export interface Bot {
   messages: Message[];
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
+  execution?: { status: "idle" | "running" | "queued"; queueDepth: number };
+}
+
+export interface HandoffRecord {
+  id: string;
+  fromBotId: string;
+  toBotId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  finishedAt?: number;
+  result?: string;
+  error?: string;
 }
 
 /** The visible conversation: walk parentId links from the active leaf back
@@ -256,6 +268,7 @@ interface AppState {
   computerActivity: Record<string, ComputerActivityState | undefined>;
   /** who currently owns the cloud computer keyboard/mouse */
   computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null }>;
+  handoffs: Record<string, HandoffRecord>;
   connected: boolean;
   error: string | null;
   mascotMotion: {
@@ -309,6 +322,7 @@ type Action =
   | { type: "duplicateBot"; botId: string }
   | { type: "markUnread"; botId: string }
   | { type: "botPatched"; bot: Partial<Bot> & { id: string } }
+  | { type: "handoffPatched"; handoff: HandoffRecord }
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
@@ -590,6 +604,8 @@ function reducer(state: AppState, action: Action): AppState {
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
+    case "handoffPatched":
+      return { ...state, handoffs: { ...state.handoffs, [action.handoff.id]: action.handoff } };
     case "computerControl":
       return {
         ...state,
@@ -738,6 +754,7 @@ const initialState: AppState = {
   provisioning: {},
   computerActivity: {},
   computerControl: {},
+  handoffs: {},
   connected: false,
   error: null,
   mascotMotion: null,
@@ -1204,6 +1221,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           });
           break;
         }
+        case "handoff":
+          if (frame.handoff?.id) rawDispatch({ type: "handoffPatched", handoff: frame.handoff as HandoffRecord });
+          break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
