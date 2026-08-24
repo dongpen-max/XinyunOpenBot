@@ -71,13 +71,22 @@ bus.attach(registry.instances());
 // agents-proxy calls; regenerated each boot (the proxy gets it via env).
 const COMMS_TOKEN = randomBytes(24).toString("hex");
 const computerControl = new ComputerControl();
-// Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
-// a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
-// A→B is allowed but B→C (and A→B→A loops) never start.
-const MAX_COMMS_DEPTH = 1;
+// Bound message chains: depth 0 = a user-initiated turn. Peer turns may
+// delegate up to three hops, while the root/visited-bot budget rejects loops
+// and runaway fan-out before another provider turn is scheduled.
+const MAX_COMMS_DEPTH = 3;
+const MAX_HANDOFFS_PER_ROOT = 8;
+const HANDOFF_DEDUPE_WINDOW_MS = 5_000;
+type CommsContext = {
+  rootTurnId: string;
+  sourceTurnId: string;
+  depth: number;
+  handoffCount: number;
+  visitedBots: string[];
+};
 const turnScheduler = new TurnScheduler<{
   text: string;
-  options?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel };
+  options?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel };
 }>();
 type HandoffStatus = "queued" | "running" | "completed" | "failed";
 type HandoffRecord = {
@@ -86,11 +95,19 @@ type HandoffRecord = {
   toBotId: string;
   status: HandoffStatus;
   createdAt: number;
+  rootTurnId: string;
+  sourceTurnId: string;
+  targetTurnId?: string;
+  groupId?: string;
+  depth: number;
+  handoffCount: number;
+  visitedBots: string[];
   finishedAt?: number;
   result?: string;
   error?: string;
 };
 const handoffs = new Map<string, HandoffRecord>();
+const recentHandoffKeys = new Map<string, { handoffId: string; createdAt: number }>();
 // proxy entry: .ts in dev (node type-strips), .js in the packaged dist-server
 const agentsProxyPath = (() => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "drivers", "agents-proxy.ts");
@@ -99,7 +116,7 @@ const agentsProxyPath = (() => {
 // in the packaged app process.execPath is Electron — run the proxy as node
 const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 
-function agentsIntegration(botId: string, depth: number) {
+function agentsIntegration(botId: string, context: CommsContext) {
   return {
     command: process.execPath,
     args: [agentsProxyPath],
@@ -108,7 +125,11 @@ function agentsIntegration(botId: string, depth: number) {
       OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
       OMB_BOT_ID: botId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
-      OMB_TURN_DEPTH: String(depth),
+      OMB_TURN_DEPTH: String(context.depth),
+      OMB_ROOT_TURN_ID: context.rootTurnId,
+      OMB_SOURCE_TURN_ID: context.sourceTurnId,
+      OMB_HANDOFF_COUNT: String(context.handoffCount),
+      OMB_VISITED_BOTS: JSON.stringify(context.visitedBots),
     },
   };
 }
@@ -116,25 +137,27 @@ function agentsIntegration(botId: string, depth: number) {
 /** Run a turn on `targetBotId` and resolve with its assistant text — the
  * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
  * for that thread, resolves on turn.completed (or a 4-min ceiling). */
-function askBotAndWait(targetBotId: string, message: string, depth: number): Promise<string> {
+function askBotAndWait(targetBotId: string, message: string, context: CommsContext): Promise<{ text: string; targetTurnId?: string }> {
   const target = store.bot(targetBotId);
-  if (!target) return Promise.resolve("(no such bot)");
+  if (!target) return Promise.resolve({ text: "(no such bot)" });
   const threadId = target.threadId;
   return new Promise((resolve) => {
     let text = "";
     let started = false;
+    let targetTurnId: string | undefined;
     let done = false;
     const finish = (out: string) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       unsub();
-      resolve(out);
+      resolve({ text: out, targetTurnId });
     };
     const unsub = bus.subscribe((e: RuntimeEvent) => {
       if (e.threadId !== threadId) return;
       if (e.type === "turn.started") {
         started = true;
+        targetTurnId = e.turnId;
       } else if (e.type === "item.completed" && e.itemType === "assistant_text" && started) {
         text += (text ? "\n" : "") + e.text;
       } else if (e.type === "turn.completed" && started) {
@@ -142,7 +165,14 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
       }
     });
     const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), 4 * 60_000);
-    startTurn(targetBotId, message, { commsDepth: depth + 1 }).catch((err) =>
+    startTurn(targetBotId, message, {
+      commsDepth: context.depth + 1,
+      commsContext: {
+        ...context,
+        depth: context.depth + 1,
+        visitedBots: [...context.visitedBots, targetBotId],
+      },
+    }).catch((err) =>
       finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`),
     );
   });
@@ -586,7 +616,7 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 async function runTurnNow(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel },
+  opts?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel },
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
@@ -600,6 +630,13 @@ async function runTurnNow(
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   const commsDepth = opts?.commsDepth ?? 0;
+  const commsContext: CommsContext = {
+    rootTurnId: opts?.commsContext?.rootTurnId ?? newId(),
+    sourceTurnId: newId(),
+    depth: commsDepth,
+    handoffCount: opts?.commsContext?.handoffCount ?? 0,
+    visitedBots: [...new Set([...(opts?.commsContext?.visitedBots ?? []), botId])],
+  };
   // a task takes its name from the first thing you asked it to do
   if (text.trim()) store.titleTaskFromFirstMessage(bot.id, text);
 
@@ -742,7 +779,7 @@ async function runTurnNow(
         instance.adapter.capabilities.agentsMcp === true &&
         store.bots.filter((b) => b.id !== bot.id && !b.hidden).length > 0
       ) {
-        integrations.agents = agentsIntegration(bot.id, commsDepth);
+        integrations.agents = agentsIntegration(bot.id, commsContext);
       }
       // @mentions in the user's message (the composer's tagging UI) become
       // an explicit delegation nudge — the agent still does the ask_bot call
@@ -860,7 +897,7 @@ async function drainBotQueue(botId: string) {
 async function startTurn(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; userMessage?: Message; reasoningLevel?: ReasoningLevel },
+  opts?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel },
 ): Promise<{ queued: boolean; queueDepth: number }> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
@@ -1228,9 +1265,26 @@ const server = createServer(async (req, res) => {
         const toBotId = String(body.toBotId ?? "");
         const message = String(body.message ?? "").trim();
         const depth = Number(body.depth ?? 0) || 0;
+        const handoffCount = Number(body.handoffCount ?? 0) || 0;
+        const rootTurnId = String(body.rootTurnId ?? "").trim() || newId();
+        const sourceTurnId = String(body.sourceTurnId ?? "").trim() || newId();
+        const visitedBots = Array.isArray(body.visitedBots)
+          ? body.visitedBots.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+          : [];
         if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
         if (toBotId === fromBotId) return json(res, 400, { error: "a bot cannot message itself" });
-        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
+        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: `message chains are limited to ${MAX_COMMS_DEPTH} hops` });
+        if (handoffCount >= MAX_HANDOFFS_PER_ROOT) return json(res, 200, { error: `handoff budget exhausted (${MAX_HANDOFFS_PER_ROOT})` });
+        if (visitedBots.includes(toBotId)) return json(res, 200, { error: "handoff cycle detected: target bot already visited" });
+        const normalizedVisitedBots = [...new Set([...visitedBots, fromBotId])];
+        const dedupeKey = `${rootTurnId}:${fromBotId}:${toBotId}:${message}`;
+        const previous = recentHandoffKeys.get(dedupeKey);
+        if (previous && Date.now() - previous.createdAt < HANDOFF_DEDUPE_WINDOW_MS) {
+          return json(res, 202, { handoffId: previous.handoffId, status: "queued", deduped: true });
+        }
+        for (const [key, item] of recentHandoffKeys) {
+          if (Date.now() - item.createdAt >= HANDOFF_DEDUPE_WINDOW_MS) recentHandoffKeys.delete(key);
+        }
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
         const from = store.bot(fromBotId);
@@ -1286,18 +1340,34 @@ const server = createServer(async (req, res) => {
           toBotId,
           status: "queued",
           createdAt: Date.now(),
+          rootTurnId,
+          sourceTurnId,
+          groupId: channel?.id,
+          depth: depth + 1,
+          handoffCount: handoffCount + 1,
+          visitedBots: [...normalizedVisitedBots, toBotId],
         };
         handoffs.set(handoff.id, handoff);
+        recentHandoffKeys.set(dedupeKey, { handoffId: handoff.id, createdAt: handoff.createdAt });
         broadcast({ kind: "handoff", handoff });
         void (async () => {
           handoff.status = "running";
           broadcast({ kind: "handoff", handoff });
-          const reply = await askBotAndWait(toBotId, prefixed, depth);
-          handoff.status = reply.startsWith("(couldn't") || reply.startsWith("(timed out") ? "failed" : "completed";
-          handoff.result = reply;
+          const reply = await askBotAndWait(toBotId, prefixed, {
+            rootTurnId,
+            sourceTurnId,
+            depth,
+            handoffCount: handoffCount + 1,
+            visitedBots: normalizedVisitedBots,
+          });
+          handoff.targetTurnId = reply.targetTurnId;
+          const failed = reply.text.startsWith("(couldn't") || reply.text.startsWith("(timed out");
+          handoff.status = failed ? "failed" : "completed";
+          handoff.result = reply.text;
+          if (failed) handoff.error = reply.text;
           handoff.finishedAt = Date.now();
           if (from) {
-            mirror(target, reply);
+            mirror(target, reply.text);
             chip(from.threadId, `@${target.name} 已完成交接`, target);
             if (channel) {
               store.patchGroup(channel.id, { unread: true });

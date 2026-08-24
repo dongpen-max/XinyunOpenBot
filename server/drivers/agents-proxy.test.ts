@@ -73,6 +73,10 @@ beforeAll(async () => {
       OMB_BOT_ID: "bot-asker",
       OMB_COMMS_TOKEN: TOKEN,
       OMB_TURN_DEPTH: "0",
+      OMB_ROOT_TURN_ID: "root-1",
+      OMB_SOURCE_TURN_ID: "turn-a",
+      OMB_HANDOFF_COUNT: "2",
+      OMB_VISITED_BOTS: JSON.stringify(["bot-asker"]),
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -117,7 +121,16 @@ describe("agents-proxy MCP surface", () => {
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     expect(res.result.content[0].text).toContain("Helper replied:");
     expect(res.result.content[0].text).toContain("hi from helper");
-    expect(lastAskBody).toMatchObject({ fromBotId: "bot-asker", toBotId: "bot-helper", message: "ping", depth: 0 });
+    expect(lastAskBody).toMatchObject({
+      fromBotId: "bot-asker",
+      toBotId: "bot-helper",
+      message: "ping",
+      depth: 0,
+      rootTurnId: "root-1",
+      sourceTurnId: "turn-a",
+      handoffCount: 2,
+      visitedBots: ["bot-asker"],
+    });
   });
 
   it("renders a busy peer as a clean answer, not an error", async () => {

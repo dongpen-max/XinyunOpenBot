@@ -13,12 +13,24 @@
 //   OMB_BOT_ID       the calling bot's id (excluded from list_bots; sender)
 //   OMB_COMMS_TOKEN  shared secret for the localhost-only internal endpoints
 //   OMB_TURN_DEPTH   this turn's comms depth (the harness refuses recursion)
+//   OMB_ROOT_TURN_ID / OMB_SOURCE_TURN_ID / OMB_HANDOFF_COUNT / OMB_VISITED_BOTS
+//                    correlation and cycle-budget metadata for this turn
 import readline from "node:readline";
 
 const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
+const ROOT_TURN_ID = process.env.OMB_ROOT_TURN_ID ?? "";
+const SOURCE_TURN_ID = process.env.OMB_SOURCE_TURN_ID ?? "";
+const HANDOFF_COUNT = Number(process.env.OMB_HANDOFF_COUNT ?? "0") || 0;
+let VISITED_BOTS: string[] = [];
+try {
+  const parsed = JSON.parse(process.env.OMB_VISITED_BOTS ?? "[]");
+  if (Array.isArray(parsed)) VISITED_BOTS = parsed.filter((id): id is string => typeof id === "string");
+} catch {
+  VISITED_BOTS = [];
+}
 
 const TOOLS = [
   {
@@ -77,7 +89,16 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (!toBotId || !message) return { text: "ask_bot needs bot_id and message.", isError: true };
     const r = await api(`/api/internal/ask-bot`, {
       method: "POST",
-      body: JSON.stringify({ fromBotId: BOT_ID, toBotId, message, depth: DEPTH }),
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        toBotId,
+        message,
+        depth: DEPTH,
+        rootTurnId: ROOT_TURN_ID,
+        sourceTurnId: SOURCE_TURN_ID,
+        handoffCount: HANDOFF_COUNT,
+        visitedBots: VISITED_BOTS,
+      }),
     });
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
     if (r.busy) return { text: `That bot is busy right now — the handoff will be queued.`, isError: false };

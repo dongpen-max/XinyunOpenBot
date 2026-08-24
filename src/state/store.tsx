@@ -140,6 +140,13 @@ export interface HandoffRecord {
   toBotId: string;
   status: "queued" | "running" | "completed" | "failed";
   createdAt: number;
+  rootTurnId?: string;
+  sourceTurnId?: string;
+  targetTurnId?: string;
+  groupId?: string;
+  depth?: number;
+  handoffCount?: number;
+  visitedBots?: string[];
   finishedAt?: number;
   result?: string;
   error?: string;
