@@ -2,6 +2,7 @@ import { Component, memo, useCallback, useDeferredValue, useEffect, useLayoutEff
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowRight,
   Brain,
   Check,
   ChevronDown,
@@ -58,6 +59,39 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
           <time className="ml-auto shrink-0 text-[11px] text-ink-secondary/70">{formatTime(event.at)}</time>
         </li>)}
       </ol>}
+    </div>
+  );
+}
+
+function HandoffStrip({ bot }: { bot: Bot }) {
+  const { state } = useStore();
+  const items = Object.values(state.handoffs)
+    .filter((handoff) => handoff.fromBotId === bot.id || handoff.toBotId === bot.id)
+    .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt))
+    .slice(0, 4);
+  if (!items.length) return null;
+  const nameOf = (id: string) => state.bots.find((candidate) => candidate.id === id)?.name ?? "机器人";
+  const statusLabel = (status: (typeof items)[number]["status"]) =>
+    status === "queued" ? "等待接手" : status === "running" ? "执行中" : status === "completed" ? "已完成" : "失败";
+  return (
+    <div className="mx-auto w-full max-w-[900px] px-5 pt-1">
+      <div className="rounded-xl border border-accent/20 bg-accent/5 px-3 py-2">
+        <div className="mb-1 flex items-center gap-1.5 text-[11.5px] font-medium text-accent">
+          <ArrowRight size={13} /> 协作交接
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {items.map((handoff) => (
+            <span key={handoff.id} className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hairline/35 bg-panel/70 px-2 py-1 text-[11.5px] text-ink-secondary">
+              <span className="max-w-[110px] truncate text-ink">{nameOf(handoff.fromBotId)}</span>
+              <ArrowRight size={11} className="shrink-0" />
+              <span className="max-w-[110px] truncate text-ink">{nameOf(handoff.toBotId)}</span>
+              <span className={cn("shrink-0", handoff.status === "failed" ? "text-danger" : handoff.status === "completed" ? "text-success" : "text-accent")}>
+                {statusLabel(handoff.status)}
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -808,6 +842,7 @@ export function ChatView({
       )}
 
       <TaskTimeline messages={messages} busy={bot.busy ?? false} />
+      <HandoffStrip bot={bot} />
 
       {/* Messages */}
       <div
