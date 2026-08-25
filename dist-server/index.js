@@ -23,11 +23,15 @@ import { parseReasoningRequest, reasoningEffortForLevel } from "./reasoning.js";
 import { shouldUseCloudComputer } from "./turn-computer.js";
 import { buildTurnContext, engineIsFresh } from "./turn-context.js";
 import { SseReplayBuffer } from "./sse-replay.js";
+import { COMPUTER_CONTROL_REFUSAL, ComputerControl } from "./computer-control.js";
+import { extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage } from "./attachments.js";
+import { TurnScheduler } from "./turn-scheduler.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
 import { ProviderRegistry } from "./harness/registry.js";
 import { DOMESTIC_PROVIDER_IDS } from "./domestic-models.js";
 import { mentionedBots, roomResponders, Store, } from "./store.js";
+import { newId } from "./contracts.js";
 import { describeVoice, synthesize, transcribe } from "./voice/index.js";
 import { toUtterances } from "./voice/speech-text.js";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -52,10 +56,17 @@ bus.attach(registry.instances());
 // A shared secret guards the localhost-only /api/internal endpoints the
 // agents-proxy calls; regenerated each boot (the proxy gets it via env).
 const COMMS_TOKEN = randomBytes(24).toString("hex");
-// Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
-// a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
-// A→B is allowed but B→C (and A→B→A loops) never start.
-const MAX_COMMS_DEPTH = 1;
+const computerControl = new ComputerControl((botId) => broadcastComputerControl(botId));
+const botBoxIds = new Map();
+// Bound message chains: depth 0 = a user-initiated turn. Peer turns may
+// delegate up to three hops, while the root/visited-bot budget rejects loops
+// and runaway fan-out before another provider turn is scheduled.
+const MAX_COMMS_DEPTH = 3;
+const MAX_HANDOFFS_PER_ROOT = 8;
+const HANDOFF_DEDUPE_WINDOW_MS = 5_000;
+const turnScheduler = new TurnScheduler();
+const handoffs = new Map();
+const recentHandoffKeys = new Map();
 // proxy entry: .ts in dev (node type-strips), .js in the packaged dist-server
 const agentsProxyPath = (() => {
     const ts = join(dirname(fileURLToPath(import.meta.url)), "drivers", "agents-proxy.ts");
@@ -63,7 +74,7 @@ const agentsProxyPath = (() => {
 })();
 // in the packaged app process.execPath is Electron — run the proxy as node
 const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
-function agentsIntegration(botId, depth) {
+function agentsIntegration(botId, context) {
     return {
         command: process.execPath,
         args: [agentsProxyPath],
@@ -72,20 +83,26 @@ function agentsIntegration(botId, depth) {
             OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
             OMB_BOT_ID: botId,
             OMB_COMMS_TOKEN: COMMS_TOKEN,
-            OMB_TURN_DEPTH: String(depth),
+            OMB_TURN_DEPTH: String(context.depth),
+            OMB_ROOT_TURN_ID: context.rootTurnId,
+            OMB_SOURCE_TURN_ID: context.sourceTurnId,
+            OMB_HANDOFF_COUNT: String(context.handoffCount),
+            OMB_VISITED_BOTS: JSON.stringify(context.visitedBots),
         },
     };
 }
 /** Run a turn on `targetBotId` and resolve with its assistant text — the
  * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
  * for that thread, resolves on turn.completed (or a 4-min ceiling). */
-function askBotAndWait(targetBotId, message, depth) {
+function askBotAndWait(targetBotId, message, context) {
     const target = store.bot(targetBotId);
     if (!target)
-        return Promise.resolve("(no such bot)");
+        return Promise.resolve({ text: "(no such bot)" });
     const threadId = target.threadId;
     return new Promise((resolve) => {
         let text = "";
+        let started = false;
+        let targetTurnId;
         let done = false;
         const finish = (out) => {
             if (done)
@@ -93,20 +110,31 @@ function askBotAndWait(targetBotId, message, depth) {
             done = true;
             clearTimeout(timer);
             unsub();
-            resolve(out);
+            resolve({ text: out, targetTurnId });
         };
         const unsub = bus.subscribe((e) => {
             if (e.threadId !== threadId)
                 return;
-            if (e.type === "item.completed" && e.itemType === "assistant_text") {
+            if (e.type === "turn.started") {
+                started = true;
+                targetTurnId = e.turnId;
+            }
+            else if (e.type === "item.completed" && e.itemType === "assistant_text" && started) {
                 text += (text ? "\n" : "") + e.text;
             }
-            else if (e.type === "turn.completed") {
+            else if (e.type === "turn.completed" && started) {
                 finish(text || "(the bot finished without a text reply)");
             }
         });
         const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), 4 * 60_000);
-        startTurn(targetBotId, message, { commsDepth: depth + 1 }).catch((err) => finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`));
+        startTurn(targetBotId, message, {
+            commsDepth: context.depth + 1,
+            commsContext: {
+                ...context,
+                depth: context.depth + 1,
+                visitedBots: [...context.visitedBots, targetBotId],
+            },
+        }).catch((err) => finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`));
     });
 }
 // default selection for new bots: first available instance, claude preferred
@@ -125,7 +153,14 @@ const wireTask = ({ resumeCursors: _resumeCursors, lastInstanceId: _lastInstance
 /** Strip both the legacy active-task cursor mirror and all per-task cursors. */
 const wireBot = (bot) => {
     const { resumeCursors: _resumeCursors, tasks, ...rest } = bot;
-    return { ...rest, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+    return {
+        ...rest,
+        execution: {
+            status: turnScheduler.isActive(bot.id) ? "running" : turnScheduler.hasPending(bot.id) ? "queued" : "idle",
+            queueDepth: turnScheduler.pending(bot.id),
+        },
+        ...(tasks ? { tasks: tasks.map(wireTask) } : {}),
+    };
 };
 const wireBotWithThread = (bot) => ({
     ...wireBot(bot),
@@ -153,6 +188,42 @@ function broadcastBot(bot, withThread = false) {
     if (bot)
         broadcast({ kind: "bot", bot: withThread ? wireBotWithThread(bot) : wireBot(bot) });
 }
+function broadcastComputerControl(botId) {
+    const boxId = botBoxIds.get(botId);
+    const related = new Set([botId]);
+    if (boxId) {
+        for (const [relatedBotId, relatedBoxId] of botBoxIds) {
+            if (relatedBoxId === boxId)
+                related.add(relatedBotId);
+        }
+    }
+    for (const relatedBotId of related) {
+        const control = effectiveComputerControl(relatedBotId);
+        broadcast({ kind: "computer-control", botId: relatedBotId, control });
+    }
+}
+function broadcastComputerLease(boxId) {
+    broadcast({ kind: "computer-lease", boxId, lease: cloudComputerLeases.status(boxId) });
+}
+function effectiveComputerControl(botId) {
+    const own = computerControl.snapshot(botId);
+    const boxId = botBoxIds.get(botId);
+    if (!boxId || own.held)
+        return own;
+    for (const [otherBotId, otherBoxId] of botBoxIds) {
+        if (otherBotId === botId || otherBoxId !== boxId)
+            continue;
+        const other = computerControl.snapshot(otherBotId);
+        if (other.held)
+            return { ...other, ownerBotId: otherBotId };
+    }
+    return own;
+}
+function releaseComputerControl(botId) {
+    const snapshot = computerControl.release(botId);
+    broadcastComputerControl(botId);
+    return snapshot;
+}
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
 // The canonical stream is the source of truth; the persisted transcript
 // and every client view are projections of it.
@@ -160,7 +231,16 @@ const toolMessageByItem = new Map(); // itemId -> messageId
 const mcpAuditByItem = new Map();
 const askMessageByRequest = new Map(); // requestId -> messageId
 const cloudLeaseByThread = new Map();
+const cloudLeaseBoxByThread = new Map();
 const pendingCloudLeaseByThread = new Map();
+function releaseCloudLease(threadId) {
+    cloudLeaseByThread.get(threadId)?.();
+    cloudLeaseByThread.delete(threadId);
+    const boxId = cloudLeaseBoxByThread.get(threadId);
+    cloudLeaseBoxByThread.delete(threadId);
+    if (boxId)
+        broadcastComputerLease(boxId);
+}
 // Providers may publish running totals more than once during a turn. Keep
 // only the latest snapshot and fold it once when the turn settles.
 const turnUsage = new Map();
@@ -360,8 +440,12 @@ bus.subscribe((event) => {
                 });
                 mcpAuditByItem.delete(key);
             }
+            // A deleted bot no longer resolves through store.bot(), so its
+            // terminal event must still release the physical Box lease.
+            if (!bot)
+                releaseCloudLease(event.threadId);
             if (bot) {
-                store.patchBot(bot.id, { busy: false, unread: true });
+                store.patchBot(bot.id, { unread: true });
                 broadcastBot(store.bot(bot.id));
                 if (screenPollers.has(bot.id)) {
                     // the last live frame becomes a settled inline screen message —
@@ -374,14 +458,13 @@ bus.subscribe((event) => {
                             pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
                         }
                     }).finally(() => {
-                        cloudLeaseByThread.get(event.threadId)?.();
-                        cloudLeaseByThread.delete(event.threadId);
+                        releaseCloudLease(event.threadId);
                     });
                 }
                 else {
-                    cloudLeaseByThread.get(event.threadId)?.();
-                    cloudLeaseByThread.delete(event.threadId);
+                    releaseCloudLease(event.threadId);
                 }
+                finishScheduledTurn(bot.id);
             }
             // group busy/unread settle in the group turn engine, which knows
             // whether more member turns are queued behind this one
@@ -518,17 +601,25 @@ function readCuaConnection() {
     return null;
 }
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
-async function startTurn(botId, text, opts) {
+async function runTurnNow(botId, text, opts) {
     const bot = store.bot(botId);
     if (!bot)
         throw Object.assign(new Error("no such bot"), { status: 404 });
-    if (bot.busy)
-        throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
+    if (!registry.get(bot.modelSelection.instanceId)) {
+        throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
+    }
     const threadId = bot.threadId;
     const task = store.taskByThread(bot.id, threadId);
     if (!task)
         throw Object.assign(new Error("no such task"), { status: 404 });
     const commsDepth = opts?.commsDepth ?? 0;
+    const commsContext = {
+        rootTurnId: opts?.commsContext?.rootTurnId ?? newId(),
+        sourceTurnId: newId(),
+        depth: commsDepth,
+        handoffCount: opts?.commsContext?.handoffCount ?? 0,
+        visitedBots: [...new Set([...(opts?.commsContext?.visitedBots ?? []), botId])],
+    };
     // a task takes its name from the first thing you asked it to do
     if (text.trim())
         store.titleTaskFromFirstMessage(bot.id, text);
@@ -629,7 +720,16 @@ async function startTurn(botId, text, opts) {
                             throw new Error(`云端电脑当前状态为 ${b.state ?? "unknown"}，未能进入可工作状态`);
                         }
                         previewBoxId = b.id;
-                        integrations.computer = { boxId: b.id, token: cfg.box.token };
+                        botBoxIds.set(bot.id, b.id);
+                        integrations.computer = {
+                            boxId: b.id,
+                            token: cfg.box.token,
+                            control: {
+                                botId: bot.id,
+                                url: `http://127.0.0.1:${PORT}/api/internal/computer-control/${encodeURIComponent(bot.id)}`,
+                                token: COMMS_TOKEN,
+                            },
+                        };
                     }
                     catch (error) {
                         cloudFailure = error instanceof Error ? error : new Error(String(error));
@@ -658,7 +758,7 @@ async function startTurn(botId, text, opts) {
             if (commsDepth < MAX_COMMS_DEPTH &&
                 instance.adapter.capabilities.agentsMcp === true &&
                 store.bots.filter((b) => b.id !== bot.id && !b.hidden).length > 0) {
-                integrations.agents = agentsIntegration(bot.id, commsDepth);
+                integrations.agents = agentsIntegration(bot.id, commsContext);
             }
             // @mentions in the user's message (the composer's tagging UI) become
             // an explicit delegation nudge — the agent still does the ask_bot call
@@ -675,8 +775,13 @@ async function startTurn(botId, text, opts) {
                 const leaseAbort = new AbortController();
                 pendingCloudLeaseByThread.set(threadId, leaseAbort);
                 try {
-                    const release = await cloudComputerLeases.acquire(integrations.computer.boxId, () => broadcast({ kind: "computer", botId: bot.id, state: "waiting" }), leaseAbort.signal);
+                    const release = await cloudComputerLeases.acquire(integrations.computer.boxId, () => {
+                        broadcast({ kind: "computer", botId: bot.id, state: "waiting" });
+                        broadcastComputerLease(integrations.computer.boxId);
+                    }, leaseAbort.signal, { botId: bot.id, task: text.slice(0, 160) });
                     cloudLeaseByThread.set(threadId, release);
+                    cloudLeaseBoxByThread.set(threadId, integrations.computer.boxId);
+                    broadcastComputerLease(integrations.computer.boxId);
                     broadcast({ kind: "computer", botId: bot.id, state: "ready" });
                 }
                 finally {
@@ -696,7 +801,7 @@ async function startTurn(botId, text, opts) {
                 transcript,
                 system: persona +
                     (integrations.computer && computerMode === "mcp"
-                        ? " You have your own cloud computer — use the computer tools (screenshot, click, type_text, open_url, computer_exec) whenever browsing or acting on a desktop helps. Every action tool already returns the resulting screen, so don't follow one with a screenshot call, and batch predictable sequences with computer_batch."
+                        ? " You have your own cloud computer — use the computer tools (screenshot, click, type_text, open_url, computer_exec) whenever browsing or acting on a desktop helps. Every action tool already returns the resulting screen, so don't follow one with a screenshot call, and batch predictable sequences with computer_batch. At sign-in, CAPTCHA, protected input, or an uncertain visual choice, call computer_request_help with a short reason and wait for the user to finish before continuing."
                         : integrations.localComputer
                             ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
                             : "") +
@@ -719,8 +824,7 @@ async function startTurn(botId, text, opts) {
                 startScreenPoller(bot.id, previewBoxId);
         }
         catch (e) {
-            cloudLeaseByThread.get(threadId)?.();
-            cloudLeaseByThread.delete(threadId);
+            releaseCloudLease(threadId);
             const message = e instanceof Error ? e.message : String(e);
             const failure = store.appendMessage(threadId, {
                 role: "bot",
@@ -730,8 +834,62 @@ async function startTurn(botId, text, opts) {
             broadcast({ kind: "message", threadId, message: failure });
             store.patchBot(bot.id, { busy: false });
             broadcastBot(store.bot(bot.id));
+            finishScheduledTurn(bot.id);
         }
     })();
+}
+function finishScheduledTurn(botId) {
+    if (!turnScheduler.isActive(botId))
+        return;
+    turnScheduler.complete(botId);
+    if (turnScheduler.hasPending(botId)) {
+        store.patchBot(botId, { busy: true });
+        broadcastBot(store.bot(botId));
+        void drainBotQueue(botId);
+    }
+    else {
+        store.patchBot(botId, { busy: false });
+        broadcastBot(store.bot(botId));
+    }
+}
+async function drainBotQueue(botId) {
+    const next = turnScheduler.begin(botId);
+    if (!next)
+        return;
+    try {
+        await runTurnNow(botId, next.value.text, next.value.options);
+    }
+    catch (error) {
+        const bot = store.bot(botId);
+        if (bot) {
+            const message = store.appendMessage(bot.threadId, {
+                role: "bot",
+                kind: "activity",
+                tool: { name: `error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 180), ok: false },
+            });
+            broadcast({ kind: "message", threadId: bot.threadId, message });
+        }
+        finishScheduledTurn(botId);
+    }
+}
+async function startTurn(botId, text, opts) {
+    const bot = store.bot(botId);
+    if (!bot)
+        throw Object.assign(new Error("no such bot"), { status: 404 });
+    if (!registry.get(bot.modelSelection.instanceId)) {
+        throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
+    }
+    if (!opts?.userMessage) {
+        const message = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
+        broadcast({ kind: "message", threadId: bot.threadId, message });
+        opts = { ...opts, userMessage: message };
+    }
+    turnScheduler.enqueue(botId, { text, options: opts }, opts?.commsDepth ? "background" : "normal");
+    store.patchBot(botId, { busy: true, unread: false });
+    broadcastBot(store.bot(botId));
+    if (!turnScheduler.isActive(botId))
+        void drainBotQueue(botId);
+    return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0) };
 }
 // ── config hot-reload ─────────────────────────────────────────────────
 // ── group turn engine ──────────────────────────────────────────────────
@@ -915,8 +1073,7 @@ async function reloadProviders() {
     for (const b of store.bots.filter((b) => b.busy)) {
         pendingCloudLeaseByThread.get(b.threadId)?.abort();
         pendingCloudLeaseByThread.delete(b.threadId);
-        cloudLeaseByThread.get(b.threadId)?.();
-        cloudLeaseByThread.delete(b.threadId);
+        releaseCloudLease(b.threadId);
         stopScreenPoller(b.id);
         const note = store.appendMessage(b.threadId, {
             role: "bot",
@@ -1035,6 +1192,20 @@ const server = createServer(async (req, res) => {
             if (req.headers.authorization !== `Bearer ${COMMS_TOKEN}`) {
                 return json(res, 401, { error: "unauthorized" });
             }
+            const controlMatch = path.match(/^\/api\/internal\/computer-control\/([\w-]+)$/);
+            if (controlMatch && (method === "GET" || method === "POST" || method === "DELETE")) {
+                const botId = controlMatch[1];
+                if (!store.bot(botId))
+                    return json(res, 404, { error: "no such bot" });
+                if (method === "GET")
+                    return json(res, 200, effectiveComputerControl(botId));
+                const body = await readBody(req);
+                const snapshot = method === "POST"
+                    ? computerControl.requestHelp(botId, body.reason)
+                    : computerControl.expireHelp(botId, String(body.requestId ?? ""));
+                broadcastComputerControl(botId);
+                return json(res, 200, snapshot);
+            }
             if (method === "GET" && path === "/api/internal/agents") {
                 const self = url.searchParams.get("self");
                 // title/description included so a "chief of staff"-style bot can
@@ -1057,17 +1228,35 @@ const server = createServer(async (req, res) => {
                 const toBotId = String(body.toBotId ?? "");
                 const message = String(body.message ?? "").trim();
                 const depth = Number(body.depth ?? 0) || 0;
+                const handoffCount = Number(body.handoffCount ?? 0) || 0;
+                const rootTurnId = String(body.rootTurnId ?? "").trim() || newId();
+                const sourceTurnId = String(body.sourceTurnId ?? "").trim() || newId();
+                const visitedBots = Array.isArray(body.visitedBots)
+                    ? body.visitedBots.filter((id) => typeof id === "string" && id.length > 0)
+                    : [];
                 if (!toBotId || !message)
                     return json(res, 400, { error: "toBotId and message required" });
                 if (toBotId === fromBotId)
                     return json(res, 400, { error: "a bot cannot message itself" });
                 if (depth >= MAX_COMMS_DEPTH)
-                    return json(res, 200, { error: "message chains are limited to one hop" });
+                    return json(res, 200, { error: `message chains are limited to ${MAX_COMMS_DEPTH} hops` });
+                if (handoffCount >= MAX_HANDOFFS_PER_ROOT)
+                    return json(res, 200, { error: `handoff budget exhausted (${MAX_HANDOFFS_PER_ROOT})` });
+                if (visitedBots.includes(toBotId))
+                    return json(res, 200, { error: "handoff cycle detected: target bot already visited" });
+                const normalizedVisitedBots = [...new Set([...visitedBots, fromBotId])];
+                const dedupeKey = `${rootTurnId}:${fromBotId}:${toBotId}:${message}`;
+                const previous = recentHandoffKeys.get(dedupeKey);
+                if (previous && Date.now() - previous.createdAt < HANDOFF_DEDUPE_WINDOW_MS) {
+                    return json(res, 202, { handoffId: previous.handoffId, status: "queued", deduped: true });
+                }
+                for (const [key, item] of recentHandoffKeys) {
+                    if (Date.now() - item.createdAt >= HANDOFF_DEDUPE_WINDOW_MS)
+                        recentHandoffKeys.delete(key);
+                }
                 const target = store.bot(toBotId);
                 if (!target)
                     return json(res, 404, { error: "no such bot" });
-                if (target.busy)
-                    return json(res, 200, { busy: true });
                 const from = store.bot(fromBotId);
                 const fromName = from?.name ?? "another bot";
                 // the exchange is mirrored into a bot⇄bot channel: it shows up in
@@ -1111,15 +1300,50 @@ const server = createServer(async (req, res) => {
                     }
                 }
                 const prefixed = `[Message from @${fromName}, another bot in this XinyunOpen Bot workspace. Reply to them.]\n\n${message}`;
-                const reply = await askBotAndWait(toBotId, prefixed, depth);
-                if (from) {
-                    mirror(target, reply);
-                    if (channel) {
-                        store.patchGroup(channel.id, { unread: true });
-                        broadcastGroup(channel.id);
+                const handoff = {
+                    id: newId(),
+                    fromBotId,
+                    toBotId,
+                    status: "queued",
+                    createdAt: Date.now(),
+                    rootTurnId,
+                    sourceTurnId,
+                    groupId: channel?.id,
+                    depth: depth + 1,
+                    handoffCount: handoffCount + 1,
+                    visitedBots: [...normalizedVisitedBots, toBotId],
+                };
+                handoffs.set(handoff.id, handoff);
+                recentHandoffKeys.set(dedupeKey, { handoffId: handoff.id, createdAt: handoff.createdAt });
+                broadcast({ kind: "handoff", handoff });
+                void (async () => {
+                    handoff.status = "running";
+                    broadcast({ kind: "handoff", handoff });
+                    const reply = await askBotAndWait(toBotId, prefixed, {
+                        rootTurnId,
+                        sourceTurnId,
+                        depth,
+                        handoffCount: handoffCount + 1,
+                        visitedBots: normalizedVisitedBots,
+                    });
+                    handoff.targetTurnId = reply.targetTurnId;
+                    const failed = reply.text.startsWith("(couldn't") || reply.text.startsWith("(timed out");
+                    handoff.status = failed ? "failed" : "completed";
+                    handoff.result = reply.text;
+                    if (failed)
+                        handoff.error = reply.text;
+                    handoff.finishedAt = Date.now();
+                    if (from) {
+                        mirror(target, reply.text);
+                        chip(from.threadId, `@${target.name} 已完成交接`, target);
+                        if (channel) {
+                            store.patchGroup(channel.id, { unread: true });
+                            broadcastGroup(channel.id);
+                        }
                     }
-                }
-                return json(res, 200, { botName: target.name, text: reply });
+                    broadcast({ kind: "handoff", handoff });
+                })();
+                return json(res, 202, { handoffId: handoff.id, status: handoff.status, botName: target.name });
             }
             return json(res, 404, { error: "unknown internal endpoint" });
         }
@@ -1147,6 +1371,59 @@ const server = createServer(async (req, res) => {
                 sseClients.delete(client);
             });
             return;
+        }
+        // Image attachments are stored outside the transcript and referenced by
+        // generated filenames, so prompt paths never expose an original name.
+        if (method === "POST" && path === "/api/attachments") {
+            const rawType = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"][0] : req.headers["content-type"];
+            const mime = rawType?.split(";")[0]?.trim().toLowerCase();
+            if (!mime || !extensionForMime(mime))
+                return json(res, 400, { error: "content-type must be a supported image type" });
+            const saved = await new Promise((resolve, reject) => {
+                const chunks = [];
+                let received = 0;
+                let settled = false;
+                const fail = (status, message) => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    reject(Object.assign(new Error(message), { status }));
+                };
+                req.on("data", (chunk) => {
+                    if (settled)
+                        return;
+                    received += chunk.byteLength;
+                    if (received > IMAGE_MAX_BYTES)
+                        return fail(413, `image exceeds ${IMAGE_MAX_BYTES} bytes`);
+                    chunks.push(chunk);
+                });
+                req.on("end", () => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    try {
+                        resolve(saveImage(Buffer.concat(chunks), mime));
+                    }
+                    catch (error) {
+                        reject(error);
+                    }
+                });
+                req.on("error", (error) => fail(400, error instanceof Error ? error.message : String(error)));
+            });
+            return json(res, 201, saved);
+        }
+        const attachmentMatch = path.match(/^\/api\/attachments\/([\w.-]+)$/);
+        if (method === "GET" && attachmentMatch) {
+            const attachment = readAttachment(attachmentMatch[1]);
+            if (!attachment)
+                return json(res, 404, { error: "no such attachment" });
+            res.writeHead(200, {
+                "content-type": attachment.mime,
+                "content-length": String(attachment.bytes.byteLength),
+                "cache-control": "private, max-age=31536000, immutable",
+                "x-content-type-options": "nosniff",
+            });
+            return res.end(attachment.bytes);
         }
         // Global palette search. It is intentionally read-only and scans only
         // persisted text messages; screenshots, tool payloads and credentials
@@ -1325,7 +1602,7 @@ const server = createServer(async (req, res) => {
         if (m && method === "PATCH") {
             const body = await readBody(req);
             const patch = {};
-            for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "mascotExpression", "pinned", "hidden"]) {
+            for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "avatarKind", "modelAvatar", "customMascotShape", "mascotExpression", "pinned", "hidden"]) {
                 if (body[key] !== undefined)
                     patch[key] = body[key];
             }
@@ -1401,7 +1678,10 @@ const server = createServer(async (req, res) => {
             pendingCloudLeaseByThread.get(bot.threadId)?.abort();
             pendingCloudLeaseByThread.delete(bot.threadId);
             await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => { });
+            releaseCloudLease(bot.threadId);
             stopScreenPoller(bot.id);
+            releaseComputerControl(bot.id);
+            botBoxIds.delete(bot.id);
             store.deleteBot(bot.id);
             for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
                 try {
@@ -1439,8 +1719,8 @@ const server = createServer(async (req, res) => {
             if (!text)
                 return json(res, 400, { error: "text required" });
             const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
-            await startTurn(m[1], text, { reasoningLevel });
-            return json(res, 202, { ok: true });
+            const queued = await startTurn(m[1], text, { reasoningLevel });
+            return json(res, 202, { ok: true, ...queued });
         }
         // edit a user message → fork the conversation there and rerun the turn.
         // Rewinding a live thread is refused, exactly like switching versions
@@ -1476,8 +1756,8 @@ const server = createServer(async (req, res) => {
             store.patchBot(bot.id, { rewound: true });
             broadcast({ kind: "message", threadId: bot.threadId, message });
             broadcast({ kind: "thread", threadId: bot.threadId, activeLeafId: message.id });
-            await startTurn(bot.id, text, { userMessage: message });
-            return json(res, 202, { ok: true });
+            const queued = await startTurn(bot.id, text, { userMessage: message });
+            return json(res, 202, { ok: true, ...queued });
         }
         // switch which fork of the conversation is visible (no new turn)
         m = path.match(/^\/api\/bots\/([\w-]+)\/active-branch$/);
@@ -1536,11 +1816,17 @@ const server = createServer(async (req, res) => {
             const bot = store.bot(m[1]);
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
+            const cancelled = turnScheduler.cancelQueued(bot.id);
             const instance = registry.get(bot.modelSelection.instanceId);
             pendingCloudLeaseByThread.get(bot.threadId)?.abort();
             pendingCloudLeaseByThread.delete(bot.threadId);
+            releaseCloudLease(bot.threadId);
             await instance?.adapter.interruptTurn(bot.threadId);
-            return json(res, 200, { ok: true });
+            if (!turnScheduler.isActive(bot.id)) {
+                store.patchBot(bot.id, { busy: false });
+                broadcastBot(store.bot(bot.id));
+            }
+            return json(res, 200, { ok: true, cancelled: cancelled.length });
         }
         // ── tasks: a bot's separate contexts ────────────────────────────────
         // The bot record answers with its messages because switching tasks
@@ -1684,8 +1970,8 @@ const server = createServer(async (req, res) => {
         }
         // ── connectors (Composio) ──
         if (method === "GET" && path === "/api/connectors/catalog") {
-            const { cards, source } = await composio.listToolkits(cfg);
-            return json(res, 200, { configured: Boolean(cfg.composio?.key), source, cards });
+            const { cards, source, diagnostic } = await composio.listToolkits(cfg);
+            return json(res, 200, { configured: Boolean(cfg.composio?.key), source, diagnostic, cards });
         }
         if (method === "GET" && path === "/api/connectors") {
             const services = (url.searchParams.get("services") ?? "").split(",").filter(Boolean);
@@ -1782,15 +2068,61 @@ const server = createServer(async (req, res) => {
             }
         }
         // ── the bot's cloud computer (Box) ──
+        m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/control$/);
+        if (m && (method === "GET" || method === "POST")) {
+            const botId = m[1];
+            if (!store.bot(botId))
+                return json(res, 404, { error: "no such bot" });
+            if (method === "GET")
+                return json(res, 200, effectiveComputerControl(botId));
+            const body = await readBody(req);
+            const action = String(body.action ?? "");
+            let snapshot;
+            if (action === "take") {
+                const knownBoxId = botBoxIds.get(botId) ?? (await box.findBox(cfg, botId).catch(() => null))?.id;
+                if (knownBoxId)
+                    botBoxIds.set(botId, knownBoxId);
+                if (knownBoxId) {
+                    const lease = cloudComputerLeases.status(knownBoxId);
+                    if (lease.owner?.botId && lease.owner.botId !== botId) {
+                        return json(res, 409, {
+                            error: "这台共享云电脑正在由其他 Bot 使用，请从当前占用者面板接管",
+                            botId: lease.owner.botId,
+                        });
+                    }
+                    const conflict = [...botBoxIds.entries()].find(([otherBotId, otherBoxId]) => otherBoxId === knownBoxId && otherBotId !== botId && computerControl.snapshot(otherBotId).held);
+                    if (conflict)
+                        return json(res, 409, { error: "这台共享云电脑已被其他用户接管", botId: conflict[0] });
+                }
+                snapshot = computerControl.take(botId);
+            }
+            else if (action === "release")
+                snapshot = releaseComputerControl(botId);
+            else if (action === "dismiss-help")
+                snapshot = computerControl.dismissHelp(botId);
+            else
+                return json(res, 400, { error: "action must be take, release, or dismiss-help" });
+            broadcastComputerControl(botId);
+            return json(res, 200, snapshot);
+        }
         m = path.match(/^\/api\/bots\/([\w-]+)\/computer$/);
-        if (m && method === "GET")
-            return json(res, 200, await box.boxStatus(cfg, m[1]));
+        if (m && method === "GET") {
+            const status = await box.boxStatus(cfg, m[1]);
+            const boxId = status.box?.boxId;
+            if (typeof boxId === "string")
+                botBoxIds.set(m[1], boxId);
+            const lease = typeof boxId === "string" ? cloudComputerLeases.status(boxId) : null;
+            return json(res, 200, { ...status, lease, control: effectiveComputerControl(m[1]) });
+        }
         m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|replace|join|sleep|exec|screenshot)$/);
         if (m && method === "POST") {
             const botId = m[1];
             const bot = store.bot(botId);
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
+            if (m[2] === "exec" && effectiveComputerControl(botId).held) {
+                return json(res, 409, { error: COMPUTER_CONTROL_REFUSAL });
+            }
             switch (m[2]) {
                 case "provision":
                     return json(res, 200, await box.provisionBox(cfg, botId, bot.name, (state) => broadcast({ kind: "computer", botId, state })));
@@ -1801,6 +2133,7 @@ const server = createServer(async (req, res) => {
                 case "join":
                     return json(res, 200, await box.joinBox(cfg, botId));
                 case "sleep":
+                    releaseComputerControl(botId);
                     return json(res, 200, await box.sleepBox(cfg, botId));
                 case "exec": {
                     const body = await readBody(req);
@@ -1853,6 +2186,7 @@ function shutdown() {
         for (const release of cloudLeaseByThread.values())
             release();
         cloudLeaseByThread.clear();
+        cloudLeaseBoxByThread.clear();
         await registry.disposeAll();
         for (const client of sseClients) {
             try {

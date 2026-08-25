@@ -266,6 +266,12 @@ export const ClaudeDriver = {
                         ...NODE_ENV_FLAG,
                         OGB_BOX_ID: turn.integrations.computer.boxId,
                         OGB_BOX_TOKEN: turn.integrations.computer.token,
+                        ...(turn.integrations.computer.control
+                            ? {
+                                OMB_CONTROL_URL: turn.integrations.computer.control.url,
+                                OMB_CONTROL_TOKEN: turn.integrations.computer.control.token,
+                            }
+                            : {}),
                     },
                 };
                 allowed.push("mcp__computer");

@@ -5,7 +5,12 @@ import { CloudComputerLeasePool } from "./cloud-computer-pool.ts";
 describe("CloudComputerLeasePool", () => {
   it("serializes turns that share one cloud server", async () => {
     const pool = new CloudComputerLeasePool();
-    const first = await pool.acquire("box-primary");
+    const first = await pool.acquire("box-primary", undefined, undefined, { botId: "bot-a", task: "first task" });
+    expect(pool.status("box-primary")).toMatchObject({
+      busy: true,
+      waiting: 0,
+      owner: { botId: "bot-a", task: "first task" },
+    });
     const waited = vi.fn();
     let secondAcquired = false;
     const secondPromise = pool.acquire("box-primary", waited).then((release) => {
@@ -16,11 +21,13 @@ describe("CloudComputerLeasePool", () => {
     await Promise.resolve();
     expect(waited).toHaveBeenCalledOnce();
     expect(secondAcquired).toBe(false);
+    expect(pool.status("box-primary").waiting).toBe(1);
 
     first();
     const second = await secondPromise;
     expect(secondAcquired).toBe(true);
     second();
+    expect(pool.status("box-primary")).toMatchObject({ busy: false, waiting: 0, owner: null });
   });
 
   it("does not block independent servers", async () => {

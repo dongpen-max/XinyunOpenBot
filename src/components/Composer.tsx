@@ -1,7 +1,7 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Clock, Loader2, Mic, Paperclip, Square, Users, X } from "lucide-react";
-import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
+import { useStore, visibleMessages, type Bot, type Group, type ReplyReference } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
@@ -14,6 +14,7 @@ import { useComposerDraft, useReasoningLevel, type ReasoningLevel } from "@/lib/
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { ReasoningEffortControl } from "./ReasoningEffortControl";
 import { PermissionModeControl } from "./PermissionModeControl";
+import { ReplyComposerPill } from "./ReplyPreview";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -35,12 +36,16 @@ export function Composer({
   members,
   compact = false,
   onEditLast,
+  replyTo,
+  onClearReply,
 }: {
   bot?: Bot;
   group?: Group;
   members?: Bot[];
   compact?: boolean;
   onEditLast?: () => void;
+  replyTo?: ReplyReference | null;
+  onClearReply?: () => void;
 }) {
   const { state, dispatch } = useStore();
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
@@ -136,35 +141,37 @@ export function Composer({
   // Rooms still use a small client-side buffer because their responder engine
   // intentionally serializes the whole room.  1:1 Bot messages go straight
   // to the server scheduler, so users can send multiple messages safely.
-  const [queued, setQueued] = useState<{ text: string; preview: string; reasoningLevel: ReasoningLevel } | null>(null);
+  const [queued, setQueued] = useState<{ text: string; preview: string; reasoningLevel: ReasoningLevel; replyTo?: ReplyReference } | null>(null);
   const serverQueueDepth = bot?.execution?.queueDepth ?? 0;
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
     const t = composeMessage(text, attachments);
     if (!t) return;
     if (busy && group) {
-      setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningLevel });
+      setQueued({ text: t, preview: text.trim() || `已添加 ${attachments.length} 个附件`, reasoningLevel, replyTo: replyTo ?? undefined });
       setText("");
       setAttachments([]);
       return;
     }
     if (group) {
-      dispatch({ type: "sendGroup", groupId: group.id, text: t, reasoningLevel });
+      dispatch({ type: "sendGroup", groupId: group.id, text: t, reasoningLevel, replyTo: replyTo ?? undefined });
       track("message_sent", { room: true });
     } else if (bot) {
-      dispatch({ type: "send", botId: bot.id, text: t, reasoningLevel });
+      dispatch({ type: "send", botId: bot.id, text: t, reasoningLevel, replyTo: replyTo ?? undefined });
       track("message_sent", { driver: bot.modelSelection?.instanceId });
     }
     setText("");
     setAttachments([]);
+    onClearReply?.();
   };
   useEffect(() => {
     if (!busy && queued && group) {
-      dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningLevel: queued.reasoningLevel });
+      dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, reasoningLevel: queued.reasoningLevel, replyTo: queued.replyTo });
       track("message_sent", { queued: true });
       setQueued(null);
+      onClearReply?.();
     }
-  }, [busy, queued, group, dispatch]);
+  }, [busy, queued, group, dispatch, onClearReply]);
 
   useEffect(() => {
     return () => {
@@ -263,6 +270,7 @@ export function Composer({
                 {peer.bot ? (
                   <MausAvatar
                     color={peer.bot.color}
+                    image={peer.bot.avatarImage}
                     shape={peer.bot.mascotShape}
                     state={normalizeState(peer.bot.mascotExpression) ?? "happy"}
                     size={24}
@@ -294,6 +302,7 @@ export function Composer({
             />
           </div>
         )}
+        {replyTo && <ReplyComposerPill reference={replyTo} onClear={() => onClearReply?.()} />}
         <ComposerAttachments items={attachments} onAdd={addAttachments} onRemove={removeAttachment} />
         <div className="flex items-end gap-2 rounded-[26px] border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2 shadow-[0_1px_2px_rgb(0_0_0/0.08)] transition-[border-color,background-color,box-shadow] duration-150 focus-within:border-hairline/70 focus-within:bg-raised/75 focus-within:shadow-[0_4px_18px_rgb(0_0_0/0.12)]">
         <input

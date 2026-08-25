@@ -27,9 +27,12 @@
 //
 // stdout is the MCP channel — never console.log here.
 import { normalizeBrowserUrl, normalizeCrop, ObservationCoordinator, parseBrowserTargets, safeBrowserUrl, } from "./computer-observation.js";
+import { COMPUTER_CONTROL_REFUSAL } from "./computer-control.js";
 const BOX_API = process.env.OGB_BOX_API ?? "https://ascii.dev/api/box/v1";
 const boxId = process.env.OGB_BOX_ID ?? "";
 const token = process.env.OGB_BOX_TOKEN ?? "";
+const controlUrl = process.env.OMB_CONTROL_URL ?? "";
+const controlToken = process.env.OMB_CONTROL_TOKEN ?? "";
 /** The coordinate space the model sees: frames are downscaled to this
  * width, and clicks are scaled back up to the real display box-side. */
 const SHOT_WIDTH = 1280;
@@ -355,6 +358,11 @@ const OBSERVE_PROPS = {
 };
 const TOOLS = [
     {
+        name: "computer_request_help",
+        description: "Ask the person to take over the visible cloud computer for a sign-in, CAPTCHA, or uncertain choice. Pause until they hand control back.",
+        inputSchema: { type: "object", properties: { reason: { type: "string" } } },
+    },
+    {
         name: "screenshot",
         description: "See the bot's cloud computer screen when visual state is needed. First prefer browser_state for Chrome title/URL checks. The frame is captured fresh; byte-identical pixels are not resent.",
         inputSchema: {
@@ -498,6 +506,50 @@ const TOOLS = [
 const shellQuote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 const settleOf = (args) => Math.min(Math.max(Number(args?.settle_ms) || SETTLE_MS, 0), 3000);
 const wantsFrame = (args) => args?.observe !== false;
+async function controlState() {
+    if (!controlUrl || !controlToken)
+        return { held: false, helpOpen: false };
+    try {
+        const response = await fetch(controlUrl, {
+            headers: { authorization: `Bearer ${controlToken}` },
+            signal: AbortSignal.timeout(1_500),
+        });
+        const body = await response.json().catch(() => null);
+        return { held: response.ok && body?.held === true, helpOpen: response.ok && Boolean(body?.helpReason) };
+    }
+    catch {
+        // This is a cooperative hand-off, not a security boundary. Fail open if
+        // the harness is restarting so a bot is not bricked mid-turn.
+        return { held: false, helpOpen: false };
+    }
+}
+async function requestHumanHelp(reason) {
+    if (!controlUrl || !controlToken)
+        return null;
+    try {
+        const response = await fetch(controlUrl, {
+            method: "POST",
+            headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+            body: JSON.stringify({ reason }),
+            signal: AbortSignal.timeout(1_500),
+        });
+        const body = await response.json().catch(() => null);
+        return response.ok && typeof body?.requestId === "string" ? body.requestId : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function waitForHumanRelease() {
+    const deadline = Date.now() + 15 * 60_000;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const state = await controlState();
+        if (!state.held && !state.helpOpen)
+            return "released";
+    }
+    return "timeout";
+}
 /** One action → the shell that performs it (scaling clicks box-side). */
 function actionShell(a) {
     const kind = String(a?.action ?? "");
@@ -567,6 +619,26 @@ async function actAndObserve(id, actions, note, args, timeoutMs = 60_000) {
     return observed(id, full, await frameFrom(out));
 }
 async function call(id, name, args) {
+    if (name === "computer_request_help") {
+        const requestId = await requestHumanHelp(String(args.reason ?? "机器人请求你接管云电脑"));
+        if (requestId) {
+            const outcome = await waitForHumanRelease();
+            return text(id, outcome === "released"
+                ? "用户已完成接管或忽略请求。请先重新截图，再继续操作。"
+                : "等待用户接管超时。请暂停当前任务，并在回复中说明仍需要人工操作。", outcome === "timeout");
+        }
+        return text(id, requestId
+            ? "已请求用户接管云电脑。请暂停操作，等待用户完成后再继续。"
+            : "暂时无法通知用户接管云电脑，请在回复中说明需要人工操作。", !requestId);
+    }
+    if ((await controlState()).held) {
+        // A manual takeover pauses the turn at the tool boundary instead of
+        // converting a recoverable hand-off into a terminal tool error. Once the
+        // user releases (or the safety timeout expires), the original tool call
+        // continues and the model can resume its task on the same Box lease.
+        if ((await waitForHumanRelease()) === "timeout")
+            return text(id, COMPUTER_CONTROL_REFUSAL, true);
+    }
     if (name === "screenshot") {
         let crop = null;
         if (args.region !== undefined) {

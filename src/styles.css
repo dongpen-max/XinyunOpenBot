@@ -1251,4 +1251,23 @@ body {
   }
 
   .maus-eyes { transform: none; }
+
+  .model-avatar { animation: none !important; }
 }
+
+/* Model marks are transparent, static cut-outs. There is intentionally no tile,
+ * border, or background around them: the mark keeps its own brand colors. */
+.model-avatar {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.model-avatar__mark { display: block; }
+
+/* GPT/Codex, Grok, Kimi and a few monochrome marks remain recognizable on
+ * midnight/slate surfaces without adding a visible icon frame. */
+.model-avatar__mark--contrast { filter: drop-shadow(0 0 1.35px rgb(255 255 255 / 0.95)); }
+:root[data-app-theme="white"] .model-avatar__mark--contrast { filter: none; }

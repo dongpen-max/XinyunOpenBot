@@ -377,7 +377,7 @@ export function CallOverlay({ bot, onHangup }: { bot: Bot; onHangup: () => void 
       <button onClick={onHangup} className="absolute right-5 top-5 rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink" aria-label="挂断">
         <X size={18} />
       </button>
-      <MausAvatar color={bot.color} shape={bot.mascotShape} state={avatarState} size={220} animated trackPointer />
+      <MausAvatar color={bot.color} image={bot.avatarImage} shape={bot.mascotShape} state={avatarState} size={220} animated trackPointer />
       <div className="text-center">
         <div className="text-[20px] font-medium text-ink">{bot.name}</div>
         <div className="mt-1 flex items-center justify-center gap-2 text-[13.5px] text-ink-secondary">

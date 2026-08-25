@@ -89,6 +89,126 @@ export function MoonshotMark({ size = 16, className }: IconProps) {
   );
 }
 
+function WordMark({ text, color, size = 16, className }: IconProps & { text: string; color: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={cn(className)} aria-hidden="true">
+      <circle cx="12" cy="12" r="10" fill={color} />
+      <text x="12" y="15" textAnchor="middle" fontSize="8" fontWeight="800" fill="white" fontFamily="Arial, sans-serif">{text}</text>
+    </svg>
+  );
+}
+
+export function MistralMark(props: IconProps) { return <WordMark {...props} text="M" color="#f4a261" />; }
+export function MetaMark(props: IconProps) { return <WordMark {...props} text="∞" color="#0866ff" />; }
+export function MicrosoftMark(props: IconProps) { return <WordMark {...props} text="φ" color="#5b5bd6" />; }
+export function CohereMark(props: IconProps) { return <WordMark {...props} text="C" color="#d94841" />; }
+export function MiniMaxMark(props: IconProps) { return <WordMark {...props} text="M" color="#ef476f" />; }
+export function BaichuanMark(props: IconProps) { return <WordMark {...props} text="百" color="#111827" />; }
+export function InternLMMark(props: IconProps) { return <WordMark {...props} text="书" color="#3478f6" />; }
+export function TencentMark(props: IconProps) { return <WordMark {...props} text="H" color="#2f80ed" />; }
+export function StepFunMark(props: IconProps) { return <WordMark {...props} text="S" color="#7c3aed" />; }
+export function YiMark(props: IconProps) { return <WordMark {...props} text="01" color="#111827" />; }
+
+/**
+ * The avatar picker represents a model, rather than the company that happens
+ * to ship it.  Keep these as transparent, local SVG cut-outs: no tile, badge,
+ * or fabricated letter-in-a-circle.  The geometry and palette follow each
+ * model family's public visual language while still fitting at avatar sizes.
+ */
+function MixtralModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#F7D046" d="M3 3h7v4H3z" /><path fill="#EF8A43" d="M3 8h12v4H3z" />
+    <path fill="#E95370" d="M3 13h17v4H3z" /><path fill="#6F4CD9" d="M3 18h12v3H3z" />
+    <path fill="#22232A" d="M15 3h6v4h-6zM17 8h4v4h-4zM20 13h1v4h-1zM15 18h6v3h-6z" />
+  </svg>;
+}
+
+function LlamaModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#7C3AED" d="M7.1 3.2c1.4 0 2.3.9 2.9 2.1l.7 1.5h3.8c1.1 0 2 .8 2.1 1.9l.2 1.7 2.3 1.8c.5.4.8 1 .8 1.7v3.7c0 1.8-1.5 3.2-3.3 3.2H9.3c-2.9 0-5.3-2.4-5.3-5.3V9.6h2.2V5.4c0-1.2.3-2.2.9-2.2Zm5.1 6.7a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Zm3.7.5a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z" />
+    <path fill="#F7D046" d="M4 15.1c0 2.9 2.4 5.3 5.3 5.3H6.8A2.8 2.8 0 0 1 4 17.6v-2.5Z" />
+  </svg>;
+}
+
+function PhiModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#6554D9" d="M13.5 2.5h2.8v5.1h3v2.7h-3v3.8c0 4.7-2.8 7.4-7.2 7.4-1.5 0-2.8-.3-3.9-.9l1-2.5c.9.4 1.8.6 2.7.6 2.3 0 3.6-1.5 3.6-4.3v-4.1H5.4V7.6h5.1V5.2c0-1.1.9-2.1 2-2.1h1Z" />
+  </svg>;
+}
+
+function CommandRModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#39594D" d="M5 4.2a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm7 0a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm7 0a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" />
+    <path fill="#D6F257" d="M5 13.8a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm7 0a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm7 0a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" />
+  </svg>;
+}
+
+function MiniMaxModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#FF5A3D" d="M12 2.3 15 9l6.7 3-6.7 3-3 6.7-3-6.7-6.7-3L9 9l3-6.7Z" />
+    <path fill="#FFB535" d="m12 6.5 1.1 4.4 4.4 1.1-4.4 1.1-1.1 4.4-1.1-4.4-4.4-1.1 4.4-1.1 1.1-4.4Z" />
+  </svg>;
+}
+
+function BaichuanModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="currentColor" d="M3 4h18v3H3zm3 5h12v3H6zm-3 5h18v3H3zm3 5h12v3H6z" />
+    <path fill="#18B6A4" d="M16 9h5v3h-5zM3 14h5v3H3z" />
+  </svg>;
+}
+
+function InternLMModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#236BFF" d="M3.4 4.4 12 1.8l8.6 2.6v15.2L12 22.2l-8.6-2.6V4.4Zm4.2 4.1v7l4.4 1.4V7.1L7.6 8.5Zm6.4-1.4v9.8l2.4-.8V7.9L14 7.1Z" />
+    <path fill="#82D8FF" d="M12 1.8v5.3l4.4.8 4.2-3.5L12 1.8Z" />
+  </svg>;
+}
+
+function HunyuanModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#2878F0" d="M12 2.2c4.9 0 8.8 3.3 9.7 7.7l-4.1 1.2A5.8 5.8 0 0 0 12 6.3c-2.8 0-5.2 2-5.7 4.7L2.2 9.8A9.9 9.9 0 0 1 12 2.2Z" />
+    <path fill="#25C2A0" d="M21.7 10.1c0 4.9-3.3 8.8-7.7 9.7l-1.2-4.1a5.8 5.8 0 0 0 4.8-5.6h4.1Z" />
+    <path fill="#9B6BFF" d="M14 19.8c-4.9 0-8.8-3.3-9.7-7.7l4.1-1.2A5.8 5.8 0 0 0 14 15.7v4.1Z" />
+  </svg>;
+}
+
+function StepModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#7756E8" d="M19.9 4.8A10.4 10.4 0 0 0 12 1.5C6.2 1.5 2.4 5 2.4 8.9c0 2.4 1.6 4 4.8 4.9l5.6 1.6c1.4.4 2 .9 2 1.8 0 1.1-1.1 1.8-3 1.8-2.3 0-4.5-.9-6.4-2.4L3.1 20c2.4 1.7 5.2 2.5 8.6 2.5 5.7 0 9.9-3.2 9.9-7.6 0-2.8-1.7-4.6-5.2-5.6l-5.5-1.5c-1.2-.3-1.7-.8-1.7-1.5 0-.9.9-1.5 2.6-1.5 1.7 0 3.5.6 5.5 1.8l2.6-1.8Z" />
+  </svg>;
+}
+
+function YiModelMark({ size = 16, className }: IconProps) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="currentColor" d="M4 4h5.1v16H4zM11.4 4H16c2.6 0 4.2 1.4 4.2 3.7 0 1.5-.8 2.6-2.1 3.1 1.7.5 2.7 1.7 2.7 3.5 0 2.7-1.9 4.4-4.9 4.4h-4.5V4Zm4.2 3.1v2.4h.6c.8 0 1.3-.5 1.3-1.2 0-.8-.5-1.2-1.3-1.2h-.6Zm0 5.4v3.1h.8c1 0 1.6-.6 1.6-1.5s-.6-1.6-1.6-1.6h-.8Z" />
+    <path fill="#F08A24" d="M2.5 2.5h5v2.2h-5zm14 17.8h5v1.2h-5z" />
+  </svg>;
+}
+
+export function ModelAvatarMark({ model, size = 16, className }: IconProps & { model: string }) {
+  switch (model) {
+    case "model-openai": return <CodexMark size={size} className={className} />;
+    case "model-claude": return <ClaudeMark size={size} className={className} />;
+    case "model-gemini": return <GeminiMark size={size} className={className} />;
+    case "model-grok": return <GrokMark size={size} className={className} />;
+    case "model-deepseek": return <DeepSeekMark size={size} className={className} />;
+    case "model-glm": return <ZhipuMark size={size} className={className} />;
+    case "model-qwen": return <QwenMark size={size} className={className} />;
+    case "model-kimi": return <MoonshotMark size={size} className={className} />;
+    case "model-mistral": return <MixtralModelMark size={size} className={className} />;
+    case "model-llama": return <LlamaModelMark size={size} className={className} />;
+    case "model-phi": return <PhiModelMark size={size} className={className} />;
+    case "model-cohere": return <CommandRModelMark size={size} className={className} />;
+    case "model-minimax": return <MiniMaxModelMark size={size} className={className} />;
+    case "model-baichuan": return <BaichuanModelMark size={size} className={className} />;
+    case "model-internlm": return <InternLMModelMark size={size} className={className} />;
+    case "model-hunyuan": return <HunyuanModelMark size={size} className={className} />;
+    case "model-stepfun": return <StepModelMark size={size} className={className} />;
+    case "model-yi": return <YiModelMark size={size} className={className} />;
+    default: return <CodexMark size={size} className={className} />;
+  }
+}
+
 export function ComputerMark({ size = 16, className }: IconProps) {
   return <Monitor size={size} className={cn("text-ink-secondary", className)} />;
 }
@@ -116,6 +236,26 @@ export function ProviderMark({ vendor, size, className, ...hint }: ProviderMarkP
       return <QwenMark size={size} className={className} />;
     case "moonshot":
       return <MoonshotMark size={size} className={className} />;
+    case "mistral":
+      return <MistralMark size={size} className={className} />;
+    case "meta":
+      return <MetaMark size={size} className={className} />;
+    case "microsoft":
+      return <MicrosoftMark size={size} className={className} />;
+    case "cohere":
+      return <CohereMark size={size} className={className} />;
+    case "minimax":
+      return <MiniMaxMark size={size} className={className} />;
+    case "baichuan":
+      return <BaichuanMark size={size} className={className} />;
+    case "internlm":
+      return <InternLMMark size={size} className={className} />;
+    case "tencent":
+      return <TencentMark size={size} className={className} />;
+    case "stepfun":
+      return <StepFunMark size={size} className={className} />;
+    case "yi":
+      return <YiMark size={size} className={className} />;
     case "computer":
       return <ComputerMark size={size} className={className} />;
     default:

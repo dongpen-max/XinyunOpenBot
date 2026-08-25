@@ -50,6 +50,12 @@ export function computerMcpConfig(turn) {
                 ...NODE_ENV_FLAG,
                 OGB_BOX_ID: turn.integrations.computer.boxId,
                 OGB_BOX_TOKEN: turn.integrations.computer.token,
+                ...(turn.integrations.computer.control
+                    ? {
+                        OMB_CONTROL_URL: turn.integrations.computer.control.url,
+                        OMB_CONTROL_TOKEN: turn.integrations.computer.control.token,
+                    }
+                    : {}),
                 // Some OpenAI-compatible Claude gateways time out on full desktop
                 // frames. 512px preserves usable coordinates while keeping vision
                 // payloads inside their practical limit. CLI drivers keep 1280px.

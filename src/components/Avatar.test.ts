@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MASCOT_SHAPES, mascotShape, mascotUsesEyesOnly } from "./Avatar";
+import { MASCOT_SHAPES, mascotShape, mascotUsesEyesOnly, PROVIDER_AVATAR_OPTIONS, isProviderAvatar, resolveAvatarShape } from "./Avatar";
 
 describe("mascot shape catalogue", () => {
   it("contains unique and resolvable shape ids", () => {
@@ -46,5 +46,18 @@ describe("mascot shape catalogue", () => {
     expect(mascotShape("blob").name).toBe("drop");
     expect(mascotShape("diamond").name).toBe("crystal");
     expect(mascotShape("shield").name).toBe("crystal");
+  });
+
+  it("offers local vector marks for the major AI providers", () => {
+    expect(PROVIDER_AVATAR_OPTIONS.length).toBeGreaterThanOrEqual(18);
+    expect(new Set(PROVIDER_AVATAR_OPTIONS.map(({ id }) => id)).size).toBe(PROVIDER_AVATAR_OPTIONS.length);
+    expect(PROVIDER_AVATAR_OPTIONS.every(({ id }) => isProviderAvatar(id))).toBe(true);
+    expect(isProviderAvatar("cursor")).toBe(false);
+  });
+
+  it("keeps model and mascot avatar selections independent", () => {
+    expect(resolveAvatarShape({ avatarKind: "mascot", mascotShape: "drop", modelAvatar: "model-kimi" })).toBe("drop");
+    expect(resolveAvatarShape({ avatarKind: "model", mascotShape: "drop", modelAvatar: "model-kimi" })).toBe("model-kimi");
+    expect(resolveAvatarShape({ mascotShape: "model-grok" })).toBe("model-grok");
   });
 });

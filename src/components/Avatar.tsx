@@ -11,9 +11,12 @@ import {
   useImperativeHandle,
   useRef,
   useState,
+  useId,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { MAUS_COLORS, type MausColor, type MausMotion, type MausState } from "@/lib/mascot";
+import { ModelAvatarMark } from "./ProviderIcons";
+import type { ModelVendor } from "@/lib/model-vendor";
 import { CursorAvatar, SHAPE, type CursorAvatarHandle, type CursorShape } from "./CursorAvatar";
 import { ANIMAL_MASCOT_SHAPES, type AnimalMausShape } from "./animalMascotShapes";
 
@@ -39,7 +42,34 @@ export type MausShape =
   | "comet"
   | "shield"
   | "star"
+  | ProviderAvatarId
   | AnimalMausShape;
+
+/** Static local model marks. Keeping these as vector primitives avoids a
+ * network dependency and preserves the model's original artwork and colors. */
+export type ModelAvatarId =
+  | "model-openai"
+  | "model-claude"
+  | "model-gemini"
+  | "model-grok"
+  | "model-deepseek"
+  | "model-glm"
+  | "model-qwen"
+  | "model-kimi"
+  | "model-mistral"
+  | "model-llama"
+  | "model-phi"
+  | "model-cohere"
+  | "model-minimax"
+  | "model-baichuan"
+  | "model-internlm"
+  | "model-hunyuan"
+  | "model-stepfun"
+  | "model-yi";
+
+/** @deprecated Kept as a type alias for workspaces created during the first
+ * branding preview. New selections use model-* ids. */
+export type ProviderAvatarId = ModelAvatarId;
 
 export type MascotShapeCategory = "base" | "animal";
 
@@ -152,6 +182,86 @@ export const BASE_MASCOT_SHAPES: MascotShapeOption[] = [
   },
 ];
 
+/**
+ * Reference-only Grok Bot mark used by the avatar picker in Basic settings.
+ * It intentionally stays separate from CursorAvatar so the rest of the app
+ * keeps its existing renderer and motion behaviour.
+ */
+const REFERENCE_GROK_COLORS: Record<MausColor, [string, string]> = {
+  green: ["#00c972", "#009957"],
+  blue: ["#2a92fe", "#0e74e0"],
+  red: ["#ff3e51", "#e02135"],
+  orange: ["#ff781c", "#ff6700"],
+  yellow: ["#ffaf38", "#ff9800"],
+  cyan: ["#1cc3b0", "#00a592"],
+  purple: ["#a97efe", "#804ee0"],
+  pink: ["#ff5eb1", "#e02a88"],
+  teal: ["#1cc3b0", "#00a592"],
+  coral: ["#ff5e65", "#e02a40"],
+};
+
+const REFERENCE_GROK_SHAPES: Record<string, string> = {
+  blob: "M228.5 114.2c0 15.9-3.4 31.8-9.8 46.3-6.1 13.7-14.8 26.1-25.7 36.5-37.1 35.4-93.6 41.6-137.5 15.3-10.4-6.3-19.8-14.2-27.8-23.4-8.5-9.9-15.4-21.3-20.1-33.5-5.1-13.1-7.7-27.1-7.7-41.1 0-15.9 3.4-31.8 9.8-46.3 6.1-13.7 14.8-26.1 25.7-36.5C72.6-3.9 129-10.1 173 16.2c10.4 6.3 19.8 14.2 27.8 23.4 8.6 9.9 15.4 21.3 20.1 33.5 5.1 13.1 7.6 27.1 7.6 41.1Z",
+  pebble: "M228 114c0 61-51 110-114 110S0 175 0 114 51 4 114 4s114 49 114 110Z",
+  squircle: "M22 60c0-21 17-38 38-38h108c21 0 38 17 38 38v108c0 21-17 38-38 38H60c-21 0-38-17-38-38V60Z",
+  tablet: "M40 40h148c28 0 50 22 50 50v48c0 28-22 50-50 50H40c-28 0-50-22-50-50V90c0-28 22-50 50-50Z",
+  wedge: "M114 0 228 198H0L114 0Z",
+  hex: "M114 0 213 57v114l-99 57-99-57V57L114 0Z",
+  cloud: "M47 185c-26 0-47-21-47-47s21-47 47-47c9-28 35-47 67-47 36 0 65 28 69 63 25 0 45 18 45 41s-20 37-45 37H47Z",
+  teardrop: "M114 0c15 25 70 82 70 128 0 51-31 86-70 86s-70-35-70-86C44 82 99 25 114 0Z",
+};
+
+const REFERENCE_SHAPE_ALIASES: Record<string, string> = {
+  cursor: "blob",
+  orb: "pebble",
+  block: "squircle",
+  capsule: "tablet",
+  triangle: "wedge",
+  crystal: "hex",
+  cloud: "cloud",
+  drop: "teardrop",
+};
+
+export function ReferenceGrokAvatar({
+  color = "green",
+  shape = "blob",
+  size = 42,
+  label,
+}: {
+  color?: MausColor;
+  shape?: MausShape | string | null;
+  size?: number;
+  label?: string;
+}) {
+  const id = useId().replace(/:/g, "");
+  const [light, dark] = REFERENCE_GROK_COLORS[color] ?? REFERENCE_GROK_COLORS.green;
+  const shapeId = normalizeMascotShapeId(shape);
+  const path = REFERENCE_GROK_SHAPES[REFERENCE_SHAPE_ALIASES[shapeId] ?? shapeId] ?? REFERENCE_GROK_SHAPES.blob;
+  return (
+    <svg
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      className="reference-grok-avatar"
+      height={size}
+      role={label ? "img" : undefined}
+      viewBox="0 0 228 228"
+      width={size}
+    >
+      <defs>
+        <linearGradient id={`${id}-grok`} x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stopColor={light} />
+          <stop offset="1" stopColor={dark} />
+        </linearGradient>
+      </defs>
+      <path d={path} fill={`url(#${id}-grok)`} />
+      <g fill="var(--panel, #fff)">
+        <ellipse cx="85" cy="106" rx="10" ry="24" />
+        <ellipse cx="143" cy="106" rx="10" ry="24" />
+      </g>
+    </svg>
+  );
+}
+
 const LEGACY_BASE_SHAPE_ALIASES: Record<string, MausShape> = {
   blob: "drop",
   diamond: "crystal",
@@ -160,6 +270,75 @@ const LEGACY_BASE_SHAPE_ALIASES: Record<string, MausShape> = {
   shield: "crystal",
   star: "crystal",
 };
+
+export type ModelAvatarOption = {
+  id: ModelAvatarId;
+  label: string;
+  vendor: Exclude<ModelVendor, "computer" | "unknown">;
+  /** Black/dark marks receive a small adaptive halo on dark app themes. */
+  contrastOnDark?: boolean;
+};
+
+export const MODEL_AVATAR_OPTIONS: ModelAvatarOption[] = [
+  { id: "model-openai", label: "GPT / Codex", vendor: "openai", contrastOnDark: true },
+  { id: "model-claude", label: "Claude", vendor: "anthropic" },
+  { id: "model-gemini", label: "Gemini", vendor: "google" },
+  { id: "model-grok", label: "Grok", vendor: "xai", contrastOnDark: true },
+  { id: "model-deepseek", label: "DeepSeek", vendor: "deepseek" },
+  { id: "model-glm", label: "GLM", vendor: "zhipu" },
+  { id: "model-qwen", label: "Qwen", vendor: "qwen" },
+  { id: "model-kimi", label: "Kimi", vendor: "moonshot", contrastOnDark: true },
+  { id: "model-mistral", label: "Mixtral", vendor: "mistral" },
+  { id: "model-llama", label: "Llama", vendor: "meta" },
+  { id: "model-phi", label: "Phi", vendor: "microsoft" },
+  { id: "model-cohere", label: "Command R", vendor: "cohere" },
+  { id: "model-minimax", label: "MiniMax-01", vendor: "minimax" },
+  { id: "model-baichuan", label: "Baichuan", vendor: "baichuan", contrastOnDark: true },
+  { id: "model-internlm", label: "InternLM", vendor: "internlm" },
+  { id: "model-hunyuan", label: "Hunyuan", vendor: "tencent" },
+  { id: "model-stepfun", label: "Step", vendor: "stepfun" },
+  { id: "model-yi", label: "Yi", vendor: "yi", contrastOnDark: true },
+];
+
+/** @deprecated Use MODEL_AVATAR_OPTIONS. */
+export const PROVIDER_AVATAR_OPTIONS = MODEL_AVATAR_OPTIONS;
+
+const LEGACY_PROVIDER_AVATAR_ALIASES: Record<string, ModelAvatarId> = {
+  "provider-openai": "model-openai",
+  "provider-anthropic": "model-claude",
+  "provider-gemini": "model-gemini",
+  "provider-grok": "model-grok",
+  "provider-deepseek": "model-deepseek",
+  "provider-qwen": "model-qwen",
+  "provider-kimi": "model-kimi",
+  "provider-glm": "model-glm",
+};
+const MODEL_AVATAR_IDS = new Set<string>(MODEL_AVATAR_OPTIONS.map(({ id }) => id));
+
+export function isModelAvatar(id?: string | null): id is ModelAvatarId {
+  return Boolean(id && MODEL_AVATAR_IDS.has(id));
+}
+
+/** @deprecated Use isModelAvatar. */
+export function isProviderAvatar(id?: string | null): id is ModelAvatarId {
+  return isModelAvatar(LEGACY_PROVIDER_AVATAR_ALIASES[id ?? ""] ?? id);
+}
+
+export type AvatarKind = "mascot" | "model";
+
+/** Resolves the independently persisted mascot/model selections to the mark
+ * that should be rendered. Legacy model-* mascotShape values remain valid. */
+export function resolveAvatarShape(profile: {
+  mascotShape?: MausShape | string | null;
+  avatarKind?: AvatarKind | string | null;
+  modelAvatar?: ModelAvatarId | string | null;
+}): MausShape {
+  const legacyShape = normalizeMascotShapeId(profile.mascotShape);
+  if (profile.avatarKind === "model" || (profile.avatarKind == null && isModelAvatar(legacyShape))) {
+    return isModelAvatar(profile.modelAvatar) ? profile.modelAvatar : isModelAvatar(legacyShape) ? legacyShape : "model-openai";
+  }
+  return isModelAvatar(legacyShape) ? "cursor" : legacyShape;
+}
 
 export const MASCOT_SHAPES: MascotShapeOption[] = [
   ...BASE_MASCOT_SHAPES,
@@ -170,7 +349,7 @@ const SHAPES_BY_ID = new Map(MASCOT_SHAPES.map((entry) => [entry.id, entry.shape
 
 export function normalizeMascotShapeId(id?: string | null): MausShape {
   const candidate = id ?? "cursor";
-  return (LEGACY_BASE_SHAPE_ALIASES[candidate] ?? candidate) as MausShape;
+  return (LEGACY_BASE_SHAPE_ALIASES[candidate] ?? LEGACY_PROVIDER_AVATAR_ALIASES[candidate] ?? candidate) as MausShape;
 }
 
 export function mascotShape(id?: string | null): CursorShape {
@@ -250,9 +429,37 @@ const gradientFor = (color: MausColor): [string, string, string] => {
 
 export type MausAvatarHandle = CursorAvatarHandle;
 
+function ModelAvatar({
+  id,
+  size,
+  label,
+}: {
+  id: ModelAvatarId;
+  size: number;
+  label?: string;
+}) {
+  const option = MODEL_AVATAR_OPTIONS.find((entry) => entry.id === id) ?? MODEL_AVATAR_OPTIONS[0];
+  return (
+    <span
+      className="model-avatar"
+      style={{ width: size, height: size }}
+      role={label ? "img" : undefined}
+      aria-label={label}
+    >
+      <ModelAvatarMark
+        model={option.id}
+        size={Math.round(size * 0.74)}
+        className={option.contrastOnDark ? "model-avatar__mark model-avatar__mark--contrast" : "model-avatar__mark"}
+      />
+    </span>
+  );
+}
+
 export type MausAvatarProps = {
   color: MausColor;
   shape?: MausShape | string | null;
+  /** Optional user-supplied avatar image stored as a validated data URL. */
+  image?: string | null;
   /** Named behaviour — drives the expression pool, its cadence and blinking. */
   state?: MausState;
   /** Pin one of the 25 faces and stop the state's own drift. */
@@ -288,6 +495,7 @@ function MausAvatarComponent(
   {
     color,
     shape,
+    image,
     state = "idle",
     expression,
     size = 44,
@@ -341,6 +549,26 @@ function MausAvatarComponent(
   const onPointerLeave = () => setPointer({ x: 0, y: 0 });
   const resolvedShapeId = normalizeMascotShapeId(shape);
   const eyesOnly = mascotUsesEyesOnly(resolvedShapeId);
+
+  if (image) {
+    return (
+      <span
+        className="model-avatar inline-flex shrink-0 overflow-hidden rounded-full"
+        style={{ width: size, height: size }}
+      >
+        <img
+          src={image}
+          alt={label ?? ""}
+          className="size-full object-cover"
+          draggable={false}
+        />
+      </span>
+    );
+  }
+
+  if (isModelAvatar(resolvedShapeId)) {
+    return <ModelAvatar id={resolvedShapeId} size={size} label={label} />;
+  }
 
   return (
     <span

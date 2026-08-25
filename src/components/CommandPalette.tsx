@@ -96,6 +96,9 @@ export function CommandPalette() {
       if (targetBot && targetBot.threadId !== entry.hit.threadId) {
         dispatch({ type: "switchTask", botId: targetBot.id, threadId: entry.hit.threadId });
       }
+      // Keep the target alive across the async task switch. ChatView consumes
+      // it once the matching transcript is mounted and opens the exact row.
+      dispatch({ type: "focusMessage", threadId: entry.hit.threadId, messageId: entry.hit.messageId });
     } else {
       dispatch({ type: "select", id: entry.kind === "bot" ? entry.bot.id : entry.group.id });
     }

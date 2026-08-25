@@ -441,6 +441,7 @@ export function GroupCallOverlay({
               >
                 <MausAvatar
                   color={member.color}
+                  image={member.avatarImage}
                   shape={member.mascotShape}
                   state={avatarState}
                   size={76}

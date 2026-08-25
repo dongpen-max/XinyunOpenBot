@@ -16,12 +16,17 @@ export interface TimelineEvent {
   kind: "task" | "tool" | "screen" | "result";
 }
 
+function compactLabel(text: string, fallback: string): string {
+  const value = text.replace(/\s+/g, " ").trim();
+  return value ? `${fallback}：${value.length > 34 ? `${value.slice(0, 33)}…` : value}` : fallback;
+}
+
 /** Derive only persisted, observable events; the timeline never guesses. */
 export function timelineEvents(messages: TimelineMessage[]): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   for (const message of messages) {
     if (message.kind === "text" && message.role === "user" && message.text?.trim()) {
-      events.push({ id: message.id, at: message.at, label: "任务开始", state: "observed", kind: "task" });
+      events.push({ id: message.id, at: message.at, label: compactLabel(message.text, "任务开始"), state: "observed", kind: "task" });
     } else if (message.kind === "activity" && message.tool) {
       const failed = message.tool.ok === false || message.tool.name.startsWith("error:");
       events.push({
@@ -34,7 +39,7 @@ export function timelineEvents(messages: TimelineMessage[]): TimelineEvent[] {
     } else if (message.kind === "screen") {
       events.push({ id: message.id, at: message.at, label: "观察云电脑画面", state: "observed", kind: "screen" });
     } else if (message.kind === "text" && message.role === "bot" && message.text?.trim()) {
-      events.push({ id: message.id, at: message.at, label: "回复完成", state: "complete", kind: "result" });
+      events.push({ id: message.id, at: message.at, label: compactLabel(message.text, "回复完成"), state: "complete", kind: "result" });
     }
   }
   return events;

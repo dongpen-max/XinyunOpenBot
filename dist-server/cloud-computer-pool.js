@@ -6,7 +6,8 @@
 export class CloudComputerLeasePool {
     tails = new Map();
     queued = new Map();
-    async acquire(boxId, onWait, signal) {
+    owners = new Map();
+    async acquire(boxId, onWait, signal, meta) {
         if (signal?.aborted)
             throw new Error("cloud computer queue cancelled");
         const previous = this.tails.get(boxId) ?? Promise.resolve();
@@ -44,6 +45,8 @@ export class CloudComputerLeasePool {
                 signal.removeEventListener("abort", abortListener);
         }
         let released = false;
+        const ownerSinceMs = Date.now();
+        this.owners.set(boxId, { ...meta, sinceMs: ownerSinceMs });
         return () => {
             if (released)
                 return;
@@ -54,6 +57,8 @@ export class CloudComputerLeasePool {
             else
                 this.queued.delete(boxId);
             unlock();
+            if (this.owners.get(boxId)?.sinceMs === ownerSinceMs)
+                this.owners.delete(boxId);
             void tail.finally(() => {
                 if (this.tails.get(boxId) === tail)
                     this.tails.delete(boxId);
@@ -62,6 +67,18 @@ export class CloudComputerLeasePool {
     }
     isBusy(boxId) {
         return (this.queued.get(boxId) ?? 0) > 0;
+    }
+    status(boxId) {
+        const queued = this.queued.get(boxId) ?? 0;
+        const hasOwner = this.owners.has(boxId);
+        return {
+            busy: queued > 0 || hasOwner,
+            // `queued` includes the active lease. During the tiny hand-off window
+            // before the owner record is installed, report the sole entry as active
+            // rather than exposing a phantom waiter.
+            waiting: Math.max(0, queued - (hasOwner || queued === 1 ? 1 : 0)),
+            owner: this.owners.get(boxId) ?? null,
+        };
     }
 }
 export const cloudComputerLeases = new CloudComputerLeasePool();

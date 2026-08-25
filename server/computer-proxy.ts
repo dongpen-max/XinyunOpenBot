@@ -694,7 +694,13 @@ async function call(id: unknown, name: string, args: any) {
       !requestId,
     );
   }
-  if ((await controlState()).held) return text(id, COMPUTER_CONTROL_REFUSAL, true);
+  if ((await controlState()).held) {
+    // A manual takeover pauses the turn at the tool boundary instead of
+    // converting a recoverable hand-off into a terminal tool error. Once the
+    // user releases (or the safety timeout expires), the original tool call
+    // continues and the model can resume its task on the same Box lease.
+    if ((await waitForHumanRelease()) === "timeout") return text(id, COMPUTER_CONTROL_REFUSAL, true);
+  }
   if (name === "screenshot") {
     let crop: CropRegion | null = null;
     if (args.region !== undefined) {

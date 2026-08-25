@@ -20,9 +20,9 @@ import type { CloudDesktopBounds, CloudDesktopState } from "@/types/ogb";
 const labels: Record<CloudDesktopState["state"], string> = {
   connecting: "正在连接",
   ready: "已连接",
-  reconnecting: "正在重新连接",
-  failed: "连接失败",
-  closed: "已关闭",
+  reconnecting: "可恢复 · 正在重连",
+  failed: "已失败",
+  closed: "连接断开",
 };
 
 function sameBounds(a: CloudDesktopBounds | null, b: CloudDesktopBounds) {
@@ -44,6 +44,14 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const control = state.computerControl[bot.id] ?? { held: false, helpReason: null };
   const [controlPending, setControlPending] = useState(false);
+  const releaseControl = useCallback(() => {
+    void fetch(`/api/bots/${bot.id}/computer/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "release" }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [bot.id]);
   const noDrag = window.ogb?.platform === "win32"
     ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties)
     : undefined;
@@ -66,7 +74,14 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
 
     let alive = true;
     const unsubscribe = bridge.onState((next) => {
-      if (alive && (!next.botId || next.botId === bot.id)) setDesktop(next);
+      if (alive && (!next.botId || next.botId === bot.id)) {
+        setDesktop(next);
+        // A dropped noVNC/native bridge must not strand a server-side human
+        // lease. Releasing is idempotent and the server remains authoritative.
+        if (next.state === "failed" || next.state === "closed") {
+          releaseControl();
+        }
+      }
     });
     void bridge.open(bot.id).then((result) => {
       if (alive && !result.ok) {
@@ -84,9 +99,10 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
       alive = false;
       unsubscribe();
       window.removeEventListener("beforeunload", closeOnUnload);
+      releaseControl();
       void bridge.close();
     };
-  }, [bot.id, bridge]);
+  }, [bot.id, bridge, releaseControl]);
 
   useEffect(() => {
     if (!bridge) return;
@@ -121,9 +137,10 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
     try {
       await bridge?.close();
     } finally {
+      releaseControl();
       dispatch({ type: "closeCloudDesktop" });
     }
-  }, [bridge, dispatch]);
+  }, [bridge, dispatch, releaseControl]);
 
   const reconnect = async () => {
     if (!bridge) return;
@@ -168,6 +185,7 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
       const result = await bridge.openInBrowser(bot.id);
       if (!result.ok) throw new Error();
       await bridge.close();
+      releaseControl();
       dispatch({ type: "closeCloudDesktop" });
     } catch {
       setActionError("无法在默认浏览器中打开云端桌面");
@@ -188,6 +206,7 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
     setActionError(null);
     try {
       await bridge?.close();
+      releaseControl();
       const response = await fetch(`/api/bots/${bot.id}/computer/sleep`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -218,6 +237,7 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
         held: snapshot?.held === true,
         helpReason: typeof snapshot?.helpReason === "string" ? snapshot.helpReason : null,
         heldSinceMs: typeof snapshot?.heldSinceMs === "number" ? snapshot.heldSinceMs : null,
+        ownerBotId: typeof snapshot?.ownerBotId === "string" ? snapshot.ownerBotId : null,
       });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "云电脑控制权操作失败");
@@ -341,7 +361,15 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
             <div className="absolute left-3 right-3 top-3 z-10 flex items-center gap-2 rounded-lg border border-accent/30 bg-[#101722]/95 px-3 py-2 text-[12px] text-white shadow-lg">
               <Hand size={14} className="shrink-0 text-accent" />
               <span className="min-w-0 flex-1 truncate">
-                {control.held ? "你正在接管云电脑，机器人操作已暂停" : `机器人请求接管：${control.helpReason}`}
+                {controlPending
+                  ? control.held
+                    ? "释放中：正在交还控制权…"
+                    : "正在接管云电脑…"
+                  : control.held
+                  ? control.ownerBotId
+                    ? `${state.bots.find((candidate) => candidate.id === control.ownerBotId)?.name ?? "其他 Bot"} 正在等待你的操作，机器人输入已暂停`
+                    : "你正在接管云电脑，机器人操作已暂停"
+                  : `机器人请求接管：${control.helpReason}`}
               </span>
               {control.held ? (
                 <button
@@ -365,13 +393,14 @@ export function CloudDesktopView({ bot }: { bot: Bot }) {
           {(busy || sleeping) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-ink-secondary">
               <Loader2 size={22} className="animate-spin" />
-              <span className="text-[13px]">{sleeping ? "正在休眠云电脑…" : labels[desktop.state]}</span>
+              <span className="text-[13px]">{sleeping ? "释放中：正在关闭云电脑…" : labels[desktop.state]}</span>
             </div>
           )}
           {failedMessage && !sleeping && (
             <div className="absolute inset-0 flex items-center justify-center p-4">
               <div className="max-w-md rounded-xl border border-danger/30 bg-danger/10 px-5 py-4 text-center">
                 <div className="text-[14px] font-medium text-danger">{failedMessage}</div>
+                <div className="mt-1 text-[12px] text-ink-secondary">连接状态：已失败，可恢复</div>
                 <button
                   onClick={() => void reconnect()}
                   disabled={!bridge}

@@ -240,7 +240,7 @@ function StackedMauses({ members, compact = false }: { members: Bot[]; compact?:
     const b = members[0];
     return (
       <div className="flex size-12 shrink-0 items-center justify-center">
-        {b ? <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={compact ? 44 : 48} /> : <Users size={22} className="text-ink-secondary" />}
+        {b ? <MausAvatar color={b.color} image={b.avatarImage} shape={b.mascotShape} state="happy" size={compact ? 44 : 48} /> : <Users size={22} className="text-ink-secondary" />}
       </div>
     );
   }
@@ -250,7 +250,7 @@ function StackedMauses({ members, compact = false }: { members: Bot[]; compact?:
     <div className="flex size-12 shrink-0 items-center justify-center">
       <div className={cn("flex items-center", compact ? "-space-x-3.5" : "-space-x-3")}>
         {shown.map((b) => (
-          <MausAvatar key={b.id} color={b.color} shape={b.mascotShape} state="happy" size={compact ? 25 : 28} />
+          <MausAvatar key={b.id} color={b.color} image={b.avatarImage} shape={b.mascotShape} state="happy" size={compact ? 25 : 28} />
         ))}
         {extra > 0 && (
           <span className="z-10 flex size-[22px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[10px] font-medium text-ink-secondary">
@@ -409,7 +409,7 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
               onClick={() => toggle(b.id)}
               className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-raised/50"
             >
-              <MausAvatar color={b.color} shape={b.mascotShape} state="happy" size={28} />
+              <MausAvatar color={b.color} image={b.avatarImage} shape={b.mascotShape} state="happy" size={28} />
               <span className="min-w-0 flex-1 truncate text-[14px] text-ink">{b.name}</span>
               <span
                 className={cn(
@@ -571,6 +571,7 @@ function BotListItem({ bot, onMenu, compact = false }: { bot: Bot; onMenu: (menu
     >
       <MausAvatar
         color={bot.color}
+        image={bot.avatarImage}
         shape={bot.mascotShape}
         state={stateForBot({ ...bot, messages: visible })}
         size={compact ? 46 : 48}

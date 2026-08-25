@@ -4,7 +4,7 @@
 // stays the single owner of turns, permissions, and recursion limits:
 //
 //   list_bots()            → the other bots in this workspace + their status
-//   ask_bot(bot_id, msg)   → send msg to that bot, wait, return its reply
+//   ask_bot(bot_id, msg)   → enqueue an asynchronous handoff to that bot
 //
 // Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
 // computer-proxy / permission-proxy). All state comes from env, injected by
@@ -13,11 +13,25 @@
 //   OMB_BOT_ID       the calling bot's id (excluded from list_bots; sender)
 //   OMB_COMMS_TOKEN  shared secret for the localhost-only internal endpoints
 //   OMB_TURN_DEPTH   this turn's comms depth (the harness refuses recursion)
+//   OMB_ROOT_TURN_ID / OMB_SOURCE_TURN_ID / OMB_HANDOFF_COUNT / OMB_VISITED_BOTS
+//                    correlation and cycle-budget metadata for this turn
 import readline from "node:readline";
 const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
+const ROOT_TURN_ID = process.env.OMB_ROOT_TURN_ID ?? "";
+const SOURCE_TURN_ID = process.env.OMB_SOURCE_TURN_ID ?? "";
+const HANDOFF_COUNT = Number(process.env.OMB_HANDOFF_COUNT ?? "0") || 0;
+let VISITED_BOTS = [];
+try {
+    const parsed = JSON.parse(process.env.OMB_VISITED_BOTS ?? "[]");
+    if (Array.isArray(parsed))
+        VISITED_BOTS = parsed.filter((id) => typeof id === "string");
+}
+catch {
+    VISITED_BOTS = [];
+}
 const TOOLS = [
     {
         name: "list_bots",
@@ -26,7 +40,7 @@ const TOOLS = [
     },
     {
         name: "ask_bot",
-        description: "Send a message to another bot in this workspace and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text. Returns promptly with a note if that bot is busy.",
+        description: "Hand off a task to another bot in this workspace. The other bot runs asynchronously under its own model and permissions; this returns a handoff id immediately. Continue your work; the result is posted to the shared bot channel when complete.",
         inputSchema: {
             type: "object",
             properties: {
@@ -71,13 +85,24 @@ async function callTool(name, args) {
             return { text: "ask_bot needs bot_id and message.", isError: true };
         const r = await api(`/api/internal/ask-bot`, {
             method: "POST",
-            body: JSON.stringify({ fromBotId: BOT_ID, toBotId, message, depth: DEPTH }),
+            body: JSON.stringify({
+                fromBotId: BOT_ID,
+                toBotId,
+                message,
+                depth: DEPTH,
+                rootTurnId: ROOT_TURN_ID,
+                sourceTurnId: SOURCE_TURN_ID,
+                handoffCount: HANDOFF_COUNT,
+                visitedBots: VISITED_BOTS,
+            }),
         });
-        if (r.busy)
-            return { text: `That bot is busy right now — try again after it finishes.` };
         if (r.error)
             return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
-        return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
+        if (r.busy)
+            return { text: `That bot is busy right now — the handoff will be queued.`, isError: false };
+        if (r.text)
+            return { text: `${r.botName ?? "Bot"} replied:\n${r.text}` };
+        return { text: `已将任务异步交给 ${r.botName ?? "Bot"}，handoffId=${r.handoffId ?? "unknown"}。请继续当前工作，结果会在共享协作频道中回传。` };
     }
     return { text: `Unknown tool: ${name}`, isError: true };
 }

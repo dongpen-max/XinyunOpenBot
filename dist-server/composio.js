@@ -1,5 +1,7 @@
+import { PUBLIC_TOOLKIT_CATALOG } from "./composio-public-catalog.js";
 const CONNECT_URL = "https://connect.composio.dev/mcp";
 const BACKEND_URL = "https://backend.composio.dev/api/v3";
+const PUBLIC_TOOLKITS_URL = "https://docs.composio.dev/toolkits";
 function parseMcpResponse(text) {
     // Streamable-HTTP servers answer JSON or SSE (`data: {...}` lines).
     const line = text.startsWith("{")
@@ -113,37 +115,113 @@ let toolkitCache = null;
  * Marketplace catalog. Tries the v3 toolkits API (official names,
  * descriptions, logos — cached 10 min); falls back to the curated list.
  */
+function decodeHtml(value) {
+    return value
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">");
+}
+/**
+ * Composio publishes its complete toolkit index as a public documentation
+ * page. It is a useful last-resort catalog: it does not expose connection
+ * state or tool schemas, but it lets the UI show every available app even
+ * when a project API key is missing, expired, or not accepted by the v3 API.
+ */
+export function parsePublicToolkitCatalog(html) {
+    const cards = [];
+    const seen = new Set();
+    const anchor = /<a\b[^>]*href="\/toolkits\/([a-z0-9][a-z0-9_-]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+    for (const match of html.matchAll(anchor)) {
+        const slug = match[1].toLowerCase();
+        if (seen.has(slug))
+            continue;
+        const body = match[2];
+        const text = decodeHtml(body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+        // The first visible text is the toolkit's display name. Some pages put a
+        // tool count after it; keep that out of the card title.
+        const label = text.split(/\s+\d+\s*$/)[0].trim() || slug.replace(/[_-]+/g, " ");
+        seen.add(slug);
+        cards.push({
+            slug,
+            label,
+            blurb: "Composio toolkit",
+            logo: `https://logos.composio.dev/api/${slug}`,
+            domain: null,
+        });
+    }
+    return cards;
+}
+async function publicToolkitCatalog() {
+    const res = await fetch(PUBLIC_TOOLKITS_URL, {
+        headers: { accept: "text/html" },
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok)
+        throw new Error(`public toolkit index HTTP ${res.status}`);
+    return parsePublicToolkitCatalog(await res.text());
+}
 export async function listToolkits(cfg) {
     if (toolkitCache && Date.now() - toolkitCache.at < 10 * 60_000) {
         return { cards: toolkitCache.cards, source: "api" };
     }
-    const backendKey = cfg.composio?.apiKey ?? cfg.composio?.key;
+    // The Connect consumer key (ck_…) authenticates connection management but
+    // is not a project API key for the backend catalog. Only send the optional
+    // catalog key here; otherwise use the complete public snapshot immediately.
+    const backendKey = cfg.composio?.apiKey;
+    let apiDiagnostic;
     if (backendKey) {
-        try {
-            const res = await fetch(`${BACKEND_URL}/toolkits?limit=500&sort_by=usage`, {
-                headers: { "x-api-key": backendKey },
-                signal: AbortSignal.timeout(15_000),
-            });
-            if (res.ok) {
+        // Different Composio deployments have used both x-api-key and Bearer
+        // authentication. Try both without ever returning the key to the UI.
+        for (const headers of [{ "x-api-key": backendKey }, { authorization: `Bearer ${backendKey}` }]) {
+            try {
+                const res = await fetch(`${BACKEND_URL}/toolkits?limit=500&sort_by=usage`, {
+                    headers,
+                    signal: AbortSignal.timeout(15_000),
+                });
+                if (!res.ok) {
+                    apiDiagnostic = `Composio 目录接口 HTTP ${res.status}`;
+                    continue;
+                }
                 const json = await res.json();
-                const items = json.items ?? json.data ?? [];
+                const items = json.items ?? json.data ?? json.toolkits ?? [];
                 if (Array.isArray(items) && items.length) {
-                    const cards = items.map((t) => ({
+                    const cards = items
+                        .map((t) => ({
                         slug: (t.slug ?? t.key ?? t.name ?? "").toLowerCase(),
                         label: t.name ?? t.slug ?? "",
                         blurb: (t.meta?.description ?? t.description ?? "").slice(0, 90),
                         logo: t.meta?.logo ?? t.logo ?? null,
                         domain: null,
-                    }));
-                    toolkitCache = { at: Date.now(), cards };
-                    return { cards, source: "api" };
+                    }))
+                        .filter((t) => t.slug && t.label);
+                    if (cards.length) {
+                        toolkitCache = { at: Date.now(), cards };
+                        return { cards, source: "api" };
+                    }
+                    apiDiagnostic = "Composio 目录接口返回空列表";
                 }
             }
-        }
-        catch {
-            /* fall through to curated */
+            catch (error) {
+                apiDiagnostic = error instanceof Error ? error.message : String(error);
+            }
         }
     }
-    return { cards: CURATED, source: "curated" };
+    // Keep the app useful in packaged/offline environments too. The runtime
+    // Node process may not have the user's browser proxy, so the checked-in
+    // public snapshot is preferred over silently shrinking to 24 curated apps.
+    if (PUBLIC_TOOLKIT_CATALOG.length) {
+        return { cards: PUBLIC_TOOLKIT_CATALOG, source: "snapshot", diagnostic: apiDiagnostic };
+    }
+    try {
+        const cards = await publicToolkitCatalog();
+        if (cards.length)
+            return { cards, source: "public", diagnostic: apiDiagnostic };
+    }
+    catch (error) {
+        apiDiagnostic ??= error instanceof Error ? error.message : String(error);
+    }
+    return { cards: CURATED, source: "curated", diagnostic: apiDiagnostic };
 }
 export const CURATED_SLUGS = CURATED.map((c) => c.slug);

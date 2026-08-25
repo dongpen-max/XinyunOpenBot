@@ -15,6 +15,8 @@ import {
   Monitor,
   Pencil,
   RefreshCw,
+  Reply,
+  Search,
   Square,
   X,
 } from "lucide-react";
@@ -36,13 +38,15 @@ import { voiceSpeaker } from "@/lib/voice/speaker";
 import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/lib/transcript-window";
 import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
 import { timelineEvents } from "@/lib/taskTimeline";
+import { ReplyQuote } from "./ReplyPreview";
+import type { ReplyReference } from "@/state/store";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
 
-function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }) {
+function TaskTimeline({ messages, busy, onJump }: { messages: Message[]; busy: boolean; onJump: (messageId: string) => void }) {
   const [open, setOpen] = useState(false);
   const events = useMemo(() => timelineEvents(messages), [messages]);
   if (events.length === 0) return null;
@@ -52,11 +56,13 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
         <span className="flex items-center gap-1.5"><ListTree size={14} /> 执行时间线{busy ? " · 执行中" : ""}</span>
         <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
       </button>
-      {open && <ol className="ml-2 border-l border-hairline/40 pb-2 pl-3">
-        {events.slice(-10).map((event) => <li key={event.id} className="relative flex items-center gap-2 py-1 text-[12px] text-ink-secondary">
+      {open && <ol className="ml-2 max-h-56 overflow-y-auto border-l border-hairline/40 pb-2 pl-3">
+        {events.slice(-24).map((event) => <li key={event.id} className="relative py-0.5">
           <span className={cn("absolute -left-[17px] size-2 rounded-full", event.state === "failed" ? "bg-danger" : event.state === "complete" ? "bg-success" : "bg-ink-secondary")} />
-          <span className="truncate">{event.label}</span>
-          <time className="ml-auto shrink-0 text-[11px] text-ink-secondary/70">{formatTime(event.at)}</time>
+          <button type="button" onClick={() => onJump(event.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-ink-secondary hover:bg-raised/60 hover:text-ink">
+            <span className="min-w-0 flex-1 truncate">{event.label}</span>
+            <time className="shrink-0 text-[11px] text-ink-secondary/70">{formatTime(event.at)}</time>
+          </button>
         </li>)}
       </ol>}
     </div>
@@ -293,6 +299,7 @@ function Bubble({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  onReply,
 }: {
   bot: Bot;
   message: Message;
@@ -302,6 +309,7 @@ function Bubble({
   onCancelEdit: () => void;
   onSubmitEdit: (text: string) => void;
   onRegenerate?: () => void;
+  onReply: (message: Message) => void;
 }) {
   const { dispatch } = useStore();
   const user = message.role === "user";
@@ -342,6 +350,11 @@ function Bubble({
             <Pencil size={14} />
           </button>
         )}
+        {message.kind === "text" && (
+          <button onClick={() => onReply(message)} aria-label="回复消息" title="回复消息" className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">
+            <Reply size={14} />
+          </button>
+        )}
         {user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         {user && <CopyButton text={text} />}
         <div
@@ -355,6 +368,7 @@ function Bubble({
         >
           {user ? (
             <>
+              {message.replyTo && <ReplyQuote reference={message.replyTo} onOpen={(id) => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId: id })} />}
               {attachedImages && attachedImages.images.length > 0 && (
                 <div className="mb-2 flex flex-wrap justify-end gap-2">
                   {attachedImages.images.map((path) => {
@@ -382,9 +396,12 @@ function Bubble({
               )}
             </>
           ) : (
-            <MessageBoundary fallbackText={text}>
-              <ChatMarkdown text={text} />
-            </MessageBoundary>
+            <>
+              {message.replyTo && <ReplyQuote reference={message.replyTo} onOpen={(id) => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId: id })} />}
+              <MessageBoundary fallbackText={text}>
+                <ChatMarkdown text={text} />
+              </MessageBoundary>
+            </>
           )}
         </div>
         {!user && (
@@ -544,6 +561,8 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  onReply,
+  findMatchId,
 }: {
   bot: Bot;
   messages: Message[];
@@ -554,12 +573,14 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit: () => void;
   onSubmitEdit: (id: string, text: string) => void;
   onRegenerate: () => void;
+  onReply: (message: Message) => void;
+  findMatchId: string | null;
 }) {
   return (
     <>
       {messages.length === 0 && !bot.busy && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
-          <MausAvatar color={bot.color} shape={bot.mascotShape} state="idle" size={64} motion="none" motionKey={0} />
+          <MausAvatar color={bot.color} image={bot.avatarImage} shape={bot.mascotShape} state="idle" size={64} motion="none" motionKey={0} />
           <div className="text-[17px] font-semibold text-ink">{bot.name}</div>
           <div className="max-w-[360px] text-[14px] text-ink-secondary">
             {bot.description || "发送一条消息开始对话。"}
@@ -602,13 +623,19 @@ const MessagesList = memo(function MessagesList({
                   onCancelEdit={onCancelEdit}
                   onSubmitEdit={(text) => onSubmitEdit(m.id, text)}
                   onRegenerate={onRegenerate}
+                  onReply={onReply}
                 />
               );
           }
         })();
         if (!row) return null;
         return (
-          <div key={m.id} className="contents">
+          <div
+            key={m.id}
+            data-message-id={m.id}
+            data-find-current={m.id === findMatchId ? "true" : undefined}
+            className={m.id === findMatchId ? "rounded-xl ring-2 ring-accent/60 ring-offset-2 ring-offset-app" : "contents"}
+          >
             {newDay && <DaySeparator at={m.at} />}
             {row}
           </div>
@@ -629,6 +656,7 @@ export function ChatView({
 }) {
   const { state, dispatch } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
 
   const stream = useStreaming();
   const streaming = stream.streaming[bot.threadId];
@@ -665,6 +693,10 @@ export function ChatView({
     [messages],
   );
   const [callOpen, setCallOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findIndex, setFindIndex] = useState(0);
+  const [jumpMessageId, setJumpMessageId] = useState<string | null>(null);
   const autoSpokenRef = useRef<string | undefined>(lastBotTextId);
   useEffect(() => {
     setCallOpen(false);
@@ -681,7 +713,76 @@ export function ChatView({
 
   // one message at a time may be in edit mode
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [replyTo, setReplyTo] = useState<ReplyReference | null>(null);
   useEffect(() => setEditingId(null), [bot.id]);
+  useEffect(() => setReplyTo(null), [bot.id, bot.threadId]);
+  const chooseReply = useCallback((message: Message) => {
+    if (!message.text || message.kind !== "text") return;
+    setReplyTo({ messageId: message.id, role: message.role, text: message.text, at: message.at, author: message.role === "bot" ? bot.name : "你" });
+  }, [bot.name]);
+  const clearReply = useCallback(() => setReplyTo(null), []);
+  const findMatches = useMemo(() => {
+    const query = findQuery.trim().toLocaleLowerCase();
+    if (!query) return [];
+    return messages.filter((message) => {
+      const searchable = [message.text, message.tool?.name, message.card?.title, message.card?.subtitle]
+        .filter(Boolean)
+        .join("\n")
+        .toLocaleLowerCase();
+      return searchable.includes(query);
+    });
+  }, [findQuery, messages]);
+  const currentFindMessage = findMatches.length ? findMatches[Math.min(findIndex, findMatches.length - 1)] : undefined;
+  useEffect(() => {
+    if (!findOpen) return;
+    findInputRef.current?.focus();
+    findInputRef.current?.select();
+  }, [findOpen]);
+  useEffect(() => {
+    setFindIndex(0);
+  }, [findQuery, bot.id]);
+  useEffect(() => {
+    if (!jumpMessageId || findQuery.trim()) setJumpMessageId(null);
+  }, [findQuery, jumpMessageId]);
+  useEffect(() => {
+    const request = state.messageFocus;
+    if (!request || request.threadId !== bot.threadId) return;
+    const messageIndex = messages.findIndex((message) => message.id === request.messageId);
+    if (messageIndex < 0) return;
+    setJumpMessageId(request.messageId);
+    setFollow(false);
+    setTranscriptWindow({ key: transcriptKey, start: Math.max(0, messageIndex - 20) });
+    dispatch({ type: "clearMessageFocus", nonce: request.nonce });
+  }, [bot.threadId, dispatch, messages, state.messageFocus, transcriptKey]);
+  const targetMessageId = currentFindMessage?.id ?? jumpMessageId;
+  useEffect(() => {
+    if (!targetMessageId) return;
+    const messageIndex = messages.findIndex((message) => message.id === targetMessageId);
+    const visibleStart = transcriptWindow.start;
+    const visibleEnd = visibleStart + windowedMessages.length;
+    if (messageIndex >= 0 && (messageIndex < visibleStart || messageIndex >= visibleEnd)) {
+      setFollow(false);
+      setTranscriptWindow({ key: transcriptKey, start: Math.max(0, messageIndex - 20) });
+      return;
+    }
+    const escapedId = globalThis.CSS?.escape?.(targetMessageId) ?? targetMessageId.replace(/(["\\])/g, "\\$1");
+    const row = document.querySelector(`[data-message-id="${escapedId}"]`);
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [messages, targetMessageId, transcriptKey, transcriptWindow.start, windowedMessages.length]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setFindOpen(true);
+      } else if (event.key === "Escape" && findOpen) {
+        event.preventDefault();
+        setFindOpen(false);
+        setFindQuery("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [findOpen]);
   // stable handler identities — MessagesList is memo'd on them
   const startEdit = useCallback((id: string) => setEditingId(id), []);
   const cancelEdit = useCallback(() => setEditingId(null), []);
@@ -781,6 +882,7 @@ export function ChatView({
         >
           <MausAvatar
             color={bot.color}
+            image={bot.avatarImage}
             shape={bot.mascotShape}
             state={stateForBot({ ...bot, messages })}
             size={28}
@@ -805,6 +907,15 @@ export function ChatView({
           </span>
         </button>
         <div className={cn("flex min-w-0 items-center", compactHeader ? "gap-1" : "gap-2")} style={noDrag}>
+          <button
+            type="button"
+            onClick={() => setFindOpen(true)}
+            className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+            title="搜索聊天记录（Ctrl+F）"
+            aria-label="搜索聊天记录"
+          >
+            <Search size={17} />
+          </button>
           {bot.busy && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
@@ -841,7 +952,7 @@ export function ChatView({
         </div>
       )}
 
-      <TaskTimeline messages={messages} busy={bot.busy ?? false} />
+      <TaskTimeline messages={messages} busy={bot.busy ?? false} onJump={(messageId) => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId })} />
       <HandoffStrip bot={bot} />
 
       {/* Messages */}
@@ -888,6 +999,8 @@ export function ChatView({
             onCancelEdit={cancelEdit}
             onSubmitEdit={submitEdit}
             onRegenerate={regenerate}
+            onReply={chooseReply}
+            findMatchId={targetMessageId}
           />
           {provisioning && workStatus?.kind === "computer" && (
             <div className="flex justify-start">
@@ -932,6 +1045,58 @@ export function ChatView({
 
       {callOpen && <CallOverlay bot={bot} onHangup={() => setCallOpen(false)} />}
 
+      {findOpen && (
+        <div className="absolute right-4 top-14 z-20 flex w-[min(360px,calc(100%-2rem))] items-center gap-1.5 rounded-xl border border-hairline/50 bg-panel/95 p-1.5 shadow-xl backdrop-blur">
+          <Search size={15} className="ml-1 text-ink-secondary" />
+          <input
+            ref={findInputRef}
+            value={findQuery}
+            onChange={(event) => setFindQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setFindOpen(false);
+                setFindQuery("");
+              } else if (event.key === "Enter" && findMatches.length) {
+                event.preventDefault();
+                setFindIndex((index) => (index + (event.shiftKey ? -1 : 1) + findMatches.length) % findMatches.length);
+              }
+            }}
+            aria-label="搜索聊天记录"
+            placeholder="搜索聊天记录"
+            className="min-w-0 flex-1 bg-transparent px-1.5 py-1 text-[13px] text-ink outline-none placeholder:text-ink-secondary"
+            spellCheck={false}
+          />
+          {findQuery.trim() && <span className="shrink-0 px-1 text-[11px] tabular-nums text-ink-secondary">{findMatches.length ? `${Math.min(findIndex + 1, findMatches.length)}/${findMatches.length}` : "无结果"}</span>}
+          <button
+            type="button"
+            disabled={!findMatches.length}
+            onClick={() => setFindIndex((index) => (index - 1 + findMatches.length) % findMatches.length)}
+            aria-label="上一个匹配"
+            className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-30"
+          >
+            <ChevronLeft size={15} />
+          </button>
+          <button
+            type="button"
+            disabled={!findMatches.length}
+            onClick={() => setFindIndex((index) => (index + 1) % findMatches.length)}
+            aria-label="下一个匹配"
+            className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-30"
+          >
+            <ChevronRight size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => { setFindOpen(false); setFindQuery(""); }}
+            aria-label="关闭搜索"
+            className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       {/* keyed by bot: a draft belongs to the conversation it was typed in,
           so switching bots starts from an empty composer instead of carrying
           the previous bot's half-written message over. ArrowUp-to-edit is
@@ -942,6 +1107,8 @@ export function ChatView({
         bot={bot}
         compact={compactHeader}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
+        replyTo={replyTo}
+        onClearReply={clearReply}
       />
 
     </main>

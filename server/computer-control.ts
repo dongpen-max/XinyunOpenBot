@@ -4,20 +4,29 @@ export interface ComputerControlSnapshot {
   helpReason: string | null;
   heldSinceMs: number | null;
   requestId?: string | null;
+  expiresAtMs?: number | null;
+  ownerBotId?: string | null;
 }
 
 interface Entry {
   heldSinceMs: number | null;
   helpReason: string | null;
   requestId: string | null;
+  expiresAtMs: number | null;
 }
 
-const EMPTY: ComputerControlSnapshot = { held: false, helpReason: null, heldSinceMs: null, requestId: null };
+const EMPTY: ComputerControlSnapshot = { held: false, helpReason: null, heldSinceMs: null, requestId: null, expiresAtMs: null };
 const MAX_REASON = 280;
+const DEFAULT_TAKEOVER_TIMEOUT_MS = 15 * 60_000;
 
 export class ComputerControl {
   private readonly entries = new Map<string, Entry>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private sequence = 0;
+  private readonly onChange?: (botId: string, snapshot: ComputerControlSnapshot) => void;
+  constructor(onChange?: (botId: string, snapshot: ComputerControlSnapshot) => void) {
+    this.onChange = onChange;
+  }
 
   snapshot(botId: string): ComputerControlSnapshot {
     const entry = this.entries.get(botId);
@@ -27,34 +36,53 @@ export class ComputerControl {
       helpReason: entry.helpReason,
       heldSinceMs: entry.heldSinceMs,
       requestId: entry.requestId,
+      expiresAtMs: entry.expiresAtMs,
     };
   }
 
-  take(botId: string): ComputerControlSnapshot {
+  take(botId: string, timeoutMs = DEFAULT_TAKEOVER_TIMEOUT_MS): ComputerControlSnapshot {
     const current = this.entries.get(botId);
     if (current?.heldSinceMs !== null && current?.heldSinceMs !== undefined) return this.snapshot(botId);
     this.entries.set(botId, {
       heldSinceMs: Date.now(),
       helpReason: current?.helpReason ?? null,
       requestId: current?.requestId ?? null,
+      expiresAtMs: Date.now() + timeoutMs,
     });
-    return this.snapshot(botId);
+    const timer = setTimeout(() => {
+      const entry = this.entries.get(botId);
+      if (entry?.heldSinceMs !== null && entry?.expiresAtMs && entry.expiresAtMs <= Date.now()) {
+        this.release(botId);
+      }
+    }, timeoutMs);
+    timer.unref?.();
+    this.timers.set(botId, timer);
+    const snapshot = this.snapshot(botId);
+    this.onChange?.(botId, snapshot);
+    return snapshot;
   }
 
   release(botId: string): ComputerControlSnapshot {
+    const timer = this.timers.get(botId);
+    if (timer) clearTimeout(timer);
+    this.timers.delete(botId);
     this.entries.delete(botId);
-    return this.snapshot(botId);
+    const snapshot = this.snapshot(botId);
+    this.onChange?.(botId, snapshot);
+    return snapshot;
   }
 
   requestHelp(botId: string, reason: unknown): ComputerControlSnapshot {
-    const current = this.entries.get(botId) ?? { heldSinceMs: null, helpReason: null, requestId: null };
+    const current = this.entries.get(botId) ?? { heldSinceMs: null, helpReason: null, requestId: null, expiresAtMs: null };
     if (!current.helpReason) {
       const text = typeof reason === "string" ? reason.trim().slice(0, MAX_REASON) : "";
       current.helpReason = text || "机器人请求你接管云电脑";
       current.requestId = `${botId}-${++this.sequence}`;
     }
     this.entries.set(botId, current);
-    return this.snapshot(botId);
+    const snapshot = this.snapshot(botId);
+    this.onChange?.(botId, snapshot);
+    return snapshot;
   }
 
   dismissHelp(botId: string): ComputerControlSnapshot {
@@ -63,7 +91,9 @@ export class ComputerControl {
     current.helpReason = null;
     current.requestId = null;
     if (current.heldSinceMs === null) this.entries.delete(botId);
-    return this.snapshot(botId);
+    const snapshot = this.snapshot(botId);
+    this.onChange?.(botId, snapshot);
+    return snapshot;
   }
 
   expireHelp(botId: string, requestId: string): ComputerControlSnapshot {
@@ -73,6 +103,9 @@ export class ComputerControl {
   }
 
   forget(botId: string): void {
+    const timer = this.timers.get(botId);
+    if (timer) clearTimeout(timer);
+    this.timers.delete(botId);
     this.entries.delete(botId);
   }
 }

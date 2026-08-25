@@ -2,7 +2,7 @@
 // stay still so a busy group does not become a wall of competing motion.
 // Plain messages go to the room's default responder; @mentions override it.
 import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ChevronDown, Pin, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
+import { ArrowDown, ChevronDown, Pin, Reply, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import {
   useStore,
   useStreaming,
@@ -11,6 +11,7 @@ import {
   type Group,
   type GroupDefaultResponder,
   type Message,
+  type ReplyReference,
 } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
@@ -24,6 +25,7 @@ import { SpeakButton } from "./VoiceControls";
 import { GroupCallButton, GroupCallOverlay } from "./GroupVoiceControls";
 import { addGroupMember, canRemoveGroupMember, removeGroupMember } from "@/lib/group-membership";
 import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/lib/transcript-window";
+import { ReplyQuote } from "./ReplyPreview";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -40,6 +42,7 @@ function SenderAvatar({ bot, color, hidden = false }: { bot?: Bot; color: string
     <div className={cn("flex w-8 shrink-0 justify-center pt-[18px]", hidden && "invisible")} aria-hidden={hidden || undefined}>
       <MausAvatar
         color={(bot?.color ?? color) as Bot["color"]}
+        image={bot?.avatarImage}
         shape={bot?.mascotShape}
         state={normalizeState(bot?.mascotExpression) ?? "happy"}
         size={30}
@@ -68,6 +71,7 @@ function GroupHeaderAvatars({ members, busyBotId, compact }: { members: Bot[]; b
         >
           <MausAvatar
             color={member.color}
+            image={member.avatarImage}
             shape={member.mascotShape}
             state={normalizeState(member.mascotExpression) ?? "happy"}
             size={compact ? 24 : 28}
@@ -92,10 +96,16 @@ const Transcript = memo(function Transcript({
   group,
   members,
   messages,
+  highlightMessageId,
+  onReply,
+  onOpenReply,
 }: {
   group: Group;
   members: Bot[];
   messages: Message[];
+  highlightMessageId?: string | null;
+  onReply: (message: Message) => void;
+  onOpenReply: (messageId: string) => void;
 }) {
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   const textMessages = messages;
@@ -131,11 +141,13 @@ const Transcript = memo(function Transcript({
           ) : m.kind === "text" && m.text ? user ? (
             <div className="group flex w-full flex-col items-end">
               <div className="flex w-full items-end justify-end gap-1.5">
+                <button onClick={() => onReply(m)} aria-label="回复消息" title="回复消息" className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"><Reply size={14} /></button>
                 <ReactionBar threadId={group.threadId} message={m} />
                 <div
                   className="user-message-width whitespace-pre-wrap rounded-[20px] bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-ink"
                   title={new Date(m.at).toLocaleString()}
                 >
+                  {m.replyTo && <ReplyQuote reference={m.replyTo} onOpen={onOpenReply} />}
                   {m.text}
                 </div>
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
@@ -158,10 +170,12 @@ const Transcript = memo(function Transcript({
                     className="assistant-message-surface assistant-message-width rounded-[20px] px-4 py-2.5 text-[15px] leading-relaxed text-ink"
                     title={new Date(m.at).toLocaleString()}
                   >
+                    {m.replyTo && <ReplyQuote reference={m.replyTo} onOpen={onOpenReply} />}
                     <ChatMarkdown text={m.text} />
                   </div>
                   <div className="flex flex-col gap-0.5 self-end pb-0.5">
                     {senderBot && <SpeakButton botId={senderBot.id} messageId={m.id} text={m.text} />}
+                    <button onClick={() => onReply(m)} aria-label="回复消息" title="回复消息" className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"><Reply size={14} /></button>
                     <ReactionBar threadId={group.threadId} message={m} />
                   </div>
                   <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
@@ -174,7 +188,11 @@ const Transcript = memo(function Transcript({
           ) : null;
         if (!row) return null;
         return (
-          <div key={m.id} className="contents">
+          <div
+            key={m.id}
+            data-message-id={m.id}
+            className={m.id === highlightMessageId ? "rounded-xl ring-2 ring-accent/60 ring-offset-2 ring-offset-app" : "contents"}
+          >
             {newDay && (
               <div className="py-3 text-center text-[13px] text-ink-secondary">
                 {dayLabel(m.at)} {formatTime(m.at)}
@@ -349,6 +367,7 @@ function GroupMemberManager({
                     <div key={member.id} className="flex items-center gap-2.5 rounded-xl px-2 py-2 hover:bg-raised/40">
                       <MausAvatar
                         color={member.color}
+                        image={member.avatarImage}
                         shape={member.mascotShape}
                         state={normalizeState(member.mascotExpression) ?? "happy"}
                         size={30}
@@ -386,6 +405,7 @@ function GroupMemberManager({
                     >
                       <MausAvatar
                         color={bot.color}
+                        image={bot.avatarImage}
                         shape={bot.mascotShape}
                         state={normalizeState(bot.mascotExpression) ?? "happy"}
                         size={30}
@@ -430,6 +450,7 @@ export function GroupView({
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [bulletinDraft, setBulletinDraft] = useState(group.bulletin);
   const [callOpen, setCallOpen] = useState(false);
+  const [replyTo, setReplyTo] = useState<ReplyReference | null>(null);
 
   const members = useMemo(
     () => group.memberIds.map((id) => state.bots.find((b) => b.id === id)).filter((b): b is Bot => Boolean(b)),
@@ -453,9 +474,30 @@ export function GroupView({
     () => resolveTranscriptWindow(group.messages, transcriptWindow.start),
     [group.messages, transcriptWindow.start],
   );
+  const [jumpMessageId, setJumpMessageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const request = state.messageFocus;
+    if (!request || request.threadId !== group.threadId) return;
+    const messageIndex = group.messages.findIndex((message) => message.id === request.messageId);
+    if (messageIndex < 0) return;
+    setJumpMessageId(request.messageId);
+    setFollow(false);
+    setTranscriptWindow({ key: transcriptKey, start: Math.max(0, messageIndex - 20) });
+    dispatch({ type: "clearMessageFocus", nonce: request.nonce });
+  }, [dispatch, group.messages, group.threadId, state.messageFocus, transcriptKey]);
+  useEffect(() => {
+    if (!jumpMessageId) return;
+    const messageIndex = group.messages.findIndex((message) => message.id === jumpMessageId);
+    const visibleEnd = transcriptWindow.start + windowedMessages.length;
+    if (messageIndex >= 0 && (messageIndex < transcriptWindow.start || messageIndex >= visibleEnd)) return;
+    const escapedId = globalThis.CSS?.escape?.(jumpMessageId) ?? jumpMessageId.replace(/(["\\])/g, "\\$1");
+    document.querySelector(`[data-message-id="${escapedId}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [group.messages, jumpMessageId, transcriptWindow.start, windowedMessages.length]);
 
   useEffect(() => setFollow(true), [group.id]);
   useEffect(() => setCallOpen(false), [group.id]);
+  useEffect(() => setReplyTo(null), [group.id, group.threadId]);
   useEffect(() => setBulletinDraft(group.bulletin), [group.id, group.bulletin]);
   useEffect(() => {
     if (follow) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -588,6 +630,7 @@ export function GroupView({
                   <MausAvatar
                     key={b.id}
                     color={b.color}
+                    image={b.avatarImage}
                     shape={b.mascotShape}
                     state="happy"
                     size={44}
@@ -613,7 +656,14 @@ export function GroupView({
               </button>
             </div>
           )}
-          <Transcript group={group} members={members} messages={windowedMessages} />
+          <Transcript
+            group={group}
+            members={members}
+            messages={windowedMessages}
+            highlightMessageId={jumpMessageId}
+            onReply={(message) => message.text && setReplyTo({ messageId: message.id, role: message.role, text: message.text, at: message.at, author: message.role === "bot" ? (message.from?.name ?? "机器人") : "你" })}
+            onOpenReply={(messageId) => dispatch({ type: "focusMessage", threadId: group.threadId, messageId })}
+          />
           {speaker && !streaming && (
             <article className="flex w-full items-start gap-2.5">
               <SenderAvatar bot={speaker} color={speaker.color} />
@@ -654,7 +704,7 @@ export function GroupView({
         </button>
       )}
 
-      <Composer key={group.id} group={group} members={members} compact={compactHeader} />
+      <Composer key={group.id} group={group} members={members} compact={compactHeader} replyTo={replyTo} onClearReply={() => setReplyTo(null)} />
       {callOpen && !group.dm && <GroupCallOverlay group={group} members={members} onHangup={() => setCallOpen(false)} />}
     </main>
   );

@@ -14,7 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
-import type { MausShape } from "@/components/Avatar";
+import type { AvatarKind, MausShape, ModelAvatarId } from "@/components/Avatar";
 import { createRefreshGate } from "@/lib/engine-refresh";
 import type { VoiceInputStatus } from "@/lib/voice/voice-activity";
 import type { DomesticModelProviderId } from "@/lib/domestic-models";
@@ -59,6 +59,16 @@ export interface Message {
   reactions?: Array<{ emoji: string; by: string }>;
   /** comm chips: "Messaged @X" linking to the bot⇄bot channel. */
   comm?: { groupId: string; withBotId: string; withName: string; withColor: MausColor };
+  /** Immutable snapshot used by the reply preview and jump-to-source action. */
+  replyTo?: ReplyReference;
+}
+
+export interface ReplyReference {
+  messageId: string;
+  role: "bot" | "user";
+  text: string;
+  at: number;
+  author?: string;
 }
 
 export type GroupDefaultResponder =
@@ -108,6 +118,12 @@ export interface Bot {
   notifications: boolean;
   color: MausColor;
   mascotShape?: MausShape | string | null;
+  /** Keeps the robot shape and model mark selections independent. */
+  avatarKind?: AvatarKind | null;
+  modelAvatar?: ModelAvatarId | string | null;
+  customMascotShape?: MausShape | string | null;
+  /** Optional user-supplied avatar image (validated data URL, max 512 KiB). */
+  avatarImage?: string | null;
   mascotExpression?: string | null;
   unread: boolean;
   busy?: boolean;
@@ -274,7 +290,7 @@ interface AppState {
   /** short-lived cloud-computer lifecycle shown while a turn/panel starts it */
   computerActivity: Record<string, ComputerActivityState | undefined>;
   /** who currently owns the cloud computer keyboard/mouse */
-  computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null }>;
+  computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null; ownerBotId?: string | null }>;
   handoffs: Record<string, HandoffRecord>;
   connected: boolean;
   error: string | null;
@@ -283,6 +299,8 @@ interface AppState {
     nonce: number;
     kind: Exclude<MausMotion, "none">;
   } | null;
+  /** One-shot navigation request emitted by global search. */
+  messageFocus: { threadId: string; messageId: string; nonce: number } | null;
 }
 
 type Action =
@@ -290,7 +308,7 @@ type Action =
   | { type: "groupPatched"; group: Partial<Group> & { id: string } }
   | { type: "groupDeleted"; groupId: string }
   | { type: "createGroup"; memberIds: string[]; name?: string }
-  | { type: "sendGroup"; groupId: string; text: string; reasoningLevel?: ReasoningLevel }
+  | { type: "sendGroup"; groupId: string; text: string; reasoningLevel?: ReasoningLevel; replyTo?: ReplyReference }
   | {
       type: "patchGroup";
       groupId: string;
@@ -302,7 +320,9 @@ type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string; reasoningLevel?: ReasoningLevel }
+  | { type: "focusMessage"; threadId: string; messageId: string }
+  | { type: "clearMessageFocus"; nonce: number }
+  | { type: "send"; botId: string; text: string; reasoningLevel?: ReasoningLevel; replyTo?: ReplyReference }
   | { type: "editMessage"; botId: string; messageId: string; text: string }
   | { type: "switchBranch"; botId: string; messageId: string }
   | { type: "threadActive"; threadId: string; activeLeafId: string }
@@ -334,7 +354,7 @@ type Action =
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
   | { type: "computerActivity"; botId: string; state?: ComputerActivityState }
-  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null; heldSinceMs?: number | null }
+  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null; heldSinceMs?: number | null; ownerBotId?: string | null }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
@@ -352,7 +372,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "mascotExpression" | "pinned" | "hidden" | "autoApprove" | "alwaysAllow" | "chiefOfStaff" | "voiceProfile"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "avatarKind" | "modelAvatar" | "customMascotShape" | "avatarImage" | "mascotExpression" | "pinned" | "hidden" | "autoApprove" | "alwaysAllow" | "chiefOfStaff" | "voiceProfile"
         >
       >;
     }
@@ -611,6 +631,17 @@ function reducer(state: AppState, action: Action): AppState {
         cloudDesktopBotId: open ? null : state.cloudDesktopBotId,
       };
     }
+    case "focusMessage":
+      return {
+        ...state,
+        messageFocus: {
+          threadId: action.threadId,
+          messageId: action.messageId,
+          nonce: (state.messageFocus?.nonce ?? 0) + 1,
+        },
+      };
+    case "clearMessageFocus":
+      return state.messageFocus?.nonce === action.nonce ? { ...state, messageFocus: null } : state;
     case "handoffPatched":
       return { ...state, handoffs: { ...state.handoffs, [action.handoff.id]: action.handoff } };
     case "computerControl":
@@ -618,7 +649,12 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         computerControl: {
           ...state.computerControl,
-          [action.botId]: { held: action.held, helpReason: action.helpReason, heldSinceMs: action.heldSinceMs ?? null },
+          [action.botId]: {
+            held: action.held,
+            helpReason: action.helpReason,
+            heldSinceMs: action.heldSinceMs ?? null,
+            ownerBotId: action.ownerBotId ?? null,
+          },
         },
       };
     case "openCloudDesktop":
@@ -661,6 +697,10 @@ function reducer(state: AppState, action: Action): AppState {
       const mascotChanged =
         Object.prototype.hasOwnProperty.call(action.patch, "color") ||
         Object.prototype.hasOwnProperty.call(action.patch, "mascotShape") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "avatarKind") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "modelAvatar") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "customMascotShape") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "avatarImage") ||
         Object.prototype.hasOwnProperty.call(action.patch, "mascotExpression");
       const animated = mascotChanged
         ? withMascotMotion(state, action.botId, "customize")
@@ -765,6 +805,7 @@ const initialState: AppState = {
   connected: false,
   error: null,
   mascotMotion: null,
+  messageFocus: null,
 };
 
 // ── API client ─────────────────────────────────────────────────────────
@@ -893,7 +934,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "send":
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel }),
+            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel, replyTo: action.replyTo }),
           }).catch(showError);
           break;
         case "editMessage":
@@ -1032,7 +1073,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "sendGroup":
           api(`/api/groups/${action.groupId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel }),
+            body: JSON.stringify({ text: action.text, reasoningLevel: action.reasoningLevel, replyTo: action.replyTo }),
           }).catch(showError);
           break;
         case "patchGroup":
@@ -1218,13 +1259,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "computerActivity", botId: frame.botId, state: frame.state });
           break;
         case "computer-control": {
-          const control = frame.control as { held?: unknown; helpReason?: unknown; heldSinceMs?: unknown } | undefined;
+          const control = frame.control as { held?: unknown; helpReason?: unknown; heldSinceMs?: unknown; ownerBotId?: unknown } | undefined;
           rawDispatch({
             type: "computerControl",
             botId: frame.botId,
             held: control?.held === true,
             helpReason: typeof control?.helpReason === "string" ? control.helpReason : null,
             heldSinceMs: typeof control?.heldSinceMs === "number" ? control.heldSinceMs : null,
+            ownerBotId: typeof control?.ownerBotId === "string" ? control.ownerBotId : null,
           });
           break;
         }

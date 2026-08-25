@@ -82,6 +82,26 @@ describe("Store", () => {
     expect(messages.at(-1)).toMatchObject({ role: "user", text: "hi there" });
   });
 
+  it("persists routines and resets an interrupted run after restart", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const routine = store.createRoutine({
+      botId: bot.id,
+      name: "Daily summary",
+      prompt: "Summarize the latest work",
+      enabled: true,
+      intervalMinutes: 30,
+    });
+    store.patchRoutine(routine.id, { lastStatus: "running" });
+
+    const reloaded = new Store(selection);
+    const restored = reloaded.routine(routine.id)!;
+    expect(restored.name).toBe("Daily summary");
+    expect(restored.intervalMinutes).toBe(30);
+    expect(restored.lastStatus).toBe("failed");
+    expect(restored.lastError).toContain("应用重启");
+  });
+
   it("accumulates settled token usage per task and persists it", () => {
     const store = new Store(selection);
     const bot = store.createBot();
