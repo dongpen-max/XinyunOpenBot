@@ -17,6 +17,7 @@ export function titleFromMessage(text) {
 }
 const BOTS_FILE = join(DATA_DIR, "bots.json");
 const GROUPS_FILE = join(DATA_DIR, "groups.json");
+const ROUTINES_FILE = join(DATA_DIR, "routines.json");
 const messagesFile = (threadId) => join(DATA_DIR, `messages-${threadId}.json`);
 const COLORS = [
     "green",
@@ -98,6 +99,7 @@ const onboardingCard = () => ({
 export class Store {
     bots = [];
     groups = [];
+    routines = [];
     threads = new Map();
     defaultSelection;
     constructor(defaultSelection) {
@@ -114,6 +116,27 @@ export class Store {
         }
         catch {
             this.groups = [];
+        }
+        try {
+            const routines = JSON.parse(readFileSync(ROUTINES_FILE, "utf8"));
+            this.routines = Array.isArray(routines) ? routines : [];
+        }
+        catch {
+            this.routines = [];
+        }
+        let routinesMigrated = false;
+        const now = Date.now();
+        for (const routine of this.routines) {
+            routine.history = Array.isArray(routine.history) ? routine.history.slice(0, 20) : [];
+            if (routine.lastStatus === "queued" || routine.lastStatus === "running") {
+                routine.lastStatus = "failed";
+                routine.lastError = "应用重启，上一轮运行已结束";
+                routinesMigrated = true;
+            }
+            if (!Number.isFinite(routine.nextRunAt)) {
+                routine.nextRunAt = now + Math.max(1, routine.intervalMinutes || 60) * 60_000;
+                routinesMigrated = true;
+            }
         }
         // busy never survives a restart — no turn does either. Rooms saved
         // before default responders existed adopt their first member as lead.
@@ -146,6 +169,8 @@ export class Store {
             this.saveBots();
         if (groupsMigrated)
             this.saveGroups();
+        if (routinesMigrated)
+            this.saveRoutines();
         // bots saved before tasks existed have one endless thread; adopt it as
         // their first task so nothing is lost and nothing special-cases it
         for (const b of this.bots) {
@@ -166,6 +191,40 @@ export class Store {
     }
     saveGroups() {
         writeFileAtomic(GROUPS_FILE, JSON.stringify(this.groups.map(({ busyBotId, ...g }) => g), null, 2));
+    }
+    saveRoutines() {
+        writeFileAtomic(ROUTINES_FILE, JSON.stringify(this.routines, null, 2));
+    }
+    routinesFor(botId) {
+        return this.routines.filter((routine) => !botId || routine.botId === botId);
+    }
+    routine(id) { return this.routines.find((routine) => routine.id === id); }
+    createRoutine(input) {
+        const now = Date.now();
+        const routine = {
+            id: newId(), botId: input.botId, name: input.name.trim().slice(0, 80), prompt: input.prompt.trim().slice(0, 20_000),
+            enabled: input.enabled, intervalMinutes: input.intervalMinutes, nextRunAt: now + input.intervalMinutes * 60_000,
+            lastStatus: "idle", runCount: 0, createdAt: now, updatedAt: now, history: [],
+        };
+        this.routines.unshift(routine);
+        this.saveRoutines();
+        return routine;
+    }
+    patchRoutine(id, patch) {
+        const routine = this.routine(id);
+        if (!routine)
+            return null;
+        Object.assign(routine, patch, { updatedAt: Date.now() });
+        this.saveRoutines();
+        return routine;
+    }
+    deleteRoutine(id) {
+        const previous = this.routines.length;
+        this.routines = this.routines.filter((routine) => routine.id !== id);
+        if (this.routines.length === previous)
+            return false;
+        this.saveRoutines();
+        return true;
     }
     // ── groups ────────────────────────────────────────────────────────────
     group(id) {
@@ -389,6 +448,8 @@ export class Store {
         if (!bot)
             return false;
         this.bots = this.bots.filter((b) => b.id !== id);
+        this.routines = this.routines.filter((routine) => routine.botId !== id);
+        this.saveRoutines();
         // every task's transcript goes with the bot, not just the open one
         for (const threadId of new Set([bot.threadId, ...(bot.tasks ?? []).map((t) => t.threadId)])) {
             this.threads.delete(threadId);

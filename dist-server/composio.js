@@ -113,7 +113,7 @@ const CURATED = [
 let toolkitCache = null;
 /**
  * Marketplace catalog. Tries the v3 toolkits API (official names,
- * descriptions, logos — cached 10 min); falls back to the curated list.
+ * descriptions, logos — cached 10 min); falls back to the public snapshot.
  */
 function decodeHtml(value) {
     return value

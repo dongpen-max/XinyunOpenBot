@@ -188,6 +188,41 @@ function broadcastBot(bot, withThread = false) {
     if (bot)
         broadcast({ kind: "bot", bot: withThread ? wireBotWithThread(bot) : wireBot(bot) });
 }
+function wireRoutine(routine) {
+    return routine ? { ...routine } : null;
+}
+function broadcastRoutine(routineId) {
+    const routine = store.routine(routineId);
+    if (routine)
+        broadcast({ kind: "routine", routine: wireRoutine(routine) });
+    else
+        broadcast({ kind: "routine.deleted", routineId });
+}
+function finishRoutineRun(threadId, ok, error) {
+    const active = routineRunsByThread.get(threadId);
+    if (!active)
+        return;
+    routineRunsByThread.delete(threadId);
+    const routine = store.routine(active.routineId);
+    if (!routine)
+        return;
+    const now = Date.now();
+    const run = routine.history.find((entry) => entry.id === active.runId);
+    if (run) {
+        run.status = ok ? "completed" : "failed";
+        run.finishedAt = now;
+        if (error)
+            run.error = error.slice(0, 500);
+    }
+    store.patchRoutine(routine.id, {
+        lastStatus: ok ? "completed" : "failed",
+        lastError: error ? error.slice(0, 500) : undefined,
+        runCount: routine.runCount + 1,
+        nextRunAt: now + routine.intervalMinutes * 60_000,
+        history: routine.history.slice(0, 20),
+    });
+    broadcastRoutine(routine.id);
+}
 function broadcastComputerControl(botId) {
     const boxId = botBoxIds.get(botId);
     const related = new Set([botId]);
@@ -233,6 +268,7 @@ const askMessageByRequest = new Map(); // requestId -> messageId
 const cloudLeaseByThread = new Map();
 const cloudLeaseBoxByThread = new Map();
 const pendingCloudLeaseByThread = new Map();
+const routineRunsByThread = new Map();
 function releaseCloudLease(threadId) {
     cloudLeaseByThread.get(threadId)?.();
     cloudLeaseByThread.delete(threadId);
@@ -419,6 +455,7 @@ bus.subscribe((event) => {
             turnUsage.set(event.threadId, { input: event.input, output: event.output });
             break;
         case "turn.completed": {
+            finishRoutineRun(event.threadId, event.ok, event.ok ? undefined : event.stopReason ?? "机器人运行失败");
             const usage = turnUsage.get(event.threadId);
             turnUsage.delete(event.threadId);
             // Group turns share a room thread, so only 1:1 task turns currently
@@ -601,6 +638,34 @@ function readCuaConnection() {
     return null;
 }
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
+function parseReplyReference(value) {
+    if (!value || typeof value !== "object")
+        return undefined;
+    const input = value;
+    const messageId = typeof input.messageId === "string" ? input.messageId.trim().slice(0, 120) : "";
+    const text = typeof input.text === "string" ? input.text.trim().slice(0, 4000) : "";
+    const role = input.role === "bot" || input.role === "user" ? input.role : null;
+    const at = typeof input.at === "number" && Number.isFinite(input.at) ? input.at : 0;
+    if (!messageId || !text || !role || !at)
+        return undefined;
+    const author = typeof input.author === "string" ? input.author.trim().slice(0, 120) : undefined;
+    return { messageId, role, text, at, ...(author ? { author } : {}) };
+}
+function replyReferenceForThread(threadId, value) {
+    const requested = parseReplyReference(value);
+    if (!requested)
+        return undefined;
+    const source = store.messagesFor(threadId).find((message) => message.id === requested.messageId && message.kind === "text" && message.text);
+    if (!source)
+        return undefined;
+    return {
+        messageId: source.id,
+        role: source.role,
+        text: source.text.slice(0, 4000),
+        at: source.at,
+        ...(source.from?.name ? { author: source.from.name } : source.role === "user" ? { author: "你" } : {}),
+    };
+}
 async function runTurnNow(botId, text, opts) {
     const bot = store.bot(botId);
     if (!bot)
@@ -657,8 +722,11 @@ async function runTurnNow(botId, text, opts) {
             resumeCursors: task.resumeCursors,
             transcript,
         });
+    const promptText = userMessage.replyTo
+        ? `[用户正在回复${userMessage.replyTo.author ? ` ${userMessage.replyTo.author}` : ""}的消息：\"${userMessage.replyTo.text.slice(0, 1200)}\"]\n\n${text}`
+        : text;
     const { turnText, resume } = buildTurnContext({
-        text,
+        text: promptText,
         transcript,
         rewound,
         fresh,
@@ -860,6 +928,12 @@ async function drainBotQueue(botId) {
         await runTurnNow(botId, next.value.text, next.value.options);
     }
     catch (error) {
+        if (next.value.options?.routineId) {
+            const threadId = store.bot(botId)?.threadId ?? "";
+            const active = routineRunsByThread.get(threadId);
+            routineRunsByThread.delete(threadId);
+            finishRoutineRunFailure(next.value.options.routineId, active?.runId ?? "", error instanceof Error ? error.message : String(error));
+        }
         const bot = store.bot(botId);
         if (bot) {
             const message = store.appendMessage(bot.threadId, {
@@ -880,16 +954,77 @@ async function startTurn(botId, text, opts) {
         throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
     }
     if (!opts?.userMessage) {
-        const message = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
+        const message = store.appendMessage(bot.threadId, { role: "user", kind: "text", text, ...(opts?.replyTo ? { replyTo: opts.replyTo } : {}) });
         broadcast({ kind: "message", threadId: bot.threadId, message });
         opts = { ...opts, userMessage: message };
     }
-    turnScheduler.enqueue(botId, { text, options: opts }, opts?.commsDepth ? "background" : "normal");
+    turnScheduler.enqueue(botId, { text, options: opts }, opts?.routineId || opts?.commsDepth ? "background" : "normal");
     store.patchBot(botId, { busy: true, unread: false });
     broadcastBot(store.bot(botId));
     if (!turnScheduler.isActive(botId))
         void drainBotQueue(botId);
     return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0) };
+}
+async function runRoutine(routineId) {
+    const routine = store.routine(routineId);
+    if (!routine)
+        return { queued: false, reason: "no such routine" };
+    if (!store.bot(routine.botId))
+        return { queued: false, reason: "no such bot" };
+    if (routine.lastStatus === "running" || routine.lastStatus === "queued") {
+        return { queued: false, reason: "routine is already running" };
+    }
+    const bot = store.bot(routine.botId);
+    // A routine never jumps ahead of a human turn and never creates a second
+    // computer/session assumption. The next scheduler tick will retry safely.
+    if (bot.busy || turnScheduler.isActive(bot.id) || turnScheduler.hasPending(bot.id)) {
+        return { queued: false, reason: "bot is busy" };
+    }
+    const runId = newId();
+    const now = Date.now();
+    const history = [{ id: runId, startedAt: now, status: "running" }, ...routine.history].slice(0, 20);
+    store.patchRoutine(routine.id, {
+        lastStatus: "running",
+        lastRunAt: now,
+        lastError: undefined,
+        history,
+    });
+    broadcastRoutine(routine.id);
+    routineRunsByThread.set(bot.threadId, { routineId: routine.id, runId });
+    try {
+        await startTurn(bot.id, routine.prompt, { routineId: routine.id });
+        return { queued: true };
+    }
+    catch (error) {
+        routineRunsByThread.delete(bot.threadId);
+        finishRoutineRunFailure(routine.id, runId, error instanceof Error ? error.message : String(error));
+        return { queued: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+}
+function finishRoutineRunFailure(routineId, runId, message) {
+    const routine = store.routine(routineId);
+    if (!routine)
+        return;
+    const now = Date.now();
+    const run = routine.history.find((entry) => entry.id === runId);
+    if (run) {
+        run.status = "failed";
+        run.finishedAt = now;
+        run.error = message.slice(0, 500);
+    }
+    store.patchRoutine(routine.id, {
+        lastStatus: "failed", lastError: message.slice(0, 500), runCount: routine.runCount + 1,
+        nextRunAt: now + routine.intervalMinutes * 60_000, history: routine.history.slice(0, 20),
+    });
+    broadcastRoutine(routine.id);
+}
+function scheduleDueRoutines() {
+    const now = Date.now();
+    for (const routine of store.routinesFor()) {
+        if (!routine.enabled || routine.lastStatus === "running" || routine.lastStatus === "queued" || routine.nextRunAt > now)
+            continue;
+        void runRoutine(routine.id);
+    }
 }
 // ── config hot-reload ─────────────────────────────────────────────────
 // ── group turn engine ──────────────────────────────────────────────────
@@ -906,7 +1041,7 @@ function serializeRoomContext(threadId, userName) {
         .messagesFor(threadId)
         .filter((m) => m.kind === "text" && m.text)
         .slice(-GROUP_CONTEXT_MESSAGES)
-        .map((m) => `${m.role === "user" ? userName : (m.from?.name ?? "Bot")}: ${m.text}`)
+        .map((m) => `${m.role === "user" ? userName : (m.from?.name ?? "Bot")}${m.replyTo ? `（回复：${m.replyTo.text.slice(0, 240)}）` : ""}: ${m.text}`)
         .join("\n");
 }
 function broadcastGroup(groupId) {
@@ -1013,11 +1148,11 @@ reasoningLevel, spoken = new Set()) {
         }
     }
 }
-function startGroupTurn(groupId, text, reasoningLevel) {
+function startGroupTurn(groupId, text, reasoningLevel, replyTo) {
     const group = store.group(groupId);
     if (!group)
         throw Object.assign(new Error("no such group"), { status: 404 });
-    const userMessage = store.appendMessage(group.threadId, { role: "user", kind: "text", text });
+    const userMessage = store.appendMessage(group.threadId, { role: "user", kind: "text", text, ...(replyTo ? { replyTo } : {}) });
     broadcast({ kind: "message", threadId: group.threadId, message: userMessage });
     const members = group.memberIds
         .map((id) => store.bot(id))
@@ -1489,6 +1624,74 @@ const server = createServer(async (req, res) => {
                 groups: store.groups.map((g) => ({ ...g, messages: store.messagesFor(g.threadId) })),
             });
         }
+        // ── routines ───────────────────────────────────────────────────────
+        if (method === "GET" && path === "/api/routines") {
+            const botId = url.searchParams.get("botId") ?? undefined;
+            return json(res, 200, { routines: store.routinesFor(botId).map(wireRoutine) });
+        }
+        if (method === "POST" && path === "/api/routines") {
+            const body = await readBody(req);
+            const botId = typeof body.botId === "string" ? body.botId : "";
+            if (!store.bot(botId))
+                return json(res, 404, { error: "no such bot" });
+            const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+            const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 20_000) : "";
+            const intervalMinutes = Number(body.intervalMinutes);
+            if (!name || !prompt)
+                return json(res, 400, { error: "name and prompt required" });
+            if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10080) {
+                return json(res, 400, { error: "intervalMinutes must be between 1 and 10080" });
+            }
+            const routine = store.createRoutine({ botId, name, prompt, enabled: body.enabled !== false, intervalMinutes: Math.trunc(intervalMinutes) });
+            broadcastRoutine(routine.id);
+            return json(res, 201, { routine: wireRoutine(routine) });
+        }
+        const routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
+        if (routineMatch && method === "PATCH") {
+            const routine = store.routine(routineMatch[1]);
+            if (!routine)
+                return json(res, 404, { error: "no such routine" });
+            const body = await readBody(req);
+            const patch = {};
+            if (body.name !== undefined)
+                patch.name = String(body.name).trim().slice(0, 80);
+            if (body.prompt !== undefined)
+                patch.prompt = String(body.prompt).trim().slice(0, 20_000);
+            if (body.enabled !== undefined) {
+                if (typeof body.enabled !== "boolean")
+                    return json(res, 400, { error: "enabled must be boolean" });
+                patch.enabled = body.enabled;
+            }
+            if (body.intervalMinutes !== undefined) {
+                const intervalMinutes = Number(body.intervalMinutes);
+                if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10080) {
+                    return json(res, 400, { error: "intervalMinutes must be between 1 and 10080" });
+                }
+                patch.intervalMinutes = Math.trunc(intervalMinutes);
+                patch.nextRunAt = Date.now() + Math.trunc(intervalMinutes) * 60_000;
+            }
+            if (patch.name === "" || patch.prompt === "")
+                return json(res, 400, { error: "name and prompt cannot be empty" });
+            const updated = store.patchRoutine(routine.id, patch);
+            broadcastRoutine(updated.id);
+            return json(res, 200, { routine: wireRoutine(updated) });
+        }
+        if (routineMatch && method === "DELETE") {
+            if (!store.deleteRoutine(routineMatch[1]))
+                return json(res, 404, { error: "no such routine" });
+            broadcastRoutine(routineMatch[1]);
+            return json(res, 200, { ok: true });
+        }
+        const routineRunMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
+        if (routineRunMatch && method === "POST") {
+            const routine = store.routine(routineRunMatch[1]);
+            if (!routine)
+                return json(res, 404, { error: "no such routine" });
+            const result = await runRoutine(routine.id);
+            if (!result.queued)
+                return json(res, 409, { error: result.reason ?? "routine could not start" });
+            return json(res, 202, { ok: true, routine: wireRoutine(store.routine(routine.id)) });
+        }
         // ── rooms (group chats) ─────────────────────────────────────────────
         let m = null;
         if (method === "POST" && path === "/api/groups") {
@@ -1567,7 +1770,8 @@ const server = createServer(async (req, res) => {
             if (!text)
                 return json(res, 400, { error: "text required" });
             const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
-            startGroupTurn(m[1], text, reasoningLevel);
+            const group = store.group(m[1]);
+            startGroupTurn(m[1], text, reasoningLevel, group ? replyReferenceForThread(group.threadId, body.replyTo) : undefined);
             return json(res, 202, { ok: true });
         }
         m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
@@ -1602,9 +1806,21 @@ const server = createServer(async (req, res) => {
         if (m && method === "PATCH") {
             const body = await readBody(req);
             const patch = {};
-            for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "avatarKind", "modelAvatar", "customMascotShape", "mascotExpression", "pinned", "hidden"]) {
+            for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "avatarKind", "modelAvatar", "customMascotShape", "avatarImage", "mascotExpression", "pinned", "hidden"]) {
                 if (body[key] !== undefined)
                     patch[key] = body[key];
+            }
+            if (body.avatarImage !== undefined) {
+                if (body.avatarImage !== null) {
+                    if (typeof body.avatarImage !== "string" || !/^data:image\/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i.test(body.avatarImage)) {
+                        return json(res, 400, { error: "avatarImage must be a PNG, JPEG, or WebP data URL" });
+                    }
+                    const encoded = body.avatarImage.slice(body.avatarImage.indexOf(",") + 1);
+                    const bytes = Math.floor((encoded.length * 3) / 4) - (encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0);
+                    if (bytes > 512 * 1024)
+                        return json(res, 413, { error: "avatarImage is too large (max 512 KiB)" });
+                }
+                patch.avatarImage = body.avatarImage;
             }
             if (body.chiefOfStaff !== undefined && typeof body.chiefOfStaff !== "boolean") {
                 return json(res, 400, { error: "chiefOfStaff must be true or false" });
@@ -1719,7 +1935,8 @@ const server = createServer(async (req, res) => {
             if (!text)
                 return json(res, 400, { error: "text required" });
             const reasoningLevel = parseReasoningRequest(body.reasoningLevel, body.reasoningEffort);
-            const queued = await startTurn(m[1], text, { reasoningLevel });
+            const bot = store.bot(m[1]);
+            const queued = await startTurn(m[1], text, { reasoningLevel, replyTo: bot ? replyReferenceForThread(bot.threadId, body.replyTo) : undefined });
             return json(res, 202, { ok: true, ...queued });
         }
         // edit a user message → fork the conversation there and rerun the turn.
@@ -2175,11 +2392,14 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
     console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
 });
+const routineTimer = setInterval(scheduleDueRoutines, 15_000);
+routineTimer.unref?.();
 let shutdownPromise = null;
 function shutdown() {
     if (shutdownPromise)
         return shutdownPromise;
     shutdownPromise = (async () => {
+        clearInterval(routineTimer);
         for (const controller of pendingCloudLeaseByThread.values())
             controller.abort();
         pendingCloudLeaseByThread.clear();
