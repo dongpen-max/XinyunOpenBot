@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldUseCloudComputer } from "./turn-computer.ts";
+import { effectiveComputerPreference, shouldUseCloudComputer } from "./turn-computer.ts";
 
 describe("shouldUseCloudComputer", () => {
+  it("keeps manual auto-computer behavior but sends automatic chat tasks outside the Box queue", () => {
+    expect(effectiveComputerPreference(undefined, "manual")).toBeUndefined();
+    expect(effectiveComputerPreference(undefined, "balanced")).toBe("off");
+    expect(shouldUseCloudComputer(effectiveComputerPreference(undefined, "balanced"), "mcp", 0)).toBe(false);
+  });
   it("uses cloud for normal auto turns and explicit top-level cloud turns", () => {
     expect(shouldUseCloudComputer(undefined, "mcp", 0)).toBe(true);
     expect(shouldUseCloudComputer("cloud", "mcp", 0)).toBe(true);

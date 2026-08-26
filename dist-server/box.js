@@ -401,7 +401,7 @@ export async function joinBox(cfg, botId) {
     return { joinUrl: await mintDesktopUrl(cfg, box.id), state: ready.state ?? null };
 }
 /** Archive the bot's box now (billing pauses, disk survives). */
-export async function sleepBox(cfg, botId) {
+export async function sleepBox(cfg, botId, force = false) {
     const box = await findBox(cfg, botId);
     if (!box)
         throw new Error("no computer for this bot");
@@ -413,8 +413,26 @@ export async function sleepBox(cfg, botId) {
         'for i in 1 2 3 4 5 6 7 8; do if ! pgrep -x chrome >/dev/null 2>&1 && ! pgrep -x google-chrome >/dev/null 2>&1 && ! pgrep -x chromium >/dev/null 2>&1 && ! pgrep -x chromium-browser >/dev/null 2>&1; then break; fi; sleep 0.25; done',
     ].join("; ");
     await runCommand(cfg, box.id, quiesceBrowser, { timeoutMs: 5_000 }).catch(() => null);
-    await boxJson(cfg, `/boxes/${box.id}/stop`, { method: "POST" }).catch(() => { });
-    return { ok: true };
+    const stop = await boxJson(cfg, `/boxes/${box.id}/stop`, {
+        method: "POST",
+        ...(force ? { body: JSON.stringify({ force: true }) } : {}),
+    });
+    if (!stop.ok)
+        throw new Error(boxErrorMessage(stop.status, "box stop", stop.body));
+    // The API is asynchronous. Confirm the terminal state so the UI does not
+    // report success while the Box remains in a transitional/running state.
+    const deadline = Date.now() + 30_000;
+    let latest = box;
+    while (Date.now() < deadline) {
+        const status = await boxJson(cfg, `/boxes/${box.id}`).catch(() => ({ ok: false, status: 0, body: null }));
+        latest = status.body?.box ?? latest;
+        if (["archived", "stopped", "idle"].includes(latest?.state))
+            return { ok: true, state: latest.state };
+        if (latest?.state === "error")
+            throw new Error("box stop failed: provider reported error");
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    throw new Error(`box stop timed out (current state: ${latest?.state ?? "unknown"})`);
 }
 /** Owner-scoped shell for the Computer panel's console. */
 export async function execOnBox(cfg, botId, command) {

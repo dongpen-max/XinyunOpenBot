@@ -20,6 +20,27 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 import { zhCN } from "@/locales/zh-CN";
+
+const ROUTING_MODES = [
+  { id: "manual", label: "手动", description: "始终使用你选择的 Agent 和模型，不自动切换。" },
+  { id: "balanced", label: "均衡", description: "综合可用性、拥堵和响应速度选择。" },
+  { id: "quality", label: "质量", description: "优先可靠的质量数据；未知时保持首选顺序。" },
+  { id: "speed", label: "速度", description: "优先低延迟且健康的候选。" },
+  { id: "cost", label: "成本", description: "仅使用可靠成本数据；暂无数据时不猜价格。" },
+] as const;
+
+const ROUTING_ERROR_LABEL: Record<string, string> = {
+  rate_limited: "达到限额",
+  timeout: "请求超时",
+  temporarily_unavailable: "服务暂时不可用",
+  connection_lost: "连接中断",
+  context_overflow: "上下文过长",
+  authentication: "认证失败",
+  configuration: "配置错误",
+  cancelled: "已取消",
+  task_error: "任务错误",
+  unknown: "未知错误",
+};
 import { syncWindowTitleBarColor } from "@/lib/theme";
 import { BotVoiceSettings } from "./BotVoiceSettings";
 
@@ -73,6 +94,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "autoApprove"
         | "chiefOfStaff"
         | "voiceProfile"
+        | "routingMode"
+        | "maxFailovers"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -472,6 +495,62 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               </div>
             </div>
             <ModelPicker bot={bot} />
+          </div>
+
+          <div className="rounded-xl bg-card p-4" data-routing-settings>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[15px] font-medium text-ink">Agent 智能路由</div>
+                <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
+                  当前首选：{engine?.displayName ?? bot.modelSelection.instanceId} · {engine?.models.options.find((option) => option.id === bot.modelSelection.model)?.label ?? bot.modelSelection.model}
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full bg-raised px-2 py-1 text-[11px] text-ink-secondary">
+                {(bot.routingMode ?? "manual") === "manual" ? "固定模型" : "自动选择"}
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2" role="radiogroup" aria-label="路由模式">
+              {ROUTING_MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  role="radio"
+                  aria-checked={(bot.routingMode ?? "manual") === mode.id}
+                  onClick={() => patch({ routingMode: mode.id })}
+                  className={cn(
+                    "rounded-lg border px-2 py-2 text-[12px] transition-colors",
+                    (bot.routingMode ?? "manual") === mode.id
+                      ? "border-accent/50 bg-accent/10 text-ink"
+                      : "border-hairline/35 bg-inset text-ink-secondary hover:bg-raised hover:text-ink",
+                  )}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[11.5px] leading-relaxed text-ink-secondary">
+              {ROUTING_MODES.find((mode) => mode.id === (bot.routingMode ?? "manual"))?.description}
+            </p>
+            {(bot.routingMode ?? "manual") !== "manual" && (
+              <div className="mt-3 flex items-center justify-between border-t border-hairline/30 pt-3">
+                <div>
+                  <div className="text-[12px] text-ink">最多自动切换</div>
+                  <div className="text-[10.5px] text-ink-secondary">工具产生副作用或电脑开始操作后不会重放。</div>
+                </div>
+                <select
+                  aria-label="最大自动切换次数"
+                  value={bot.maxFailovers ?? 2}
+                  onChange={(event) => patch({ maxFailovers: Number(event.target.value) })}
+                  className="rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink outline-none"
+                >
+                  {[0, 1, 2, 3, 4].map((value) => <option key={value} value={value}>{value} 次</option>)}
+                </select>
+              </div>
+            )}
+            {bot.lastFailover && (
+              <div className="mt-3 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-ink-secondary">
+                最近自动切换：{bot.lastFailover.from.model} → {bot.lastFailover.to.model} · {ROUTING_ERROR_LABEL[bot.lastFailover.reason] ?? bot.lastFailover.reason}
+              </div>
+            )}
           </div>
 
           <BotVoiceSettings bot={bot} />

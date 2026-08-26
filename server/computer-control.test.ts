@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ComputerControl } from "./computer-control.ts";
+import { COMPUTER_CONTROL_REFUSAL, ComputerControl, computerControlRefusal } from "./computer-control.ts";
 
 describe("ComputerControl", () => {
   it("takes and releases the wheel without losing an open help request", () => {
@@ -17,5 +17,12 @@ describe("ComputerControl", () => {
     const second = control.requestHelp("bot", "second");
     expect(control.expireHelp("bot", first.requestId!)).toMatchObject({ helpReason: "second" });
     expect(second.requestId).not.toBe(first.requestId);
+  });
+
+  it("rejects server-side computer input throughout a human takeover", () => {
+    const control = new ComputerControl();
+    expect(computerControlRefusal(control.snapshot("bot"))).toBeNull();
+    expect(computerControlRefusal(control.take("bot"))).toBe(COMPUTER_CONTROL_REFUSAL);
+    expect(computerControlRefusal(control.release("bot"))).toBeNull();
   });
 });

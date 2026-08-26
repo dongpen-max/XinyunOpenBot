@@ -17,10 +17,17 @@ describe("ProviderRegistry", () => {
     expect(live!.driverKind).toBe("fake");
     expect(live!.displayName).toBe("Bot A");
     expect(registry.instances()).toHaveLength(1);
-    expect((await registry.describe())[0].capabilities).toEqual({
+    expect((await registry.describe())[0].capabilities).toMatchObject({
       computerTools: false,
       agentTools: false,
       reasoningEffort: false,
+      textChat: true,
+      mcpTools: false,
+      imageInput: null,
+      maxContextTokens: null,
+      sessionResume: false,
+      streaming: null,
+      available: true,
     });
   });
 

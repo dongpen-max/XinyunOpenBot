@@ -410,6 +410,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           reasoningEffort: supportsReasoningEffort,
           computerMcp: config.computerTools,
           agentsMcp: config.agentTools,
+          mcpTools: true,
+          streaming: true,
           ...(config.computerTools ? { computerMode: "mcp" as const } : {}),
         },
         sendTurn,

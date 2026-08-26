@@ -1,3 +1,8 @@
+/** Automatic routing treats an unset preference as a chat/tool task. Manual
+ * mode keeps the legacy auto-computer behavior byte-for-byte. */
+export function effectiveComputerPreference(preference, routingMode) {
+    return routingMode !== "manual" && preference === undefined ? "off" : preference;
+}
 /** A bot-to-bot child turn must not queue for the workspace Box already
  * leased by its parent, otherwise ask_bot creates a circular wait. Peer turns
  * are delegated text tasks, so they always run without computer integration;

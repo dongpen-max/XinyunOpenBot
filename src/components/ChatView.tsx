@@ -496,7 +496,7 @@ function ActivityChip({ message }: { message: Message }) {
         ) : (
           <Check size={13} className="text-success" />
         )}
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
+        <span className={cn("max-w-[480px] truncate", !message.routing && "font-mono")}>{tool.name}</span>
       </div>
     </div>
   );
@@ -602,9 +602,9 @@ const MessagesList = memo(function MessagesList({
               );
             case "activity":
               // a failed turn is an error, not a tool run — render it as one
-              return m.tool?.name.startsWith("error:") ? (
+              return m.tool?.name.startsWith("error:") || m.routing?.status === "failed" ? (
                 <ErrorRow
-                  message={m.tool.name.slice(6).trim()}
+                  message={m.routing?.status === "failed" ? (m.tool?.name ?? "所有候选均失败") : m.tool!.name.slice(6).trim()}
                   onRetry={m.id === messages.at(-1)?.id && canRetryLast ? onRegenerate : undefined}
                 />
               ) : (

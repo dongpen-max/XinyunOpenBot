@@ -16,18 +16,21 @@ import * as composio from "./composio.ts";
 import * as mcp from "./mcp.ts";
 import { appendMcpAudit, recentMcpAudit } from "./mcp-audit.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
+import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, DATA_DIR, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { resetPathCache } from "./env-path.ts";
-import type { RuntimeEvent } from "./contracts.ts";
+import type { AgentCapabilities, ModelSelection, ProviderInstance, RuntimeEvent, RoutingMode } from "./contracts.ts";
 import { discoverModels, saveDiscoveredModels, type RelaySection } from "./models-discover.ts";
 import { modelForReasoningLevel } from "./model-downgrade.ts";
 import { parseReasoningRequest, reasoningEffortForLevel, type ReasoningLevel } from "./reasoning.ts";
-import { shouldUseCloudComputer } from "./turn-computer.ts";
+import { effectiveComputerPreference, shouldUseCloudComputer } from "./turn-computer.ts";
 import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { SseReplayBuffer } from "./sse-replay.ts";
-import { COMPUTER_CONTROL_REFUSAL, ComputerControl } from "./computer-control.ts";
+import { ComputerControl, computerControlRefusal } from "./computer-control.ts";
 import { extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { TurnScheduler } from "./turn-scheduler.ts";
+import { candidateKey, detectTurnRequirements, nextFailoverCandidate, routeCandidates, type AgentCandidate } from "./agent-router.ts";
+import { classifyProviderError, providerErrorLabel, sanitizeRuntimeEvent, type ClassifiedProviderError } from "./provider-errors.ts";
+import { ProviderHealthTracker, type HealthAttempt } from "./provider-health.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -38,6 +41,7 @@ import {
   roomResponders,
   Store,
   type GroupDefaultResponder,
+  type GroupRecord,
   type Message,
   type TaskRecord,
 } from "./store.ts";
@@ -60,6 +64,7 @@ const MIME: Record<string, string> = {
 
 ensureDirs();
 const cfg = loadConfig();
+const providerHealth = new ProviderHealthTracker(join(DATA_DIR, "provider-health.json"));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
 
@@ -85,9 +90,24 @@ type CommsContext = {
   handoffCount: number;
   visitedBots: string[];
 };
+type RoutingTurnPlan = {
+  mode: RoutingMode;
+  candidates: AgentCandidate[];
+  attempted: string[];
+  maxFailovers: number;
+};
+type RunTurnOptions = {
+  commsDepth?: number;
+  commsContext?: CommsContext;
+  userMessage?: Message;
+  reasoningLevel?: ReasoningLevel;
+  routineId?: string;
+  routingPlan?: RoutingTurnPlan;
+  replyTo?: Message["replyTo"];
+};
 const turnScheduler = new TurnScheduler<{
   text: string;
-  options?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel; routineId?: string };
+  options?: RunTurnOptions;
 }>();
 type HandoffStatus = "queued" | "running" | "completed" | "failed";
 type HandoffRecord = {
@@ -323,10 +343,100 @@ const mcpAuditByItem = new Map<string, {
   startedAt: string;
 }>();
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
+const providerRequestById = new Map<string, { providerThreadId: string; logicalThreadId: string; instanceId: string }>();
 const cloudLeaseByThread = new Map<string, () => void>();
 const cloudLeaseBoxByThread = new Map<string, string>();
 const pendingCloudLeaseByThread = new Map<string, AbortController>();
 const routineRunsByThread = new Map<string, { routineId: string; runId: string }>();
+
+type ActiveRoutedTurn = {
+  botId: string;
+  threadId: string;
+  text: string;
+  options: RunTurnOptions;
+  plan: RoutingTurnPlan;
+  candidate: AgentCandidate;
+  attempt: HealthAttempt;
+  externalSideEffect: boolean;
+  computerAction: boolean;
+  outputProduced: boolean;
+  cancelled: boolean;
+  lastError?: ClassifiedProviderError;
+};
+const activeRoutedTurns = new Map<string, ActiveRoutedTurn>();
+
+function providerForThread(threadId: string, fallbackInstanceId: string) {
+  return registry.get(activeRoutedTurns.get(threadId)?.candidate.instanceId ?? fallbackInstanceId);
+}
+
+function selectionFor(candidate: AgentCandidate): ModelSelection {
+  return { instanceId: candidate.instanceId, model: candidate.model };
+}
+
+function attemptedSelections(plan: RoutingTurnPlan): ModelSelection[] {
+  const used = new Set(plan.attempted);
+  return plan.candidates.filter((candidate) => used.has(candidateKey(candidate))).map(selectionFor);
+}
+
+function appendRoutingActivity(threadId: string, message: Omit<Message, "id" | "at">) {
+  const saved = store.appendMessage(threadId, message);
+  broadcast({ kind: "message", threadId, message: saved });
+  return saved;
+}
+
+function appendFinalRoutingFailure(active: ActiveRoutedTurn, error: ClassifiedProviderError) {
+  if (error.code === "cancelled") return;
+  appendRoutingActivity(active.threadId, {
+    role: "bot",
+    kind: "activity",
+    tool: { name: `所有可用候选均失败：${providerErrorLabel(error.code)}`, ok: false },
+    routing: {
+      status: "failed",
+      reason: error.code,
+      attempts: attemptedSelections(active.plan),
+    },
+  });
+}
+
+function retryRoutedTurn(active: ActiveRoutedTurn, error: ClassifiedProviderError): boolean {
+  if (active.plan.mode === "manual") return false;
+  const next = nextFailoverCandidate(
+    {
+      candidates: active.plan.candidates,
+      attempted: active.plan.attempted,
+      maxFailovers: active.plan.maxFailovers,
+      cancelled: active.cancelled,
+      externalSideEffect: active.externalSideEffect,
+      computerAction: active.computerAction,
+      outputProduced: active.outputProduced,
+    },
+    error,
+  );
+  if (!next.candidate) return false;
+
+  const from = selectionFor(active.candidate);
+  const to = selectionFor(next.candidate);
+  appendRoutingActivity(active.threadId, {
+    role: "bot",
+    kind: "activity",
+    tool: { name: `${active.candidate.modelLabel} ${providerErrorLabel(error.code)}，已切换到 ${next.candidate.modelLabel}`, ok: true },
+    routing: { status: "failover", from, to, reason: error.code },
+  });
+  store.patchBot(active.botId, { lastFailover: { at: Date.now(), from, to, reason: error.code } });
+  broadcastBot(store.bot(active.botId));
+  activeRoutedTurns.delete(active.threadId);
+  releaseCloudLease(active.threadId);
+  void runTurnNow(active.botId, active.text, { ...active.options, routingPlan: active.plan }).catch((failure) => {
+    appendRoutingActivity(active.threadId, {
+      role: "bot",
+      kind: "activity",
+      tool: { name: `自动切换失败：${providerErrorLabel(classifyProviderError(failure).code)}`, ok: false },
+      routing: { status: "failed", reason: classifyProviderError(failure).code, attempts: attemptedSelections(active.plan) },
+    });
+    finishScheduledTurn(active.botId);
+  });
+  return true;
+}
 
 function releaseCloudLease(threadId: string) {
   cloudLeaseByThread.get(threadId)?.();
@@ -339,27 +449,71 @@ function releaseCloudLease(threadId: string) {
 // only the latest snapshot and fold it once when the turn settles.
 const turnUsage = new Map<string, { input: number; output: number }>();
 
-// Group threads: the fold needs to know WHO is talking — the turn engine
-// records the active member here before dispatching its turn.
+// Group turns may run concurrently. Provider adapters intentionally reject a
+// second turn on the same provider thread, so each member gets an ephemeral
+// provider thread while events are folded back into the shared room thread.
+type GroupTurnContext = {
+  groupThreadId: string;
+  groupId: string;
+  botId: string;
+  instanceId?: string;
+  speaker: { botId: string; name: string; color: string };
+};
+const groupTurnContexts = new Map<string, GroupTurnContext>();
+const cancelledGroupTurns = new Set<string>();
+const groupBusyBots = new Map<string, Set<string>>();
+// Legacy single-speaker map is retained for chained turns created before the
+// context is installed.
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string }>();
+
+function markGroupBusy(group: GroupRecord, botId: string) {
+  const active = groupBusyBots.get(group.id) ?? new Set<string>();
+  active.add(botId);
+  groupBusyBots.set(group.id, active);
+  store.patchGroup(group.id, { busyBotId: [...active][0] ?? null });
+  broadcastGroup(group.id);
+}
+
+function markGroupIdle(group: GroupRecord, botId: string) {
+  const active = groupBusyBots.get(group.id);
+  active?.delete(botId);
+  if (active?.size) store.patchGroup(group.id, { busyBotId: [...active][0] ?? null });
+  else {
+    groupBusyBots.delete(group.id);
+    store.patchGroup(group.id, { busyBotId: null });
+  }
+  broadcastGroup(group.id);
+}
 
 
 bus.subscribe((event: RuntimeEvent) => {
-  broadcast({ kind: "runtime", event });
-  const bot = store.botByThread(event.threadId);
-  const group = bot ? undefined : store.groupByThread(event.threadId);
+  // Renderer diagnostics never receive provider-native payloads, headers or
+  // raw error text. The folded chat activity below is the public projection.
+  broadcast({ kind: "runtime", event: sanitizeRuntimeEvent(event) });
+  const routed = activeRoutedTurns.get(event.threadId);
+  const routedEvent = routed && (!event.providerInstanceId || event.providerInstanceId === routed.candidate.instanceId)
+    ? routed
+    : undefined;
+  if (routedEvent && event.type === "item.started" && event.itemType === "tool") routedEvent.externalSideEffect = true;
+  if (routedEvent && event.type === "item.completed" && event.itemType === "assistant_text" && event.text.trim()) {
+    routedEvent.outputProduced = true;
+  }
+  const context = groupTurnContexts.get(event.threadId);
+  const logicalThreadId = context?.groupThreadId ?? event.threadId;
+  const bot = context ? store.bot(context.botId) : store.botByThread(event.threadId);
+  const group = context ? store.groupByThread(logicalThreadId) : bot ? undefined : store.groupByThread(event.threadId);
   if (!bot && !group) return;
-  const speaker = group ? groupSpeakers.get(event.threadId) : undefined;
+  const speaker = context?.speaker ?? (group ? groupSpeakers.get(event.threadId) : undefined);
 
   const pushMessage = (m: Omit<Message, "id" | "at">) => {
-    const message = store.appendMessage(event.threadId, group && m.role === "bot" ? { ...m, from: speaker } : m);
-    broadcast({ kind: "message", threadId: event.threadId, message });
+    const message = store.appendMessage(logicalThreadId, group && m.role === "bot" ? { ...m, from: speaker } : m);
+    broadcast({ kind: "message", threadId: logicalThreadId, message });
     return message;
   };
 
   switch (event.type) {
     case "session.started":
-      if (bot && event.sessionId && event.providerInstanceId) {
+      if (bot && !context && event.sessionId && event.providerInstanceId) {
         store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId, event.threadId);
       }
       break;
@@ -384,11 +538,11 @@ bus.subscribe((event: RuntimeEvent) => {
         const messageId = toolMessageByItem.get(event.itemId);
         let toolName = "tool";
         if (messageId) {
-          toolName = store.messagesFor(event.threadId).find((m) => m.id === messageId)?.tool?.name ?? "tool";
-          const patched = store.patchMessage(event.threadId, messageId, {
+          toolName = store.messagesFor(logicalThreadId).find((m) => m.id === messageId)?.tool?.name ?? "tool";
+          const patched = store.patchMessage(logicalThreadId, messageId, {
             tool: { name: toolName, ok: event.ok },
           });
-          if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
+          if (patched) broadcast({ kind: "message.patch", threadId: logicalThreadId, message: patched });
           toolMessageByItem.delete(event.itemId);
         }
         // the bot just acted ON ITS SCREEN — refresh the preview now. Only
@@ -421,6 +575,13 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "request.opened": {
       const permission = event.requestType === "permission";
+      if (event.requestId && event.providerInstanceId) {
+        providerRequestById.set(event.requestId, {
+          providerThreadId: event.threadId,
+          logicalThreadId,
+          instanceId: event.providerInstanceId,
+        });
+      }
       // Auto mode / always-allow: answer routine tool permissions for the
       // bot so it keeps working. A QUESTION always reaches the human — the
       // whole point of asking is that a person decides — and anything that
@@ -431,7 +592,7 @@ bus.subscribe((event: RuntimeEvent) => {
         ? autoDecision(asker, event.tool, event.summary)
         : null;
       if (settled && asker && event.requestId) {
-        const instance = registry.get(asker.modelSelection.instanceId);
+            const instance = registry.get(event.providerInstanceId ?? asker.modelSelection.instanceId);
         const requestId = event.requestId;
         const { tool, summary } = event;
         // The chip is written only AFTER the provider takes the answer.
@@ -490,30 +651,53 @@ bus.subscribe((event: RuntimeEvent) => {
     case "request.resolved": {
       const messageId = event.requestId ? askMessageByRequest.get(event.requestId) : null;
       if (messageId) {
-        const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId);
+        const existing = store.messagesFor(logicalThreadId).find((m) => m.id === messageId);
         if (existing?.card && !existing.card.answered) {
-          const patched = store.patchMessage(event.threadId, messageId, {
+          const patched = store.patchMessage(logicalThreadId, messageId, {
             card: { ...existing.card, answered: event.behavior, dismissed: event.source !== "user" },
           });
-          if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
+          if (patched) broadcast({ kind: "message.patch", threadId: logicalThreadId, message: patched });
         }
         if (event.requestId) askMessageByRequest.delete(event.requestId);
+        if (event.requestId) providerRequestById.delete(event.requestId);
       }
       break;
     }
     case "runtime.error":
-      pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
+      if (routedEvent) routedEvent.lastError = classifyProviderError(event.message);
+      // Group attempts own their retry decision and publish only the final
+      // safe failure (or a switch activity), avoiding one scary error chip
+      // for an attempt that immediately recovered on another candidate.
+      else if (!context) pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${providerErrorLabel(classifyProviderError(event.message).code)}`, ok: false } });
       break;
     case "thread.token-usage.updated":
       turnUsage.set(event.threadId, { input: event.input, output: event.output });
       break;
     case "turn.completed": {
-      finishRoutineRun(event.threadId, event.ok, event.ok ? undefined : event.stopReason ?? "机器人运行失败");
+      for (const [requestId, request] of providerRequestById) {
+        if (request.providerThreadId === event.threadId) providerRequestById.delete(requestId);
+      }
+      let safeRoutingError: string | undefined;
+      if (routedEvent) {
+        if (event.ok) providerHealth.recordSuccess(routedEvent.attempt);
+        else {
+          const classified = routedEvent.cancelled
+            ? classifyProviderError("cancelled by user")
+            : routedEvent.lastError ?? classifyProviderError(event.stopReason ?? "provider turn failed");
+          safeRoutingError = providerErrorLabel(classified.code);
+          if (classified.code === "cancelled") providerHealth.recordCancelled(routedEvent.attempt);
+          else providerHealth.recordFailure(routedEvent.attempt, classified);
+          if (retryRoutedTurn(routedEvent, classified)) return;
+          appendFinalRoutingFailure(routedEvent, classified);
+        }
+        activeRoutedTurns.delete(event.threadId);
+      }
+      finishRoutineRun(event.threadId, event.ok, event.ok ? undefined : safeRoutingError ?? "机器人运行失败");
       const usage = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
       // Group turns share a room thread, so only 1:1 task turns currently
       // have an unambiguous task tally.
-      if (bot && usage) store.addTaskUsage(bot.id, event.threadId, usage);
+      if (bot && !context && usage) store.addTaskUsage(bot.id, event.threadId, usage);
       const auditPrefix = `${event.threadId}:${event.turnId ?? ""}:`;
       for (const [key, audit] of mcpAuditByItem) {
         if (!key.startsWith(auditPrefix)) continue;
@@ -531,7 +715,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // A deleted bot no longer resolves through store.bot(), so its
       // terminal event must still release the physical Box lease.
       if (!bot) releaseCloudLease(event.threadId);
-      if (bot) {
+      if (bot && !context) {
         store.patchBot(bot.id, { unread: true });
         broadcastBot(store.bot(bot.id));
         if (screenPollers.has(bot.id)) {
@@ -717,46 +901,129 @@ function replyReferenceForThread(threadId: string, value: unknown): Message["rep
   };
 }
 
-async function runTurnNow(
-  botId: string,
-  text: string,
-  opts?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel; routineId?: string },
-) {
-  const bot = store.bot(botId);
-  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
-  if (!registry.get(bot.modelSelection.instanceId)) {
+async function createRoutingPlan(bot: StoredBot, text: string): Promise<RoutingTurnPlan> {
+  const mode = bot.routingMode ?? "manual";
+  // Compatibility path: a manual turn resolves only the selected instance
+  // and never probes or waits on unrelated providers. This preserves the
+  // pre-router dispatch behavior, including hand-written model ids.
+  if (mode === "manual") {
+    const live = registry.get(bot.modelSelection.instanceId);
+    if (!live) throw Object.assign(new Error("没有可用的 Agent/模型候选"), { status: 409 });
+    const adapter = live.adapter.capabilities;
+    const candidate: AgentCandidate = {
+      instanceId: live.instanceId,
+      driverKind: live.driverKind,
+      displayName: live.displayName ?? live.driverKind,
+      model: bot.modelSelection.model,
+      modelLabel: live.models.options.find((model) => model.id === bot.modelSelection.model)?.label ?? bot.modelSelection.model,
+      capabilities: {
+        textChat: true,
+        reasoningLevels: adapter.reasoningEffort ? ["low", "medium", "high"] : [],
+        coding: adapter.coding ?? null,
+        agentTools: adapter.agentsMcp === true,
+        mcpTools: adapter.mcpTools === true,
+        imageInput: adapter.imageInput ?? null,
+        imageGeneration: adapter.imageGeneration ?? null,
+        localComputer: adapter.computerMode === "mcp",
+        cloudComputer: adapter.computerMode !== undefined,
+        browser: adapter.browser ?? adapter.computerMode !== undefined,
+        maxContextTokens: adapter.maxContextTokens ?? null,
+        sessionResume: adapter.sessionResume === true,
+        streaming: adapter.streaming ?? null,
+        available: true,
+      },
+      health: providerHealth.snapshot(live.instanceId, bot.modelSelection.model),
+      qualityScore: null,
+      costScore: null,
+    };
+    return { mode, candidates: [candidate], attempted: [], maxFailovers: 0 };
+  }
+  const described = await registry.describe(providerHealth);
+  const candidates: AgentCandidate[] = [];
+  for (const entry of described) {
+    const instanceCapabilities = entry.capabilities as AgentCapabilities;
+    for (const model of entry.models.options) {
+      candidates.push({
+        instanceId: entry.instanceId,
+        driverKind: entry.driverKind,
+        displayName: entry.displayName,
+        model: model.id,
+        modelLabel: model.label,
+        capabilities: (model.capabilities ?? instanceCapabilities) as AgentCapabilities,
+        health: model.health ?? providerHealth.snapshot(entry.instanceId, model.id),
+        qualityScore: typeof model.qualityScore === "number" ? model.qualityScore : null,
+        costScore: typeof model.costScore === "number" ? model.costScore : null,
+      });
+    }
+  }
+  const requirements = detectTurnRequirements({
+    text,
+    computer: bot.computer,
+    automatic: true,
+    agentTools: Boolean(bot.chiefOfStaff || mentionedBots(text, store.bots.filter((candidate) => candidate.id !== bot.id)).length),
+    mcpTools: mcp.activeMcpIntegrations(cfg, bot.id).length > 0,
+  });
+  const decision = routeCandidates({ mode, preferred: bot.modelSelection, requirements, candidates });
+  if (!decision.candidates.length) {
+    const reasons = [...new Set(decision.excluded.map((entry) => entry.reason))].slice(0, 3).join("、");
     throw Object.assign(
-      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
+      new Error(reasons ? `所有可用候选均不满足任务能力：${reasons}` : "没有可用的 Agent/模型候选"),
       { status: 409 },
     );
   }
+  return {
+    mode,
+    candidates: decision.candidates,
+    attempted: [],
+    maxFailovers: Math.min(4, Math.max(0, bot.maxFailovers ?? 2)),
+  };
+}
+
+async function runTurnNow(
+  botId: string,
+  text: string,
+  opts: RunTurnOptions = {},
+) {
+  const bot = store.bot(botId);
+  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
   const threadId = bot.threadId;
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
-  const commsDepth = opts?.commsDepth ?? 0;
+  const commsDepth = opts.commsDepth ?? 0;
   const commsContext: CommsContext = {
-    rootTurnId: opts?.commsContext?.rootTurnId ?? newId(),
+    rootTurnId: opts.commsContext?.rootTurnId ?? newId(),
     sourceTurnId: newId(),
     depth: commsDepth,
-    handoffCount: opts?.commsContext?.handoffCount ?? 0,
-    visitedBots: [...new Set([...(opts?.commsContext?.visitedBots ?? []), botId])],
+    handoffCount: opts.commsContext?.handoffCount ?? 0,
+    visitedBots: [...new Set([...(opts.commsContext?.visitedBots ?? []), botId])],
   };
   // a task takes its name from the first thing you asked it to do
   if (text.trim()) store.titleTaskFromFirstMessage(bot.id, text);
 
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const plan = opts.routingPlan ?? await createRoutingPlan(bot, text);
+  if (!opts.routingPlan && plan.mode !== "manual") {
+    appendRoutingActivity(threadId, {
+      role: "bot",
+      kind: "activity",
+      tool: { name: "正在选择合适的 Agent", ok: true },
+      routing: { status: "selecting" },
+    });
+  }
+  const candidate = plan.candidates.find((value) => !plan.attempted.includes(candidateKey(value)));
+  if (!candidate) throw Object.assign(new Error("所有候选均已尝试"), { status: 409 });
+  const instance = registry.get(candidate.instanceId);
   if (!instance) {
     throw Object.assign(
-      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
+      new Error(`provider instance "${candidate.instanceId}" is unavailable — pick another model in settings`),
       { status: 409 },
     );
   }
   const instanceId = instance.instanceId;
-  const reasoningEffort = reasoningEffortForLevel(opts?.reasoningLevel);
-  const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, opts?.reasoningLevel);
+  const reasoningEffort = reasoningEffortForLevel(opts.reasoningLevel);
+  const turnModel = modelForReasoningLevel(instance.models, candidate.model, opts.reasoningLevel);
 
   // an edit hands us its already-branched user message; a plain send appends
-  let userMessage = opts?.userMessage;
+  let userMessage = opts.userMessage;
   if (!userMessage) {
     userMessage = store.appendMessage(threadId, { role: "user", kind: "text", text });
     broadcast({ kind: "message", threadId, message: userMessage });
@@ -811,16 +1078,21 @@ async function runTurnNow(
   broadcastBot(store.bot(bot.id));
 
   void (async () => {
+    let activeAttempt: ActiveRoutedTurn | null = null;
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
       if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
       const managedMcp = mcp.activeMcpIntegrations(cfg, bot.id);
       if (managedMcp.length) integrations.mcp = managedMcp;
-      const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
+      const wants = effectiveComputerPreference(bot.computer, plan.mode);
       // Capability, not provider name, decides whether this exact engine can
       // work through a cloud computer. `native` runs the whole turn on Box;
       // `mcp` mounts the provider-neutral computer proxy.
       const computerMode = instance.adapter.capabilities.computerMode;
+      const computerRefusal = computerControlRefusal(effectiveComputerControl(bot.id));
+      if (computerMode && wants !== "off" && computerRefusal) {
+        throw new Error(computerRefusal);
+      }
       if (wants === "cloud" && !computerMode) {
         throw new Error("当前模型仅支持对话/本地编程，不能操作云端电脑；请切换到标有“支持云端工作”的模型");
       }
@@ -926,6 +1198,22 @@ async function runTurnNow(
         }
       }
 
+      plan.attempted.push(candidateKey(candidate));
+      const healthAttempt = providerHealth.startAttempt(instanceId, turnModel);
+      activeAttempt = {
+        botId: bot.id,
+        threadId,
+        text,
+        options: { ...opts, userMessage, routingPlan: plan },
+        plan,
+        candidate,
+        attempt: healthAttempt,
+        externalSideEffect: false,
+        computerAction: Boolean(integrations.computer || integrations.localComputer),
+        outputProduced: false,
+        cancelled: false,
+      };
+      activeRoutedTurns.set(threadId, activeAttempt);
       await instance.adapter.sendTurn({
         threadId,
         text: turnText,
@@ -961,13 +1249,23 @@ async function runTurnNow(
       if (previewBoxId) startScreenPoller(bot.id, previewBoxId);
     } catch (e) {
       releaseCloudLease(threadId);
-      const message = e instanceof Error ? e.message : String(e);
-      const failure = store.appendMessage(threadId, {
-        role: "bot",
-        kind: "activity",
-        tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
-      });
-      broadcast({ kind: "message", threadId, message: failure });
+      if (activeAttempt && activeRoutedTurns.get(threadId) === activeAttempt) {
+        activeRoutedTurns.delete(threadId);
+        const classified = classifyProviderError(e);
+        providerHealth.recordFailure(activeAttempt.attempt, classified);
+        if (retryRoutedTurn(activeAttempt, classified)) return;
+        appendFinalRoutingFailure(activeAttempt, classified);
+      } else if (!activeAttempt) {
+        const classified = classifyProviderError(e);
+        appendRoutingActivity(threadId, {
+          role: "bot",
+          kind: "activity",
+          tool: { name: `任务启动失败：${providerErrorLabel(classified.code)}`, ok: false },
+          routing: { status: "failed", reason: classified.code, attempts: attemptedSelections(plan) },
+        });
+      } else {
+        return;
+      }
       store.patchBot(bot.id, { busy: false });
       broadcastBot(store.bot(bot.id));
       finishScheduledTurn(bot.id);
@@ -1002,10 +1300,15 @@ async function drainBotQueue(botId: string) {
     }
     const bot = store.bot(botId);
     if (bot) {
+      const raw = error instanceof Error ? error.message : String(error);
+      const safe = /^(所有可用候选|没有可用的 Agent|所有候选均已尝试)/.test(raw)
+        ? raw.slice(0, 180)
+        : `任务启动失败：${providerErrorLabel(classifyProviderError(error).code)}`;
       const message = store.appendMessage(bot.threadId, {
         role: "bot",
         kind: "activity",
-        tool: { name: `error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 180), ok: false },
+        tool: { name: safe, ok: false },
+        routing: { status: "failed", reason: classifyProviderError(error).code },
       });
       broadcast({ kind: "message", threadId: bot.threadId, message });
     }
@@ -1016,11 +1319,11 @@ async function drainBotQueue(botId: string) {
 async function startTurn(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; commsContext?: CommsContext; userMessage?: Message; reasoningLevel?: ReasoningLevel; replyTo?: Message["replyTo"]; routineId?: string },
+  opts?: RunTurnOptions,
 ): Promise<{ queued: boolean; queueDepth: number }> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
-  if (!registry.get(bot.modelSelection.instanceId)) {
+  if ((bot.routingMode ?? "manual") === "manual" && !registry.get(bot.modelSelection.instanceId)) {
     throw Object.assign(
       new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
       { status: 409 },
@@ -1118,6 +1421,80 @@ function broadcastGroup(groupId: string) {
   if (group) broadcast({ kind: "group", group });
 }
 
+async function groupTurnIntegrations(
+  bot: StoredBot,
+  instance: ProviderInstance,
+  providerThreadId: string,
+  taskText: string,
+  commsContext: CommsContext,
+) {
+  const integrations: NonNullable<Parameters<ProviderInstance["adapter"]["sendTurn"]>[0]["integrations"]> = {};
+  if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
+  const managedMcp = mcp.activeMcpIntegrations(cfg, bot.id);
+  if (managedMcp.length) integrations.mcp = managedMcp;
+  if (
+    instance.adapter.capabilities.agentsMcp === true &&
+    store.bots.some((candidate) => candidate.id !== bot.id && !candidate.hidden)
+  ) integrations.agents = agentsIntegration(bot.id, commsContext);
+
+  // Room responders use a computer only when the user explicitly configured
+  // one. Chat-only responders stay entirely outside the Box lane.
+  if (bot.computer === "cloud") {
+    const refusal = computerControlRefusal(effectiveComputerControl(bot.id));
+    if (refusal) throw new Error(refusal);
+    if (!instance.adapter.capabilities.computerMode) throw new Error("当前 Agent 不支持云电脑操作");
+    if (!box.boxConfigured(cfg)) throw new Error("尚未配置 Box 令牌，无法启动云端电脑");
+    let cloud = await box.findBox(cfg, bot.id).catch(() => null);
+    if (!cloud) {
+      if (!box.automaticBoxCreationEnabled(cfg)) throw new Error("未找到云端电脑，且已禁止自动创建");
+      await box.provisionBox(cfg, bot.id, bot.name, (state) => broadcast({ kind: "computer", botId: bot.id, state }));
+      cloud = await box.findBox(cfg, bot.id).catch(() => null);
+    }
+    if (!cloud) throw new Error("云端电脑不可用");
+    if (!["idle", "ready", "running"].includes(cloud.state)) {
+      cloud = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? cloud;
+    }
+    if (!["idle", "ready", "running"].includes(cloud.state)) throw new Error(`云端电脑当前状态为 ${cloud.state ?? "unknown"}`);
+    botBoxIds.set(bot.id, cloud.id);
+    integrations.computer = {
+      boxId: cloud.id,
+      token: cfg.box!.token!,
+      control: {
+        botId: bot.id,
+        url: `http://127.0.0.1:${PORT}/api/internal/computer-control/${encodeURIComponent(bot.id)}`,
+        token: COMMS_TOKEN,
+      },
+    };
+    const leaseAbort = new AbortController();
+    pendingCloudLeaseByThread.set(providerThreadId, leaseAbort);
+    let release: () => void;
+    try {
+      release = await cloudComputerLeases.acquire(
+        cloud.id,
+        () => {
+          broadcast({ kind: "computer", botId: bot.id, state: "waiting" });
+          broadcastComputerLease(cloud!.id);
+        },
+        leaseAbort.signal,
+        { botId: bot.id, task: taskText.slice(0, 160) },
+      );
+    } finally {
+      pendingCloudLeaseByThread.delete(providerThreadId);
+    }
+    cloudLeaseByThread.set(providerThreadId, release);
+    cloudLeaseBoxByThread.set(providerThreadId, cloud.id);
+    broadcastComputerLease(cloud.id);
+  } else if (bot.computer === "local") {
+    const refusal = computerControlRefusal(effectiveComputerControl(bot.id));
+    if (refusal) throw new Error(refusal);
+    if (instance.adapter.capabilities.computerMode !== "mcp") throw new Error("当前 Agent 不支持本地电脑操作");
+    const local = readCuaConnection();
+    if (!local) throw new Error("本地电脑连接不可用");
+    integrations.localComputer = local;
+  }
+  return integrations;
+}
+
 async function runGroupMemberTurn(
   groupId: string,
   botId: string,
@@ -1131,24 +1508,10 @@ async function runGroupMemberTurn(
   const bot = store.bot(botId);
   if (!group || !bot) return;
   spoken.add(botId);
-  const instance = registry.get(bot.modelSelection.instanceId);
   const userName = cfg.profile?.name?.trim() || "User";
-  if (!instance) {
-    const failure = store.appendMessage(group.threadId, {
-      role: "bot",
-      kind: "activity",
-      from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: `error: ${bot.name}'s model is unavailable`, ok: false },
-    });
-    broadcast({ kind: "message", threadId: group.threadId, message: failure });
-    return;
-  }
-  const reasoningEffort = reasoningEffortForLevel(reasoningLevel);
-  const turnModel = modelForReasoningLevel(instance.models, bot.modelSelection.model, reasoningLevel);
 
-  store.patchGroup(group.id, { busyBotId: bot.id });
-  broadcastGroup(group.id);
-  groupSpeakers.set(group.threadId, { botId: bot.id, name: bot.name, color: bot.color });
+  markGroupBusy(group, bot.id);
+  const speaker = { botId: bot.id, name: bot.name, color: bot.color };
 
   const roster = group.memberIds
     .map((id) => store.bot(id))
@@ -1167,47 +1530,201 @@ async function runGroupMemberTurn(
     .join("\n");
 
   const text = `${serializeRoomContext(group.threadId, userName)}\n\n(Reply to the conversation above as ${bot.name}.)`;
+  const commsContext: CommsContext = {
+    rootTurnId: newId(),
+    sourceTurnId: newId(),
+    depth: 0,
+    handoffCount: 0,
+    visitedBots: [bot.id],
+  };
 
-  // run the turn and wait for it to settle, folding the reply text so a
-  // chained @mention can be routed afterwards
-  let replyText = "";
-  await new Promise<void>((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      unsub();
-      resolve();
-    };
-    const unsub = bus.subscribe((e: RuntimeEvent) => {
-      if (e.threadId !== group.threadId) return;
-      if (e.type === "item.completed" && e.itemType === "assistant_text") replyText += `\n${e.text}`;
-      else if (e.type === "turn.completed") finish();
+  let plan: RoutingTurnPlan;
+  try {
+    plan = await createRoutingPlan(bot, text);
+  } catch (error) {
+    appendRoutingActivity(group.threadId, {
+      role: "bot",
+      kind: "activity",
+      from: speaker,
+      tool: { name: `error: ${providerErrorLabel(classifyProviderError(error).code)}`, ok: false },
+      routing: { status: "failed", reason: classifyProviderError(error).code },
     });
-    const timer = setTimeout(finish, 5 * 60_000);
-    instance.adapter
-      .sendTurn({
-        threadId: group.threadId,
+    markGroupIdle(group, bot.id);
+    return;
+  }
+  const reasoningEffort = reasoningEffortForLevel(reasoningLevel);
+  let replyText = "";
+  let first = true;
+  for (;;) {
+    const candidate = plan.candidates.find((value) => !plan.attempted.includes(candidateKey(value)));
+    if (!candidate) break;
+    const instance = registry.get(candidate.instanceId);
+    if (!instance) {
+      plan.attempted.push(candidateKey(candidate));
+      continue;
+    }
+    if (first && plan.mode !== "manual") {
+      appendRoutingActivity(group.threadId, {
+        role: "bot",
+        kind: "activity",
+        from: speaker,
+        tool: { name: `已为 ${bot.name} 选择 ${candidate.modelLabel}`, ok: true },
+        routing: { status: "selecting", to: selectionFor(candidate) },
+      });
+    }
+    first = false;
+
+    // The preferred candidate keeps the stable room/bot provider session.
+    // A replacement gets an isolated thread so a late terminal event from
+    // the failed engine cannot settle or append output to the replacement.
+    const providerThreadId = plan.attempted.length === 0
+      ? `group:${group.threadId}:${bot.id}`
+      : `group:${group.threadId}:${bot.id}:failover:${plan.attempted.length}`;
+    groupTurnContexts.set(providerThreadId, {
+      groupThreadId: group.threadId,
+      groupId: group.id,
+      botId: bot.id,
+      instanceId: instance.instanceId,
+      speaker,
+    });
+
+    const turnModel = modelForReasoningLevel(instance.models, candidate.model, reasoningLevel);
+    plan.attempted.push(candidateKey(candidate));
+    let integrations: Awaited<ReturnType<typeof groupTurnIntegrations>>;
+    try {
+      integrations = await groupTurnIntegrations(bot, instance, providerThreadId, text, commsContext);
+    } catch (integrationError) {
+      releaseCloudLease(providerThreadId);
+      groupTurnContexts.delete(providerThreadId);
+      const error = classifyProviderError(integrationError);
+      if (error.code !== "cancelled") {
+        appendRoutingActivity(group.threadId, {
+          role: "bot",
+          kind: "activity",
+          from: speaker,
+          tool: { name: `任务启动失败：${providerErrorLabel(error.code)}`, ok: false },
+          routing: { status: "failed", reason: error.code, attempts: attemptedSelections(plan) },
+        });
+      }
+      cancelledGroupTurns.delete(providerThreadId);
+      break;
+    }
+    const attempt = providerHealth.startAttempt(instance.instanceId, turnModel);
+    const result = await new Promise<{
+      ok: boolean;
+      error?: ClassifiedProviderError;
+      outputProduced: boolean;
+      externalSideEffect: boolean;
+      text: string;
+    }>((resolve) => {
+      let done = false;
+      let lastError: ClassifiedProviderError | undefined;
+      let timedOut = false;
+      let outputProduced = false;
+      let externalSideEffect = false;
+      let attemptText = "";
+      const finish = (value: { ok: boolean; error?: ClassifiedProviderError }) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        unsub();
+        resolve({ ...value, outputProduced, externalSideEffect, text: attemptText });
+      };
+      const unsub = bus.subscribe((event: RuntimeEvent) => {
+        if (event.threadId !== providerThreadId || event.providerInstanceId !== instance.instanceId) return;
+        if (event.type === "item.started" && event.itemType === "tool") externalSideEffect = true;
+        else if (event.type === "item.completed" && event.itemType === "assistant_text" && event.text.trim()) {
+          outputProduced = true;
+          attemptText += `\n${event.text}`;
+        } else if (event.type === "runtime.error") lastError = classifyProviderError(event.message);
+        else if (event.type === "turn.completed") {
+          const cancelled = cancelledGroupTurns.delete(providerThreadId);
+          finish({
+            ok: event.ok,
+            ...(event.ok ? {} : {
+              error: cancelled
+                ? classifyProviderError("cancelled by user")
+                : timedOut
+                  ? classifyProviderError("group turn timeout")
+                  : lastError ?? classifyProviderError(event.stopReason ?? "turn failed"),
+            }),
+          });
+        }
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        void instance.adapter.interruptTurn(providerThreadId)
+          .catch(() => {})
+          .finally(() => finish({ ok: false, error: classifyProviderError("group turn timeout") }));
+      }, 5 * 60_000);
+      instance.adapter.sendTurn({
+        threadId: providerThreadId,
         text,
         system,
         permissionMode: bot.autoApprove ? "auto" : "ask",
         model: turnModel,
         reasoningEffort,
-      })
-      .catch((err) => {
-        const failure = store.appendMessage(group.threadId, {
+        integrations,
+      }).catch((error) => finish({ ok: false, error: classifyProviderError(error) }));
+    });
+    releaseCloudLease(providerThreadId);
+    groupTurnContexts.delete(providerThreadId);
+    cancelledGroupTurns.delete(providerThreadId);
+    replyText += result.text;
+
+    if (result.ok) {
+      providerHealth.recordSuccess(attempt);
+      break;
+    }
+    const error = result.error ?? classifyProviderError("turn failed");
+    if (error.code === "cancelled") providerHealth.recordCancelled(attempt);
+    else providerHealth.recordFailure(attempt, error);
+    const next = nextFailoverCandidate({
+      candidates: plan.candidates,
+      attempted: plan.attempted,
+      maxFailovers: plan.maxFailovers,
+      cancelled: error.code === "cancelled",
+      externalSideEffect: result.externalSideEffect,
+      // Group computer responders remain in their serialized lane and are
+      // never replayed on another engine, even if no tool event was emitted.
+      computerAction: bot.computer === "cloud" || bot.computer === "local",
+      outputProduced: result.outputProduced,
+    }, error);
+    if (!next.candidate) {
+      if (error.code !== "cancelled") {
+        appendRoutingActivity(group.threadId, {
           role: "bot",
           kind: "activity",
-          from: { botId: bot.id, name: bot.name, color: bot.color },
-          tool: { name: `error: ${err instanceof Error ? err.message.slice(0, 140) : "turn failed"}`, ok: false },
+          from: speaker,
+          tool: { name: `所有可用候选均失败：${providerErrorLabel(error.code)}`, ok: false },
+          routing: { status: "failed", reason: error.code, attempts: attemptedSelections(plan) },
         });
-        broadcast({ kind: "message", threadId: group.threadId, message: failure });
-        finish();
-      });
-  });
-  groupSpeakers.delete(group.threadId);
-  store.patchGroup(group.id, { busyBotId: null, unread: true });
+      }
+      break;
+    }
+    const from = selectionFor(candidate);
+    const to = selectionFor(next.candidate);
+    appendRoutingActivity(group.threadId, {
+      role: "bot",
+      kind: "activity",
+      from: speaker,
+      tool: { name: `${candidate.modelLabel} ${providerErrorLabel(error.code)}，已切换到 ${next.candidate.modelLabel}`, ok: true },
+      routing: { status: "failover", from, to, reason: error.code },
+    });
+    store.patchBot(bot.id, { lastFailover: { at: Date.now(), from, to, reason: error.code } });
+    broadcastBot(store.bot(bot.id));
+  }
+  if (first) {
+    appendRoutingActivity(group.threadId, {
+      role: "bot",
+      kind: "activity",
+      from: speaker,
+      tool: { name: `所有可用候选均失败：${bot.name} 的模型不可用`, ok: false },
+      routing: { status: "failed", reason: "temporarily_unavailable", attempts: attemptedSelections(plan) },
+    });
+  }
+  markGroupIdle(group, bot.id);
+  store.patchGroup(group.id, { unread: true });
   broadcastGroup(group.id);
 
   // chained mentions: a member's reply can summon teammates — one hop only
@@ -1245,7 +1762,18 @@ function startGroupTurn(groupId: string, text: string, reasoningLevel?: Reasonin
   const prev = groupQueues.get(groupId) ?? Promise.resolve();
   const next = prev.then(async () => {
     const spoken = new Set<string>();
-    for (const responder of responders) {
+    const unique = responders.filter((responder, index) => responders.findIndex((candidate) => candidate.id === responder.id) === index);
+    const parallel: typeof unique = [];
+    const serialized: typeof unique = [];
+    for (const responder of unique) {
+      // A configured computer turn must stay in the Box lane. Chat-only
+      // responders do not share that physical resource and can run together.
+      const explicitComputer = responder.computer === "cloud" || responder.computer === "local";
+      const needsComputer = explicitComputer;
+      (needsComputer ? serialized : parallel).push(responder);
+    }
+    await Promise.all(parallel.map((responder) => runGroupMemberTurn(groupId, responder.id, 0, reasoningLevel, spoken)));
+    for (const responder of serialized) {
       if (spoken.has(responder.id)) continue;
       await runGroupMemberTurn(groupId, responder.id, 0, reasoningLevel, spoken);
     }
@@ -1838,10 +2366,15 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const group = store.group(m[1]);
       if (!group) return json(res, 404, { error: "no such room" });
-      const busy = group.busyBotId ? store.bot(group.busyBotId) : undefined;
-      const instance = busy ? registry.get(busy.modelSelection.instanceId) : undefined;
-      await instance?.adapter.interruptTurn(group.threadId).catch(() => {});
-      return json(res, 200, { ok: true });
+      const active = [...groupTurnContexts.entries()].filter(([, context]) => context.groupId === group.id);
+      await Promise.all(active.map(async ([providerThreadId, context]) => {
+        cancelledGroupTurns.add(providerThreadId);
+        pendingCloudLeaseByThread.get(providerThreadId)?.abort();
+        pendingCloudLeaseByThread.delete(providerThreadId);
+        await registry.get(context.instanceId ?? "")?.adapter.interruptTurn(providerThreadId).catch(() => {});
+        releaseCloudLease(providerThreadId);
+      }));
+      return json(res, 200, { ok: true, cancelled: active.length });
     }
 
     // emoji reactions — works on any thread (1:1 or room)
@@ -1864,8 +2397,14 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "avatarKind", "modelAvatar", "customMascotShape", "avatarImage", "mascotExpression", "pinned", "hidden"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotShape", "avatarKind", "modelAvatar", "customMascotShape", "avatarImage", "mascotExpression", "pinned", "hidden", "routingMode", "maxFailovers"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
+      }
+      if (body.routingMode !== undefined && !["manual", "balanced", "quality", "speed", "cost"].includes(body.routingMode)) {
+        return json(res, 400, { error: "invalid routingMode" });
+      }
+      if (body.maxFailovers !== undefined && (!Number.isInteger(body.maxFailovers) || body.maxFailovers < 0 || body.maxFailovers > 4)) {
+        return json(res, 400, { error: "maxFailovers must be an integer from 0 to 4" });
       }
       if (body.avatarImage !== undefined) {
         if (body.avatarImage !== null) {
@@ -1941,7 +2480,7 @@ const server = createServer(async (req, res) => {
       // a running turn dies with its bot
       pendingCloudLeaseByThread.get(bot.threadId)?.abort();
       pendingCloudLeaseByThread.delete(bot.threadId);
-      await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
+      await providerForThread(bot.threadId, bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
       releaseCloudLease(bot.threadId);
       stopScreenPoller(bot.id);
       releaseComputerControl(bot.id);
@@ -2005,7 +2544,7 @@ const server = createServer(async (req, res) => {
       if (!source || source.role !== "user" || source.kind !== "text") {
         return json(res, 404, { error: "only user messages can be edited" });
       }
-      if (!registry.get(bot.modelSelection.instanceId)) {
+      if ((bot.routingMode ?? "manual") === "manual" && !registry.get(bot.modelSelection.instanceId)) {
         return json(res, 409, {
           error: `provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`,
         });
@@ -2038,9 +2577,12 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const body = await readBody(req);
-      const instance = registry.get(bot.modelSelection.instanceId);
+      const pending = providerRequestById.get(String(body.requestId));
+      if (pending && pending.logicalThreadId !== bot.threadId) return json(res, 404, { error: "no such pending request" });
+      const providerThreadId = pending?.providerThreadId ?? bot.threadId;
+      const instance = pending ? registry.get(pending.instanceId) : providerForThread(bot.threadId, bot.modelSelection.instanceId);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
-      await instance.adapter.respondToRequest(bot.threadId, String(body.requestId), {
+      await instance.adapter.respondToRequest(providerThreadId, String(body.requestId), {
         behavior: body.behavior,
         message: body.message,
       });
@@ -2053,10 +2595,21 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const threadId = m[1];
       const body = await readBody(req);
+      const pending = providerRequestById.get(String(body.requestId));
+      if (pending) {
+        if (pending.logicalThreadId !== threadId) return json(res, 404, { error: "no such pending request" });
+        const instance = registry.get(pending.instanceId);
+        if (!instance) return json(res, 409, { error: "provider unavailable" });
+        await instance.adapter.respondToRequest(pending.providerThreadId, String(body.requestId), {
+          behavior: body.behavior,
+          message: body.message,
+        });
+        return json(res, 200, { ok: true });
+      }
       const group = store.groupByThread(threadId);
       const owner = group ? (group.busyBotId ? store.bot(group.busyBotId) : undefined) : store.botByThread(threadId);
       if (!owner) return json(res, 404, { error: "nothing is waiting on an answer in this conversation" });
-      const instance = registry.get(owner.modelSelection.instanceId);
+      const instance = providerForThread(threadId, owner.modelSelection.instanceId);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
       await instance.adapter.respondToRequest(threadId, String(body.requestId), {
         behavior: body.behavior,
@@ -2069,11 +2622,16 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const cancelled = turnScheduler.cancelQueued(bot.id);
-      const instance = registry.get(bot.modelSelection.instanceId);
+      const active = activeRoutedTurns.get(bot.threadId);
+      if (active) active.cancelled = true;
+      const instance = providerForThread(bot.threadId, bot.modelSelection.instanceId);
       pendingCloudLeaseByThread.get(bot.threadId)?.abort();
       pendingCloudLeaseByThread.delete(bot.threadId);
-      releaseCloudLease(bot.threadId);
-      await instance?.adapter.interruptTurn(bot.threadId);
+      try {
+        await instance?.adapter.interruptTurn(bot.threadId);
+      } finally {
+        releaseCloudLease(bot.threadId);
+      }
       if (!turnScheduler.isActive(bot.id)) {
         store.patchBot(bot.id, { busy: false });
         broadcastBot(store.bot(bot.id));
@@ -2134,7 +2692,7 @@ const server = createServer(async (req, res) => {
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
       resetPathCache();
-      return json(res, 200, { instances: await registry.describe() });
+      return json(res, 200, { instances: await registry.describe(providerHealth) });
     }
 
     // ── app config (API keys — never echoed back, booleans only) ──
@@ -2353,8 +2911,10 @@ const server = createServer(async (req, res) => {
       const botId = m[1];
       const bot = store.bot(botId);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      if (m[2] === "exec" && effectiveComputerControl(botId).held) {
-        return json(res, 409, { error: COMPUTER_CONTROL_REFUSAL });
+      const body = await readBody(req);
+      const refusal = computerControlRefusal(effectiveComputerControl(botId));
+      if (m[2] === "exec" && refusal) {
+        return json(res, 409, { error: refusal });
       }
       switch (m[2]) {
         case "provision":
@@ -2366,7 +2926,6 @@ const server = createServer(async (req, res) => {
             ),
           );
         case "replace": {
-          const body = await readBody(req);
           return json(
             res,
             200,
@@ -2379,9 +2938,8 @@ const server = createServer(async (req, res) => {
           return json(res, 200, await box.joinBox(cfg, botId));
         case "sleep":
           releaseComputerControl(botId);
-          return json(res, 200, await box.sleepBox(cfg, botId));
+          return json(res, 200, await box.sleepBox(cfg, botId, body?.force === true));
         case "exec": {
-          const body = await readBody(req);
           return json(res, 200, await box.execOnBox(cfg, botId, String(body.command ?? "")));
         }
         case "screenshot":

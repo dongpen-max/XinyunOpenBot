@@ -357,6 +357,8 @@ export const GrokDriver = {
                     reasoningEffort: supportsReasoningEffort,
                     computerMcp: config.computerTools,
                     agentsMcp: config.agentTools,
+                    mcpTools: true,
+                    streaming: true,
                     ...(config.computerTools ? { computerMode: "mcp" } : {}),
                 },
                 sendTurn,

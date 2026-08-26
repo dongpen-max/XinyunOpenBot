@@ -92,3 +92,7 @@ export class ComputerControl {
     }
 }
 export const COMPUTER_CONTROL_REFUSAL = "用户正在接管这台云电脑，本次操作未执行。不要重试；请等待用户交还控制权，然后重新截图再继续。";
+/** Shared server/proxy gate: model switches never bypass a human lease. */
+export function computerControlRefusal(snapshot) {
+    return snapshot.held ? COMPUTER_CONTROL_REFUSAL : null;
+}

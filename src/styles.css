@@ -372,6 +372,17 @@ body,
 }
 
 @media (max-width: 480px) {
+  /* A three-pane minimum cannot fit at phone width. When a bot/computer
+     drawer is open it becomes the whole workspace instead of leaving a
+     70px chat sliver with vertically wrapped messages. */
+  .pane-layout:has(> .pane-layout__right) > :not(.pane-layout__right) {
+    display: none;
+  }
+
+  .pane-layout:has(> .pane-layout__right) > .pane-layout__right {
+    width: 100% !important;
+  }
+
   .app-settings-center.fixed {
     padding: 8px;
   }

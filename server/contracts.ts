@@ -10,6 +10,56 @@ export type InstanceId = string;
 export type ThreadId = string;
 export type TurnId = string;
 export type ReasoningEffort = "low" | "medium" | "high";
+export type RoutingMode = "manual" | "balanced" | "quality" | "speed" | "cost";
+
+/**
+ * One capability vocabulary for provider instances and their models.
+ * `null` deliberately means "the driver/model catalog did not declare it";
+ * routing never turns an unknown into a supported capability.
+ */
+export interface AgentCapabilities {
+  textChat: boolean;
+  reasoningLevels: ReasoningEffort[];
+  coding: boolean | null;
+  agentTools: boolean;
+  mcpTools: boolean;
+  imageInput: boolean | null;
+  imageGeneration: boolean | null;
+  localComputer: boolean;
+  cloudComputer: boolean;
+  browser: boolean;
+  maxContextTokens: number | null;
+  sessionResume: boolean;
+  streaming: boolean | null;
+  available: boolean;
+}
+
+export type ProviderErrorCode =
+  | "rate_limited"
+  | "timeout"
+  | "temporarily_unavailable"
+  | "connection_lost"
+  | "context_overflow"
+  | "authentication"
+  | "configuration"
+  | "cancelled"
+  | "task_error"
+  | "unknown";
+
+export interface ProviderHealthSnapshot {
+  successes: number;
+  consecutiveFailures: number;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastErrorCode: ProviderErrorCode | null;
+  averageLatencyMs: number | null;
+  rateLimited: boolean;
+  timedOut: boolean;
+  temporarilyUnavailable: boolean;
+  circuitState: "closed" | "open" | "half_open";
+  circuitOpenUntil: string | null;
+  activeRequests: number;
+}
 
 // ── model selection ────────────────────────────────────────────────────
 // "Which model" is a data value carried on the request, never a service
@@ -156,6 +206,16 @@ export interface ProviderAdapter {
     computerMcp?: boolean;
     /** This adapter can map low/medium/high onto a native provider option. */
     reasoningEffort?: boolean;
+    /** The adapter can mount user-managed MCP servers for a turn. */
+    mcpTools?: boolean;
+    /** Explicit model/transport declarations. Omitted means unknown. */
+    coding?: boolean;
+    imageInput?: boolean;
+    imageGeneration?: boolean;
+    browser?: boolean;
+    streaming?: boolean;
+    maxContextTokens?: number;
+    sessionResume?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
@@ -190,7 +250,14 @@ export interface EngineInstall {
 // a rejection to an unavailable shadow snapshot.
 export interface ModelCatalog {
   default: string;
-  options: Array<{ id: string; label: string }>;
+  options: Array<{
+    id: string;
+    label: string;
+    /** Optional catalog facts; discovery leaves these absent rather than guessing. */
+    capabilities?: Partial<Omit<AgentCapabilities, "available">>;
+    qualityScore?: number;
+    costScore?: number;
+  }>;
 }
 
 /** Decode user-supplied model catalog from config (relay endpoints). Accepts

@@ -13,6 +13,18 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
   return instance?.models.options.find((o) => o.id === model)?.label ?? model;
 }
 
+function modelRuntimeLabel(model: InstanceInfo["models"]["options"][number]): string | null {
+  const health = model.health;
+  if (!health) return null;
+  if (health.circuitState === "open") return "熔断";
+  if (health.rateLimited) return "限额";
+  if (health.temporarilyUnavailable) return "暂不可用";
+  if (health.circuitState === "half_open") return "探测中";
+  if (health.activeRequests >= 2) return "拥堵";
+  if (health.averageLatencyMs !== null) return `${Math.round(health.averageLatencyMs)} ms`;
+  return health.successes > 0 ? "健康" : null;
+}
+
 export function ModelPicker({ bot, className }: { bot: Bot; className?: string }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
@@ -134,7 +146,8 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                 {railInstance.models.options.map((option) => {
                   const current =
                     selection.instanceId === railInstance.instanceId && selection.model === option.id;
-                  const disabled = !isEngineSelectable(railInstance);
+                  const runtimeLabel = modelRuntimeLabel(option);
+                  const disabled = !isEngineSelectable(railInstance) || option.health?.circuitState === "open";
                   return (
                     <button
                       key={option.id}
@@ -160,6 +173,16 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                         {option.id === railInstance.models.default && (
                           <span className="shrink-0 rounded bg-inset px-1 py-px text-[10px] text-ink-secondary">
                             {zhCN.model.default}
+                          </span>
+                        )}
+                        {runtimeLabel && (
+                          <span className={cn(
+                            "shrink-0 rounded px-1 py-px text-[10px]",
+                            option.health?.circuitState === "open" || option.health?.rateLimited
+                              ? "bg-danger/10 text-danger"
+                              : "bg-inset text-ink-secondary",
+                          )}>
+                            {runtimeLabel}
                           </span>
                         )}
                       </span>

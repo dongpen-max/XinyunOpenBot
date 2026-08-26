@@ -1,12 +1,13 @@
 // Fan-in event bus — port of upstream's ProviderService fan-in +
 // EventNdjsonLogger tee, minus Effect. Every adapter's event stream merges
 // into one bus; each event is stamped with its providerInstanceId, teed to
-// a per-thread canonical NDJSON log (the debugging trick both upstream and
-// agentcal lean on), and delivered to subscribers (the SSE endpoint and
-// the server-side message folder).
+// a per-thread sanitized NDJSON log (native payloads and credentials never
+// reach disk), and delivered to in-process subscribers (the SSE projection
+// and the server-side message folder).
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { EVENTS_DIR } from "../config.js";
+import { sanitizeRuntimeEvent } from "../provider-errors.js";
 export class EventBus {
     listeners = new Set();
     unsubscribes = [];
@@ -26,7 +27,7 @@ export class EventBus {
     }
     publish(event) {
         try {
-            appendFileSync(join(EVENTS_DIR, `${event.threadId}.ndjson`), JSON.stringify(event) + "\n");
+            appendFileSync(join(EVENTS_DIR, `${event.threadId}.ndjson`), JSON.stringify(sanitizeRuntimeEvent(event)) + "\n");
         }
         catch {
             /* logging must never take down the stream */

@@ -62,6 +62,27 @@ function unavailableHealth(instance: InstanceInfo): EngineHealth {
 export function engineHealth(instance: InstanceInfo): EngineHealth {
   if (instance.snapshot.state !== "available") return unavailableHealth(instance);
 
+  const runtime = instance.health;
+  if (runtime?.circuitState === "open") {
+    return {
+      label: "熔断中",
+      detail: runtime.circuitOpenUntil ? `将于 ${new Date(runtime.circuitOpenUntil).toLocaleTimeString()} 后进行半开探测。` : "正在等待半开探测。",
+      tone: "danger",
+    };
+  }
+  if (runtime?.rateLimited) {
+    return { label: "已限额", detail: "最近请求达到限额，自动路由会暂时跳过。", tone: "warning" };
+  }
+  if (runtime?.temporarilyUnavailable) {
+    return { label: "暂时不可用", detail: "最近连接或服务请求失败，恢复后会自动重新加入候选。", tone: "warning" };
+  }
+  if (runtime?.circuitState === "half_open") {
+    return { label: "正在探测", detail: "熔断等待期已结束，下一次请求将验证服务是否恢复。", tone: "warning" };
+  }
+  if ((runtime?.activeRequests ?? 0) >= 2) {
+    return { label: "拥堵", detail: `${runtime!.activeRequests} 个请求正在运行，自动路由会优先选择空闲候选。`, tone: "warning" };
+  }
+
   // Codex CLI currently cannot expose its subscription login state. A false
   // value only means no relay credentials were injected, not "logged out".
   const authUnknown = instance.driverKind === "codex" && instance.snapshot.authenticated === false;
@@ -91,5 +112,5 @@ export function engineHealth(instance: InstanceInfo): EngineHealth {
 
 export function isEngineSelectable(instance: InstanceInfo): boolean {
   const health = engineHealth(instance);
-  return instance.snapshot.state === "available" && health.label !== "需要登录";
+  return instance.snapshot.state === "available" && health.label !== "需要登录" && instance.health?.circuitState !== "open";
 }

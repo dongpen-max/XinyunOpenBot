@@ -61,6 +61,13 @@ export interface Message {
   comm?: { groupId: string; withBotId: string; withName: string; withColor: MausColor };
   /** Immutable snapshot used by the reply preview and jump-to-source action. */
   replyTo?: ReplyReference;
+  routing?: {
+    status: "selecting" | "failover" | "failed";
+    from?: ModelSelection;
+    to?: ModelSelection;
+    reason?: ProviderErrorCode;
+    attempts?: ModelSelection[];
+  };
 }
 
 export interface ReplyReference {
@@ -97,6 +104,9 @@ export interface ModelSelection {
   model: string;
 }
 
+export type RoutingMode = "manual" | "balanced" | "quality" | "speed" | "cost";
+export type ProviderErrorCode = "rate_limited" | "timeout" | "temporarily_unavailable" | "connection_lost" | "context_overflow" | "authentication" | "configuration" | "cancelled" | "task_error" | "unknown";
+
 /** One of a bot's separate contexts: its own thread, transcript and
  * provider session. The bot's threadId points at the active one. */
 export interface Task {
@@ -128,6 +138,9 @@ export interface Bot {
   unread: boolean;
   busy?: boolean;
   modelSelection: ModelSelection;
+  routingMode?: RoutingMode;
+  maxFailovers?: number;
+  lastFailover?: { at: number; from: ModelSelection; to: ModelSelection; reason: ProviderErrorCode } | null;
   /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
   computer?: "cloud" | "local" | "off";
   /** auto mode: the bot approves its own tool permissions */
@@ -241,7 +254,17 @@ export interface InstanceInfo {
     authenticated?: boolean;
     version?: string | null;
   };
-  models: { default: string; options: Array<{ id: string; label: string }> };
+  models: {
+    default: string;
+    options: Array<{
+      id: string;
+      label: string;
+      capabilities?: AgentCapabilities;
+      health?: ProviderHealthSnapshot;
+      qualityScore?: number;
+      costScore?: number;
+    }>;
+  };
   install?: {
     command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
     docsUrl?: string;
@@ -255,7 +278,40 @@ export interface InstanceInfo {
     agentTools: boolean;
     /** Supports the per-message low/medium/high thinking selector. */
     reasoningEffort: boolean;
-  };
+  } & AgentCapabilities;
+  health?: ProviderHealthSnapshot;
+}
+
+export interface AgentCapabilities {
+  textChat: boolean;
+  reasoningLevels: Array<"low" | "medium" | "high">;
+  coding: boolean | null;
+  agentTools: boolean;
+  mcpTools: boolean;
+  imageInput: boolean | null;
+  imageGeneration: boolean | null;
+  localComputer: boolean;
+  cloudComputer: boolean;
+  browser: boolean;
+  maxContextTokens: number | null;
+  sessionResume: boolean;
+  streaming: boolean | null;
+  available: boolean;
+}
+
+export interface ProviderHealthSnapshot {
+  successes: number;
+  consecutiveFailures: number;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastErrorCode: ProviderErrorCode | null;
+  averageLatencyMs: number | null;
+  rateLimited: boolean;
+  timedOut: boolean;
+  temporarilyUnavailable: boolean;
+  circuitState: "closed" | "open" | "half_open";
+  circuitOpenUntil: string | null;
+  activeRequests: number;
 }
 
 export type ComputerActivityState =
@@ -372,7 +428,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "avatarKind" | "modelAvatar" | "customMascotShape" | "avatarImage" | "mascotExpression" | "pinned" | "hidden" | "autoApprove" | "alwaysAllow" | "chiefOfStaff" | "voiceProfile"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotShape" | "avatarKind" | "modelAvatar" | "customMascotShape" | "avatarImage" | "mascotExpression" | "pinned" | "hidden" | "autoApprove" | "alwaysAllow" | "chiefOfStaff" | "voiceProfile" | "routingMode" | "maxFailovers"
         >
       >;
     }
@@ -1249,6 +1305,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // flush any buffered tail before clearing so no tokens are lost
             flushDeltas();
             clearStream(event.threadId);
+            void refreshInstances().catch(() => {});
           }
           break;
         }

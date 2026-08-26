@@ -216,7 +216,7 @@ export const BoxAgentDriver = {
             snapshot,
             adapter: {
                 provider: DRIVER_KIND,
-                capabilities: { sessionModelSwitch: "in-session", computerMode: "native" },
+                capabilities: { sessionModelSwitch: "in-session", computerMode: "native", browser: true, streaming: true },
                 sendTurn,
                 interruptTurn: async (threadId) => active.get(threadId)?.cancel(),
                 respondToRequest: async () => {

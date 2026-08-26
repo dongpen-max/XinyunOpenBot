@@ -73,6 +73,20 @@ describe("EventBus", () => {
     expect(logged[0].type).toBe("turn.started");
   });
 
+  it("never writes provider-native payloads or credentials to the event log", () => {
+    const bus = new EventBus();
+    bus.publish(testEvent({
+      threadId: "safe-log",
+      type: "runtime.error",
+      message: "HTTP 429 Authorization: Bearer secret-value",
+      raw: { source: "fixture", payload: { joinUrl: "https://example.invalid/join", token: "secret-value" } },
+    }));
+
+    const logged = readFileSync(join(EVENTS_DIR, "safe-log.ndjson"), "utf8");
+    expect(logged).not.toMatch(/secret-value|joinUrl|authorization/i);
+    expect(JSON.parse(logged)).toMatchObject({ type: "runtime.error", message: "请求达到限额" });
+  });
+
   it("still delivers when the NDJSON log cannot be written", () => {
     rmSync(EVENTS_DIR, { recursive: true, force: true });
     const bus = new EventBus();

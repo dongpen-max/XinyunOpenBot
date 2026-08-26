@@ -6,7 +6,7 @@ import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
-import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
+import { newId, type ModelSelection, type ProviderErrorCode, type RoutingMode, type ThreadId } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { writeFileAtomic } from "./atomic.ts";
 
@@ -77,6 +77,14 @@ export interface Message {
    * bot⇄bot channel where the exchange is mirrored. */
   comm?: { groupId: string; withBotId: string; withName: string; withColor: string };
   replyTo?: ReplyReference;
+  /** Safe, structured routing activity. Never contains provider payloads. */
+  routing?: {
+    status: "selecting" | "failover" | "failed";
+    from?: ModelSelection;
+    to?: ModelSelection;
+    reason?: ProviderErrorCode;
+    attempts?: ModelSelection[];
+  };
 }
 
 export type GroupDefaultResponder =
@@ -153,6 +161,16 @@ export interface BotRecord {
   mascotExpression?: MausExpression | null;
   unread: boolean;
   modelSelection: ModelSelection;
+  /** Manual is the compatibility default for records created before P0. */
+  routingMode?: RoutingMode;
+  /** Number of replacement candidates after the first attempt (0-4). */
+  maxFailovers?: number;
+  lastFailover?: {
+    at: number;
+    from: ModelSelection;
+    to: ModelSelection;
+    reason: ProviderErrorCode;
+  } | null;
   /** provider-native continuation per instance (e.g. claude session id) */
   resumeCursors: Record<string, unknown>;
   /** which computer the bot acts on: its cloud box, this Mac (local CUA),

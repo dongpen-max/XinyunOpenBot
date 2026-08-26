@@ -64,6 +64,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [localFrame, setLocalFrame] = useState<string | null>(null);
   const [pending, setPending] = useState<"join" | "sleep" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [forceStopRequired, setForceStopRequired] = useState(false);
   const control = state.computerControl[bot.id] ?? { held: false, helpReason: null };
   const [controlPending, setControlPending] = useState(false);
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -77,6 +78,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canWorkInCloud = engine?.capabilities?.computerTools === true;
   const localComputerLabel = window.ogb?.platform === "win32" ? zhCN.computer.thisComputer : zhCN.computer.thisMac;
+  // Windows uses a frameless title-bar overlay. Keep the native
+  // minimize/maximize/close controls clear of this panel's header too (the
+  // chat and settings headers already reserve the same safe area).
+  const isWin = window.ogb?.platform === "win32";
+  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
+  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
@@ -297,9 +304,10 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         ? cloudFrame && `data:${cloudFrame.mime};base64,${cloudFrame.png}`
         : null;
 
-  const run = async (kind: "join" | "sleep") => {
+  const run = async (kind: "join" | "sleep", force = false) => {
     setPending(kind);
     setError(null);
+    if (kind === "sleep" && !force) setForceStopRequired(false);
     try {
       if (kind === "join") {
         if (!window.ogb?.cloudDesktop) throw new Error("云端桌面只能在 XinyunOpen Bot 桌面应用中打开");
@@ -310,10 +318,17 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       // before asking the server to archive the shared workspace computer.
       await window.ogb?.cloudDesktop?.close();
       dispatch({ type: "closeCloudDesktop" });
-      await api(`/api/bots/${bot.id}/computer/sleep`, { method: "POST" });
+      await api(`/api/bots/${bot.id}/computer/sleep`, {
+        method: "POST",
+        ...(force ? { body: JSON.stringify({ force: true }) } : {}),
+      });
       setBoxState("archived");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "云电脑操作失败，请稍后重试");
+      const message = e instanceof Error ? e.message : "云电脑操作失败，请稍后重试";
+      setError(message);
+      if (kind === "sleep" && /snapshot|快照|保存|stop failed|could not stop|停止失败/i.test(message)) {
+        setForceStopRequired(true);
+      }
     } finally {
       setPending(null);
     }
@@ -331,11 +346,18 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   return (
     <aside className="animate-panel-in flex h-full w-full min-w-0 flex-col bg-panel">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3">
+      <div
+        className={cn(
+          "flex items-center justify-between py-3",
+          isWin ? "pr-[148px] pl-4" : "px-4",
+        )}
+        style={drag}
+      >
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: true })}
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           title={zhCN.computer.botSettings}
+          style={noDrag}
         >
           <Settings size={18} />
         </button>
@@ -343,6 +365,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         <button
           onClick={() => dispatch({ type: "toggleComputer", open: false })}
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+          style={noDrag}
         >
           <X size={18} />
         </button>
@@ -422,6 +445,28 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {error && (
           <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
             {error}
+          </div>
+        )}
+        {forceStopRequired && phase === "ready" && (
+          <div className="mt-3 rounded-xl border border-warning/35 bg-warning/10 p-4 text-[12px] leading-relaxed text-warning">
+            <div className="font-medium">最近一次快照失败</div>
+            <div className="mt-1 text-ink-secondary">强制停止会丢失自上次成功快照后的未保存修改。确认后将立即停止云电脑。</div>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => void run("sleep", true)}
+                disabled={pending === "sleep"}
+                className="flex-1 rounded-lg bg-danger px-3 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
+              >
+                {pending === "sleep" ? "正在强制停止…" : "仍要强制停止"}
+              </button>
+              <button
+                onClick={() => { setForceStopRequired(false); setError(null); }}
+                disabled={pending === "sleep"}
+                className="rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+              >
+                保持运行
+              </button>
+            </div>
           </div>
         )}
         {phase === "ready" && control.helpReason && !control.held && (

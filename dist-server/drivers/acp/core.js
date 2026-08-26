@@ -463,8 +463,12 @@ export function createAcpDriver(support) {
                     capabilities: {
                         sessionModelSwitch: "unsupported",
                         agentsMcp: true,
+                        mcpTools: true,
                         computerMcp: true,
                         computerMode: "mcp",
+                        sessionResume: true,
+                        streaming: true,
+                        coding: true,
                     },
                     sendTurn,
                     interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),
