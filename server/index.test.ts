@@ -282,6 +282,40 @@ describe("harness HTTP API", () => {
     await api("PATCH", `/api/bots/${bot.id}`, { routingMode: "manual" });
   });
 
+  it("persists, runs, and updates a real workflow graph through the HTTP API", async () => {
+    const listed = await api("GET", "/api/bots");
+    const bot = listed.body.bots[0];
+    await api("PATCH", `/api/bots/${bot.id}`, { routingMode: "balanced" });
+    const created = await api("POST", "/api/workflows", {
+      name: "API workflow",
+      ownerBotId: bot.id,
+      objective: "Verify workflow execution",
+      nodes: [
+        { id: "prepare", title: "Prepare", prompt: "Prepare safely", botId: bot.id, maxRetries: 0 },
+        { id: "review", title: "Review", prompt: "Review", botId: bot.id, dependsOn: ["prepare"] },
+      ],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.workflow.nodes).toHaveLength(2);
+    const workflowId = created.body.workflow.id;
+    const patched = await api("PATCH", `/api/workflows/${workflowId}`, { space: { facts: ["server-backed"] } });
+    expect(patched.body.workflow.space.facts).toEqual(["server-backed"]);
+    expect((await api("POST", `/api/workflows/${workflowId}/run`)).status).toBe(202);
+    const deadline = Date.now() + 5_000;
+    let workflow: any;
+    while (Date.now() < deadline) {
+      workflow = (await api("GET", `/api/workflows/${workflowId}`)).body.workflow;
+      if (["failed", "completed"].includes(workflow?.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(workflow.status).toBe("failed");
+    expect(workflow.nodes[0].status).toBe("failed");
+    expect(workflow.nodes[1].status).toBe("skipped");
+    const all = await api("GET", `/api/workflows?botId=${bot.id}`);
+    expect(all.body.workflows.some((item: { id: string }) => item.id === workflowId)).toBe(true);
+    await api("PATCH", `/api/bots/${bot.id}`, { routingMode: "manual" });
+  });
+
   it("adds and removes room members with canonical membership validation", async () => {
     const initial = await api("GET", "/api/bots");
     const base = initial.body.bots[0];

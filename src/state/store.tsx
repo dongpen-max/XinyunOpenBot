@@ -192,6 +192,19 @@ export interface TaskTrace {
   hasExternalSideEffect: boolean; hasComputerAction: boolean; errorCode?: ProviderErrorCode; events: TaskTraceEvent[];
 }
 
+export type WorkflowStatus = "draft" | "running" | "paused" | "waiting_approval" | "completed" | "failed" | "cancelled";
+export interface WorkflowNode {
+  id: string; title: string; prompt: string; botId: string; dependsOn: string[]; runIf: "all_success" | "any_failed" | "always";
+  requiresComputer: boolean; approval: boolean; status: "pending" | "waiting_approval" | "running" | "completed" | "failed" | "cancelled" | "skipped";
+  attempts: number; maxRetries: number; traceId?: string; startedAt?: number; finishedAt?: number; errorCode?: ProviderErrorCode;
+  resultMessageId?: string; result?: string; replaySafe?: boolean;
+}
+export interface WorkflowRecord {
+  id: string; name: string; ownerBotId: string; status: WorkflowStatus; createdAt: number; updatedAt: number; startedAt?: number; finishedAt?: number;
+  maxConcurrency: number; nodes: WorkflowNode[];
+  space: { objective: string; facts: string[]; hypotheses: string[]; decisions: string[]; artifacts: Array<{ name: string; path?: string; nodeId?: string }>; sources: Array<{ title: string; url?: string; nodeId?: string }> };
+}
+
 /** The visible conversation: walk parentId links from the active leaf back
  * to the root. Falls back to the flat list for pre-branching payloads. */
 export function visibleMessages(bot: Bot): Message[] {
@@ -360,6 +373,7 @@ interface AppState {
   computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null; ownerBotId?: string | null }>;
   handoffs: Record<string, HandoffRecord>;
   traces: Record<string, TaskTrace>;
+  workflows: Record<string, WorkflowRecord>;
   connected: boolean;
   error: string | null;
   mascotMotion: {
@@ -419,6 +433,7 @@ type Action =
   | { type: "botPatched"; bot: Partial<Bot> & { id: string } }
   | { type: "handoffPatched"; handoff: HandoffRecord }
   | { type: "tracePatched"; trace: TaskTrace }
+  | { type: "workflowPatched"; workflow: WorkflowRecord }
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
@@ -715,6 +730,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, handoffs: { ...state.handoffs, [action.handoff.id]: action.handoff } };
     case "tracePatched":
       return { ...state, traces: { ...state.traces, [action.trace.id]: action.trace } };
+    case "workflowPatched":
+      return { ...state, workflows: { ...state.workflows, [action.workflow.id]: action.workflow } };
     case "computerControl":
       return {
         ...state,
@@ -874,6 +891,7 @@ const initialState: AppState = {
   computerControl: {},
   handoffs: {},
   traces: {},
+  workflows: {},
   connected: false,
   error: null,
   mascotMotion: null,
@@ -1235,6 +1253,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api("/api/config")
         .then((config) => alive && rawDispatch({ type: "configStatus", config }))
         .catch(() => {});
+      api("/api/workflows")
+        .then(({ workflows }) => alive && workflows.forEach((workflow: WorkflowRecord) => rawDispatch({ type: "workflowPatched", workflow })))
+        .catch(() => {});
     };
     loadAll();
     let firstHello = true;
@@ -1348,6 +1369,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "trace":
           if (frame.trace?.id) rawDispatch({ type: "tracePatched", trace: frame.trace as TaskTrace });
+          break;
+        case "workflow":
+          if (frame.workflow?.id) rawDispatch({ type: "workflowPatched", workflow: frame.workflow as WorkflowRecord });
           break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });

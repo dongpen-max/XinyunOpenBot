@@ -32,6 +32,7 @@ import { candidateKey, detectTurnRequirements, nextFailoverCandidate, routeCandi
 import { classifyProviderError, providerErrorLabel, sanitizeRuntimeEvent, type ClassifiedProviderError } from "./provider-errors.ts";
 import { ProviderHealthTracker, type HealthAttempt } from "./provider-health.ts";
 import { TaskTraceStore } from "./task-trace.ts";
+import { WorkflowEngine, type WorkflowNode, type WorkflowRecord } from "./workflow-engine.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -107,6 +108,7 @@ type RunTurnOptions = {
   routingPlan?: RoutingTurnPlan;
   replyTo?: Message["replyTo"];
   traceId?: string;
+  computerOverride?: "cloud" | "local" | "off";
 };
 const turnScheduler = new TurnScheduler<{
   text: string;
@@ -213,6 +215,11 @@ let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+const workflowEngine = new WorkflowEngine(
+  join(DATA_DIR, "workflows.json"),
+  executeWorkflowNode,
+  (workflow) => broadcast({ kind: "workflow", workflow }),
+);
 
 type StoredBot = NonNullable<ReturnType<typeof store.bot>>;
 
@@ -1113,7 +1120,7 @@ async function runTurnNow(
       if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
       const managedMcp = mcp.activeMcpIntegrations(cfg, bot.id);
       if (managedMcp.length) integrations.mcp = managedMcp;
-      const wants = effectiveComputerPreference(bot.computer, plan.mode);
+      const wants = opts.computerOverride ?? effectiveComputerPreference(bot.computer, plan.mode);
       // Capability, not provider name, decides whether this exact engine can
       // work through a cloud computer. `native` runs the whole turn on Box;
       // `mcp` mounts the provider-neutral computer proxy.
@@ -1388,6 +1395,65 @@ async function startTurn(
   broadcastBot(store.bot(botId));
   if (!turnScheduler.isActive(botId)) void drainBotQueue(botId);
   return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0), traceId: opts.traceId! };
+}
+
+async function executeWorkflowNode(workflow: WorkflowRecord, node: WorkflowNode) {
+  const bot = store.bot(node.botId);
+  if (!bot) return { ok: false, errorCode: "configuration" as const, replaySafe: true };
+  if (node.requiresComputer && bot.computer !== "cloud" && bot.computer !== "local") {
+    return { ok: false, errorCode: "task_error" as const, replaySafe: false };
+  }
+  const dependencies = workflow.nodes
+    .filter((candidate) => node.dependsOn.includes(candidate.id) && candidate.result?.trim())
+    .map((candidate) => `### ${candidate.title}\n${candidate.result!.slice(0, 4_000)}`)
+    .join("\n\n");
+  const shared = [
+    workflow.space.facts.length ? `已确认事实：\n- ${workflow.space.facts.join("\n- ")}` : "",
+    workflow.space.hypotheses.length ? `待验证假设：\n- ${workflow.space.hypotheses.join("\n- ")}` : "",
+    workflow.space.decisions.length ? `决策记录：\n- ${workflow.space.decisions.join("\n- ")}` : "",
+  ].filter(Boolean).join("\n\n");
+  const prompt = [
+    `[工作流：${workflow.name}]`,
+    `总目标：${workflow.space.objective}`,
+    `当前节点：${node.title}`,
+    node.prompt,
+    dependencies ? `依赖节点结果：\n${dependencies}` : "",
+    shared ? `共享任务空间：\n${shared}` : "",
+    "请完成当前节点，不要擅自重复其他节点已经产生的外部操作。",
+  ].filter(Boolean).join("\n\n");
+  try {
+    const queued = await startTurn(bot.id, prompt, {
+      computerOverride: node.requiresComputer ? bot.computer : "off",
+    });
+    const deadline = Date.now() + 10 * 60_000;
+    let trace = taskTraces.get(queued.traceId);
+    while (trace && !["completed", "failed", "cancelled"].includes(trace.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      trace = taskTraces.get(queued.traceId);
+    }
+    if (!trace || !["completed", "failed", "cancelled"].includes(trace.status)) {
+      return { ok: false, traceId: queued.traceId, errorCode: "timeout" as const, retryable: true, replaySafe: true };
+    }
+    const resultMessage = trace.status === "completed"
+      ? [...store.messagesFor(bot.threadId)].reverse().find((message) =>
+          message.role === "bot" && message.kind === "text" && message.text?.trim() && message.at >= trace!.createdAt,
+        )
+      : undefined;
+    const replaySafe = !trace.hasExternalSideEffect && !trace.hasComputerAction && trace.status !== "cancelled";
+    const retryable = replaySafe && ["rate_limited", "timeout", "temporarily_unavailable", "connection_lost", "context_overflow"].includes(trace.errorCode ?? "");
+    return {
+      ok: trace.status === "completed",
+      traceId: trace.id,
+      errorCode: trace.errorCode,
+      resultMessageId: resultMessage?.id,
+      result: resultMessage?.text,
+      retryable,
+      replaySafe,
+    };
+  } catch (error) {
+    const classified = classifyProviderError(error);
+    return { ok: false, errorCode: classified.code, retryable: classified.recoverable, replaySafe: !node.requiresComputer };
+  }
 }
 
 async function runRoutine(routineId: string): Promise<{ queued: boolean; reason?: string }> {
@@ -2218,6 +2284,46 @@ const server = createServer(async (req, res) => {
       }
       const queued = await startTurn(bot.id, source.text, { replyTo: source.replyTo });
       return json(res, 202, { ok: true, ...queued });
+    }
+
+    // ── durable workflow DAG + structured shared task space ──────────
+    if (method === "GET" && path === "/api/workflows") {
+      return json(res, 200, { workflows: workflowEngine.list(url.searchParams.get("botId") ?? undefined) });
+    }
+    if (method === "POST" && path === "/api/workflows") {
+      const body = await readBody(req);
+      const ownerBotId = String(body.ownerBotId ?? "");
+      if (!store.bot(ownerBotId)) return json(res, 404, { error: "no such owner bot" });
+      const nodes = Array.isArray(body.nodes) ? body.nodes.slice(0, 50) : [];
+      if (nodes.some((node: any) => !store.bot(String(node?.botId ?? "")))) return json(res, 400, { error: "节点包含不存在的机器人" });
+      const workflow = workflowEngine.create({
+        name: String(body.name ?? ""), ownerBotId, objective: String(body.objective ?? ""),
+        maxConcurrency: Number(body.maxConcurrency ?? 4), nodes,
+      });
+      return json(res, 201, { workflow });
+    }
+    let workflowMatch = path.match(/^\/api\/workflows\/([\w-]+)$/);
+    if (workflowMatch && method === "GET") {
+      const workflow = workflowEngine.get(workflowMatch[1]);
+      return workflow ? json(res, 200, { workflow }) : json(res, 404, { error: "未找到任务图" });
+    }
+    if (workflowMatch && method === "PATCH") {
+      const body = await readBody(req);
+      const workflow = workflowEngine.patchSpace(workflowMatch[1], body.space ?? body);
+      return workflow ? json(res, 200, { workflow }) : json(res, 404, { error: "未找到任务图" });
+    }
+    workflowMatch = path.match(/^\/api\/workflows\/([\w-]+)\/(run|pause|resume|cancel)$/);
+    if (workflowMatch && method === "POST") {
+      const action = workflowMatch[2] as "run" | "pause" | "resume" | "cancel";
+      const workflow = workflowEngine[action](workflowMatch[1]);
+      return workflow ? json(res, 202, { workflow }) : json(res, 404, { error: "未找到任务图" });
+    }
+    workflowMatch = path.match(/^\/api\/workflows\/([\w-]+)\/nodes\/([\w-]+)\/(approve|retry)$/);
+    if (workflowMatch && method === "POST") {
+      const workflow = workflowMatch[3] === "approve"
+        ? workflowEngine.approve(workflowMatch[1], workflowMatch[2])
+        : workflowEngine.retry(workflowMatch[1], workflowMatch[2]);
+      return workflow ? json(res, 202, { workflow }) : json(res, 409, { error: "节点当前不可执行此操作" });
     }
 
     // Image attachments are stored outside the transcript and referenced by

@@ -40,6 +40,7 @@ import { expandWindowStart, resolveTranscriptWindow, tailWindowStart } from "@/l
 import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
 import { timelineEvents } from "@/lib/taskTimeline";
 import { ReplyQuote } from "./ReplyPreview";
+import { WorkflowBoard } from "./WorkflowBoard";
 import type { ReplyReference } from "@/state/store";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
@@ -1014,6 +1015,7 @@ export function ChatView({
       )}
 
       <TaskTimeline messages={messages} busy={bot.busy ?? false} onJump={(messageId) => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId })} />
+      <WorkflowBoard bot={bot} />
       <TracePanel bot={bot} />
       <HandoffStrip bot={bot} />
 
