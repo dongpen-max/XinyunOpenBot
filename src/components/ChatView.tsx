@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Copy,
   Crown,
+  Download,
   ListTree,
   Loader2,
   Monitor,
@@ -20,7 +21,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useStore, useStreaming, formatTime, messageVersions, visibleMessages, type Bot, type Message } from "@/state/store";
+import { api, useStore, useStreaming, formatTime, messageVersions, visibleMessages, type Bot, type Message, type TaskTrace } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -67,6 +68,66 @@ function TaskTimeline({ messages, busy, onJump }: { messages: Message[]; busy: b
       </ol>}
     </div>
   );
+}
+
+const durationLabel = (ms?: number) => ms === undefined ? "—" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+
+function TracePanel({ bot }: { bot: Bot }) {
+  const { state, dispatch } = useStore();
+  const [open, setOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api(`/api/traces?threadId=${encodeURIComponent(bot.threadId)}&limit=12`)
+      .then(({ traces }: { traces: TaskTrace[] }) => { if (alive) for (const trace of traces) dispatch({ type: "tracePatched", trace }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [bot.threadId, dispatch]);
+  const traces = Object.values(state.traces).filter((trace) => trace.threadId === bot.threadId).sort((a, b) => b.createdAt - a.createdAt);
+  const trace = traces[0];
+  if (!trace) return null;
+  const status = trace.status === "queued" ? "排队中" : trace.status === "running" ? "执行中" : trace.status === "completed" ? "已完成" : trace.status === "cancelled" ? "已取消" : "失败";
+  const exportTrace = async () => {
+    const res = await fetch(`/api/traces/${encodeURIComponent(trace.id)}/export`);
+    if (!res.ok) return setNotice("诊断包导出失败");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = `xinyun-trace-${trace.id}.json`; link.click(); URL.revokeObjectURL(url);
+    setNotice("已导出脱敏诊断包");
+  };
+  const replay = async () => {
+    try {
+      await api(`/api/traces/${encodeURIComponent(trace.id)}/replay`, { method: "POST" });
+      setNotice("已按当前路由重新加入队列");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "重放失败"); }
+  };
+  const replayable = trace.status === "failed" && !trace.hasExternalSideEffect && !trace.hasComputerAction;
+  return <div className="mx-auto w-full max-w-[900px] px-5 pt-1">
+    <div className="rounded-xl border border-hairline/35 bg-panel/60">
+      <button onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[12.5px] text-ink-secondary hover:bg-raised/40 hover:text-ink">
+        <span className="flex min-w-0 items-center gap-1.5"><ListTree size={14} /><span className="font-medium text-ink">运行追踪</span><span className={cn(trace.status === "failed" ? "text-danger" : trace.status === "completed" ? "text-success" : "text-accent")}>· {status}</span></span>
+        <span className="flex shrink-0 items-center gap-2 text-[11px]"><span>{trace.attempts.length} 次模型 · {durationLabel(trace.durationMs)}</span><ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} /></span>
+      </button>
+      {open && <div className="border-t border-hairline/30 px-3 pb-3 pt-2">
+        <div className="mb-2 grid grid-cols-2 gap-1.5 text-[11.5px] text-ink-secondary sm:grid-cols-4">
+          <span>排队 {durationLabel(trace.queueWaitMs)}</span><span>切换 {trace.failovers} 次</span>
+          <span>Token {trace.usage ? `${trace.usage.input + trace.usage.output}` : "未知"}</span><span>费用 {trace.cost === undefined ? "未提供" : trace.cost}</span>
+        </div>
+        <ol className="max-h-44 overflow-y-auto border-l border-hairline/40 pl-3">
+          {trace.events.slice(-30).map((event) => <li key={event.id} className="relative flex items-center gap-2 py-1 text-[11.5px] text-ink-secondary">
+            <span className={cn("absolute -left-[16px] size-2 rounded-full", event.ok === false || event.kind === "failed" ? "bg-danger" : event.kind === "completed" ? "bg-success" : "bg-accent")} />
+            <span className="min-w-0 flex-1 truncate">{event.label}{event.model ? ` · ${event.model.model}` : ""}{event.to ? ` → ${event.to.model}` : ""}</span>
+            {event.durationMs !== undefined && <span>{durationLabel(event.durationMs)}</span>}<time>{formatTime(event.at)}</time>
+          </li>)}
+        </ol>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button onClick={() => void exportTrace()} className="flex items-center gap-1 rounded-full border border-hairline/50 px-2.5 py-1 text-[11.5px] text-ink-secondary hover:bg-raised"><Download size={12} />导出脱敏诊断包</button>
+          {replayable && <button onClick={() => void replay()} className="flex items-center gap-1 rounded-full border border-accent/30 px-2.5 py-1 text-[11.5px] text-accent hover:bg-accent/10"><RefreshCw size={12} />使用当前路由重试</button>}
+          {notice && <span className="text-[11px] text-ink-secondary">{notice}</span>}
+        </div>
+      </div>}
+    </div>
+  </div>;
 }
 
 function HandoffStrip({ bot }: { bot: Bot }) {
@@ -953,6 +1014,7 @@ export function ChatView({
       )}
 
       <TaskTimeline messages={messages} busy={bot.busy ?? false} onJump={(messageId) => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId })} />
+      <TracePanel bot={bot} />
       <HandoffStrip bot={bot} />
 
       {/* Messages */}

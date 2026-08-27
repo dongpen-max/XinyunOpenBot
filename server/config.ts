@@ -100,6 +100,8 @@ export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbo
 const LEGACY_DATA_DIR = join(homedir(), ".opengrokbot");
 export const EVENTS_DIR = join(DATA_DIR, "events");
 export const NATIVE_DIR = join(DATA_DIR, "native");
+/** Compact, explicitly-redacted task execution diagnostics. */
+export const TRACES_DIR = join(DATA_DIR, "traces");
 
 export function ensureDirs() {
   // one-time migration from the pre-rename data dir — bots, transcripts,
@@ -111,7 +113,7 @@ export function ensureDirs() {
       /* cross-device or busy — fall through to a fresh dir */
     }
   }
-  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
+  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR, TRACES_DIR]) mkdirSync(dir, { recursive: true });
 }
 
 export function loadConfig(): AppConfig {

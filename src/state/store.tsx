@@ -181,6 +181,17 @@ export interface HandoffRecord {
   error?: string;
 }
 
+export interface TaskTraceEvent {
+  id: string; at: number; kind: "queued" | "running" | "attempt" | "tool" | "handoff" | "failover" | "computer" | "completed" | "failed" | "cancelled";
+  label: string; ok?: boolean; durationMs?: number; model?: ModelSelection; from?: ModelSelection; to?: ModelSelection; errorCode?: ProviderErrorCode;
+}
+export interface TaskTrace {
+  id: string; threadId: string; botId: string; status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  createdAt: number; startedAt?: number; finishedAt?: number; queueWaitMs?: number; durationMs?: number;
+  usage?: { input: number; output: number }; cost?: number; attempts: ModelSelection[]; failovers: number;
+  hasExternalSideEffect: boolean; hasComputerAction: boolean; errorCode?: ProviderErrorCode; events: TaskTraceEvent[];
+}
+
 /** The visible conversation: walk parentId links from the active leaf back
  * to the root. Falls back to the flat list for pre-branching payloads. */
 export function visibleMessages(bot: Bot): Message[] {
@@ -348,6 +359,7 @@ interface AppState {
   /** who currently owns the cloud computer keyboard/mouse */
   computerControl: Record<string, { held: boolean; helpReason: string | null; heldSinceMs?: number | null; ownerBotId?: string | null }>;
   handoffs: Record<string, HandoffRecord>;
+  traces: Record<string, TaskTrace>;
   connected: boolean;
   error: string | null;
   mascotMotion: {
@@ -406,6 +418,7 @@ type Action =
   | { type: "markUnread"; botId: string }
   | { type: "botPatched"; bot: Partial<Bot> & { id: string } }
   | { type: "handoffPatched"; handoff: HandoffRecord }
+  | { type: "tracePatched"; trace: TaskTrace }
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "screenFrame"; botId: string; png: string; mime: string }
@@ -700,6 +713,8 @@ function reducer(state: AppState, action: Action): AppState {
       return state.messageFocus?.nonce === action.nonce ? { ...state, messageFocus: null } : state;
     case "handoffPatched":
       return { ...state, handoffs: { ...state.handoffs, [action.handoff.id]: action.handoff } };
+    case "tracePatched":
+      return { ...state, traces: { ...state.traces, [action.trace.id]: action.trace } };
     case "computerControl":
       return {
         ...state,
@@ -858,6 +873,7 @@ const initialState: AppState = {
   computerActivity: {},
   computerControl: {},
   handoffs: {},
+  traces: {},
   connected: false,
   error: null,
   mascotMotion: null,
@@ -1329,6 +1345,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         case "handoff":
           if (frame.handoff?.id) rawDispatch({ type: "handoffPatched", handoff: frame.handoff as HandoffRecord });
+          break;
+        case "trace":
+          if (frame.trace?.id) rawDispatch({ type: "tracePatched", trace: frame.trace as TaskTrace });
           break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });

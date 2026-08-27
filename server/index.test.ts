@@ -256,6 +256,32 @@ describe("harness HTTP API", () => {
     expect(after.body.bots.find((b: { id: string }) => b.id === bot.id)).toBeUndefined();
   });
 
+  it("creates redacted traces on the real dispatch path and safely replays chat-only failures", async () => {
+    const listed = await api("GET", "/api/bots");
+    const bot = listed.body.bots[0];
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { routingMode: "balanced" })).status).toBe(200);
+    const sent = await api("POST", `/api/bots/${bot.id}/messages`, { text: "trace smoke test" });
+    expect(sent.status).toBe(202);
+    expect(typeof sent.body.traceId).toBe("string");
+    const deadline = Date.now() + 5_000;
+    let trace: any;
+    while (Date.now() < deadline) {
+      const response = await api("GET", `/api/traces/${sent.body.traceId}`);
+      trace = response.body.trace;
+      if (trace?.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(trace).toMatchObject({ id: sent.body.traceId, botId: bot.id, status: "failed", hasExternalSideEffect: false, hasComputerAction: false });
+    expect(JSON.stringify(trace)).not.toContain("trace smoke test");
+    const exported = await api("GET", `/api/traces/${trace.id}/export`);
+    expect(exported.status).toBe(200);
+    expect(JSON.stringify(exported.body)).not.toContain("userMessageId");
+    const replayed = await api("POST", `/api/traces/${trace.id}/replay`);
+    expect(replayed.status).toBe(202);
+    expect(replayed.body.traceId).not.toBe(trace.id);
+    await api("PATCH", `/api/bots/${bot.id}`, { routingMode: "manual" });
+  });
+
   it("adds and removes room members with canonical membership validation", async () => {
     const initial = await api("GET", "/api/bots");
     const base = initial.body.bots[0];

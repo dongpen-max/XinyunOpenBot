@@ -15,7 +15,7 @@ import * as composio from "./composio.js";
 import * as mcp from "./mcp.js";
 import { appendMcpAudit, recentMcpAudit } from "./mcp-audit.js";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.js";
-import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, DATA_DIR, EVENTS_DIR, NATIVE_DIR } from "./config.js";
+import { ensureDirs, instanceConfigs, loadConfig, replaceMcpServers, saveConfig, DATA_DIR, EVENTS_DIR, NATIVE_DIR, TRACES_DIR } from "./config.js";
 import { resetPathCache } from "./env-path.js";
 import { discoverModels, saveDiscoveredModels } from "./models-discover.js";
 import { modelForReasoningLevel } from "./model-downgrade.js";
@@ -29,6 +29,7 @@ import { TurnScheduler } from "./turn-scheduler.js";
 import { candidateKey, detectTurnRequirements, nextFailoverCandidate, routeCandidates } from "./agent-router.js";
 import { classifyProviderError, providerErrorLabel, sanitizeRuntimeEvent } from "./provider-errors.js";
 import { ProviderHealthTracker } from "./provider-health.js";
+import { TaskTraceStore } from "./task-trace.js";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
 import { ProviderRegistry } from "./harness/registry.js";
@@ -52,6 +53,7 @@ const MIME = {
 ensureDirs();
 const cfg = loadConfig();
 const providerHealth = new ProviderHealthTracker(join(DATA_DIR, "provider-health.json"));
+const taskTraces = new TaskTraceStore(TRACES_DIR);
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
 const bus = new EventBus();
@@ -304,6 +306,15 @@ function appendFinalRoutingFailure(active, error) {
         },
     });
 }
+function broadcastTrace(traceId) {
+    const trace = taskTraces.get(traceId);
+    if (trace)
+        broadcast({ kind: "trace", trace: wireTrace(trace) });
+}
+const wireTrace = (trace) => {
+    const { userMessageId: _userMessageId, rootTurnId: _rootTurnId, ...safe } = trace;
+    return safe;
+};
 function retryRoutedTurn(active, error) {
     if (active.plan.mode === "manual")
         return false;
@@ -320,6 +331,8 @@ function retryRoutedTurn(active, error) {
         return false;
     const from = selectionFor(active.candidate);
     const to = selectionFor(next.candidate);
+    taskTraces.failover(active.traceId, from, to, error.code);
+    broadcastTrace(active.traceId);
     appendRoutingActivity(active.threadId, {
         role: "bot",
         kind: "activity",
@@ -384,6 +397,10 @@ bus.subscribe((event) => {
     const routedEvent = routed && (!event.providerInstanceId || event.providerInstanceId === routed.candidate.instanceId)
         ? routed
         : undefined;
+    if (routedEvent) {
+        if (taskTraces.runtime(routedEvent.traceId, event))
+            broadcastTrace(routedEvent.traceId);
+    }
     if (routedEvent && event.type === "item.started" && event.itemType === "tool")
         routedEvent.externalSideEffect = true;
     if (routedEvent && event.type === "item.completed" && event.itemType === "assistant_text" && event.text.trim()) {
@@ -582,8 +599,11 @@ bus.subscribe((event) => {
             }
             let safeRoutingError;
             if (routedEvent) {
-                if (event.ok)
+                if (event.ok) {
                     providerHealth.recordSuccess(routedEvent.attempt);
+                    taskTraces.finish(routedEvent.traceId, "completed");
+                    broadcastTrace(routedEvent.traceId);
+                }
                 else {
                     const classified = routedEvent.cancelled
                         ? classifyProviderError("cancelled by user")
@@ -596,6 +616,8 @@ bus.subscribe((event) => {
                     if (retryRoutedTurn(routedEvent, classified))
                         return;
                     appendFinalRoutingFailure(routedEvent, classified);
+                    taskTraces.finish(routedEvent.traceId, classified.code === "cancelled" ? "cancelled" : "failed", classified.code);
+                    broadcastTrace(routedEvent.traceId);
                 }
                 activeRoutedTurns.delete(event.threadId);
             }
@@ -901,6 +923,10 @@ async function runTurnNow(botId, text, opts = {}) {
         handoffCount: opts.commsContext?.handoffCount ?? 0,
         visitedBots: [...new Set([...(opts.commsContext?.visitedBots ?? []), botId])],
     };
+    const traceId = opts.traceId ?? taskTraces.create({ threadId, botId, userMessageId: opts.userMessage?.id }).id;
+    opts = { ...opts, traceId };
+    taskTraces.start(traceId, commsContext.rootTurnId);
+    broadcastTrace(traceId);
     // a task takes its name from the first thing you asked it to do
     if (text.trim())
         store.titleTaskFromFirstMessage(bot.id, text);
@@ -1073,6 +1099,7 @@ async function runTurnNow(botId, text, opts = {}) {
                     ? "你可以通过机器人协作工具与其他机器人配合：list_bots 查看可用机器人，ask_bot 向指定机器人发送任务并取得回复。"
                     : "";
             if (integrations.computer) {
+                const leaseWaitStartedAt = Date.now();
                 const leaseAbort = new AbortController();
                 pendingCloudLeaseByThread.set(threadId, leaseAbort);
                 try {
@@ -1084,12 +1111,16 @@ async function runTurnNow(botId, text, opts = {}) {
                     cloudLeaseBoxByThread.set(threadId, integrations.computer.boxId);
                     broadcastComputerLease(integrations.computer.boxId);
                     broadcast({ kind: "computer", botId: bot.id, state: "ready" });
+                    taskTraces.computer(traceId, "获得云电脑串行使用权", Date.now() - leaseWaitStartedAt);
+                    broadcastTrace(traceId);
                 }
                 finally {
                     pendingCloudLeaseByThread.delete(threadId);
                 }
             }
             plan.attempted.push(candidateKey(candidate));
+            taskTraces.attempt(traceId, { instanceId, model: turnModel });
+            broadcastTrace(traceId);
             const healthAttempt = providerHealth.startAttempt(instanceId, turnModel);
             activeAttempt = {
                 botId: bot.id,
@@ -1103,6 +1134,7 @@ async function runTurnNow(botId, text, opts = {}) {
                 computerAction: Boolean(integrations.computer || integrations.localComputer),
                 outputProduced: false,
                 cancelled: false,
+                traceId,
             };
             activeRoutedTurns.set(threadId, activeAttempt);
             await instance.adapter.sendTurn({
@@ -1149,6 +1181,8 @@ async function runTurnNow(botId, text, opts = {}) {
                 if (retryRoutedTurn(activeAttempt, classified))
                     return;
                 appendFinalRoutingFailure(activeAttempt, classified);
+                taskTraces.finish(traceId, classified.code === "cancelled" ? "cancelled" : "failed", classified.code);
+                broadcastTrace(traceId);
             }
             else if (!activeAttempt) {
                 const classified = classifyProviderError(e);
@@ -1158,6 +1192,8 @@ async function runTurnNow(botId, text, opts = {}) {
                     tool: { name: `任务启动失败：${providerErrorLabel(classified.code)}`, ok: false },
                     routing: { status: "failed", reason: classified.code, attempts: attemptedSelections(plan) },
                 });
+                taskTraces.finish(traceId, classified.code === "cancelled" ? "cancelled" : "failed", classified.code);
+                broadcastTrace(traceId);
             }
             else {
                 return;
@@ -1190,6 +1226,11 @@ async function drainBotQueue(botId) {
         await runTurnNow(botId, next.value.text, next.value.options);
     }
     catch (error) {
+        if (next.value.options?.traceId) {
+            const code = classifyProviderError(error).code;
+            taskTraces.finish(next.value.options.traceId, code === "cancelled" ? "cancelled" : "failed", code);
+            broadcastTrace(next.value.options.traceId);
+        }
         if (next.value.options?.routineId) {
             const threadId = store.bot(botId)?.threadId ?? "";
             const active = routineRunsByThread.get(threadId);
@@ -1225,12 +1266,17 @@ async function startTurn(botId, text, opts) {
         broadcast({ kind: "message", threadId: bot.threadId, message });
         opts = { ...opts, userMessage: message };
     }
+    if (!opts?.traceId) {
+        const trace = taskTraces.create({ threadId: bot.threadId, botId, userMessageId: opts?.userMessage?.id });
+        opts = { ...opts, traceId: trace.id };
+        broadcast({ kind: "trace", trace: wireTrace(trace) });
+    }
     turnScheduler.enqueue(botId, { text, options: opts }, opts?.routineId || opts?.commsDepth ? "background" : "normal");
     store.patchBot(botId, { busy: true, unread: false });
     broadcastBot(store.bot(botId));
     if (!turnScheduler.isActive(botId))
         void drainBotQueue(botId);
-    return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0) };
+    return { queued: true, queueDepth: turnScheduler.depth(botId) - (turnScheduler.isActive(botId) ? 1 : 0), traceId: opts.traceId };
 }
 async function runRoutine(routineId) {
     const routine = store.routine(routineId);
@@ -1424,11 +1470,17 @@ reasoningLevel, spoken = new Set()) {
         handoffCount: 0,
         visitedBots: [bot.id],
     };
+    const groupTrace = taskTraces.create({ threadId: group.threadId, botId: bot.id });
+    taskTraces.start(groupTrace.id, commsContext.rootTurnId);
+    broadcastTrace(groupTrace.id);
     let plan;
     try {
         plan = await createRoutingPlan(bot, text);
     }
     catch (error) {
+        const code = classifyProviderError(error).code;
+        taskTraces.finish(groupTrace.id, code === "cancelled" ? "cancelled" : "failed", code);
+        broadcastTrace(groupTrace.id);
         appendRoutingActivity(group.threadId, {
             role: "bot",
             kind: "activity",
@@ -1476,6 +1528,8 @@ reasoningLevel, spoken = new Set()) {
         });
         const turnModel = modelForReasoningLevel(instance.models, candidate.model, reasoningLevel);
         plan.attempted.push(candidateKey(candidate));
+        taskTraces.attempt(groupTrace.id, { instanceId: instance.instanceId, model: turnModel });
+        broadcastTrace(groupTrace.id);
         let integrations;
         try {
             integrations = await groupTurnIntegrations(bot, instance, providerThreadId, text, commsContext);
@@ -1494,7 +1548,13 @@ reasoningLevel, spoken = new Set()) {
                 });
             }
             cancelledGroupTurns.delete(providerThreadId);
+            taskTraces.finish(groupTrace.id, error.code === "cancelled" ? "cancelled" : "failed", error.code);
+            broadcastTrace(groupTrace.id);
             break;
+        }
+        if (integrations.computer || integrations.localComputer) {
+            taskTraces.computer(groupTrace.id, integrations.computer ? "获得云电脑串行使用权" : "使用本地电脑");
+            broadcastTrace(groupTrace.id);
         }
         const attempt = providerHealth.startAttempt(instance.instanceId, turnModel);
         const result = await new Promise((resolve) => {
@@ -1515,6 +1575,8 @@ reasoningLevel, spoken = new Set()) {
             const unsub = bus.subscribe((event) => {
                 if (event.threadId !== providerThreadId || event.providerInstanceId !== instance.instanceId)
                     return;
+                if (taskTraces.runtime(groupTrace.id, event))
+                    broadcastTrace(groupTrace.id);
                 if (event.type === "item.started" && event.itemType === "tool")
                     externalSideEffect = true;
                 else if (event.type === "item.completed" && event.itemType === "assistant_text" && event.text.trim()) {
@@ -1559,6 +1621,8 @@ reasoningLevel, spoken = new Set()) {
         replyText += result.text;
         if (result.ok) {
             providerHealth.recordSuccess(attempt);
+            taskTraces.finish(groupTrace.id, "completed");
+            broadcastTrace(groupTrace.id);
             break;
         }
         const error = result.error ?? classifyProviderError("turn failed");
@@ -1587,10 +1651,14 @@ reasoningLevel, spoken = new Set()) {
                     routing: { status: "failed", reason: error.code, attempts: attemptedSelections(plan) },
                 });
             }
+            taskTraces.finish(groupTrace.id, error.code === "cancelled" ? "cancelled" : "failed", error.code);
+            broadcastTrace(groupTrace.id);
             break;
         }
         const from = selectionFor(candidate);
         const to = selectionFor(next.candidate);
+        taskTraces.failover(groupTrace.id, from, to, error.code);
+        broadcastTrace(groupTrace.id);
         appendRoutingActivity(group.threadId, {
             role: "bot",
             kind: "activity",
@@ -1602,6 +1670,8 @@ reasoningLevel, spoken = new Set()) {
         broadcastBot(store.bot(bot.id));
     }
     if (first) {
+        taskTraces.finish(groupTrace.id, "failed", "temporarily_unavailable");
+        broadcastTrace(groupTrace.id);
         appendRoutingActivity(group.threadId, {
             role: "bot",
             kind: "activity",
@@ -1937,6 +2007,11 @@ const server = createServer(async (req, res) => {
                     visitedBots: [...normalizedVisitedBots, toBotId],
                 };
                 handoffs.set(handoff.id, handoff);
+                const parentTrace = taskTraces.findByRootTurn(rootTurnId);
+                if (parentTrace) {
+                    taskTraces.handoff(parentTrace.id, `交接给 ${target.name}`);
+                    broadcastTrace(parentTrace.id);
+                }
                 recentHandoffKeys.set(dedupeKey, { handoffId: handoff.id, createdAt: handoff.createdAt });
                 broadcast({ kind: "handoff", handoff });
                 void (async () => {
@@ -1956,6 +2031,10 @@ const server = createServer(async (req, res) => {
                     if (failed)
                         handoff.error = reply.text;
                     handoff.finishedAt = Date.now();
+                    if (parentTrace) {
+                        taskTraces.handoff(parentTrace.id, `${target.name} 交接${failed ? "失败" : "完成"}`, !failed, handoff.finishedAt - handoff.createdAt);
+                        broadcastTrace(parentTrace.id);
+                    }
                     if (from) {
                         mirror(target, reply.text);
                         chip(from.threadId, `@${target.name} 已完成交接`, target);
@@ -1994,6 +2073,37 @@ const server = createServer(async (req, res) => {
                 sseClients.delete(client);
             });
             return;
+        }
+        // Redacted operational traces. Replay deliberately resolves the source
+        // from the transcript instead of persisting user text in diagnostics.
+        if (method === "GET" && path === "/api/traces") {
+            const threadId = url.searchParams.get("threadId") ?? undefined;
+            return json(res, 200, { traces: taskTraces.list(threadId, Number(url.searchParams.get("limit") ?? 30)).map(wireTrace) });
+        }
+        let traceMatch = path.match(/^\/api\/traces\/([\w-]+)$/);
+        if (traceMatch && method === "GET") {
+            const trace = taskTraces.get(traceMatch[1]);
+            return trace ? json(res, 200, { trace: wireTrace(trace) }) : json(res, 404, { error: "未找到运行追踪" });
+        }
+        traceMatch = path.match(/^\/api\/traces\/([\w-]+)\/export$/);
+        if (traceMatch && method === "GET") {
+            const diagnostic = taskTraces.export(traceMatch[1]);
+            return diagnostic ? json(res, 200, diagnostic) : json(res, 404, { error: "未找到运行追踪" });
+        }
+        traceMatch = path.match(/^\/api\/traces\/([\w-]+)\/replay$/);
+        if (traceMatch && method === "POST") {
+            const replay = taskTraces.canReplay(traceMatch[1]);
+            if (!replay.ok || !replay.trace)
+                return json(res, 409, { error: replay.reason });
+            const bot = store.bot(replay.trace.botId);
+            if (!bot || bot.threadId !== replay.trace.threadId)
+                return json(res, 409, { error: "原任务已不在当前会话中" });
+            const source = store.messagesFor(bot.threadId).find((message) => message.id === replay.trace.userMessageId);
+            if (!source || source.role !== "user" || source.kind !== "text" || !source.text?.trim()) {
+                return json(res, 409, { error: "原始文本消息已不可用" });
+            }
+            const queued = await startTurn(bot.id, source.text, { replyTo: source.replyTo });
+            return json(res, 202, { ok: true, ...queued });
         }
         // Image attachments are stored outside the transcript and referenced by
         // generated filenames, so prompt paths never expose an original name.
@@ -2550,6 +2660,13 @@ const server = createServer(async (req, res) => {
             if (!bot)
                 return json(res, 404, { error: "no such bot" });
             const cancelled = turnScheduler.cancelQueued(bot.id);
+            for (const item of cancelled) {
+                const traceId = item.value.options?.traceId;
+                if (traceId) {
+                    taskTraces.finish(traceId, "cancelled", "cancelled");
+                    broadcastTrace(traceId);
+                }
+            }
             const active = activeRoutedTurns.get(bot.threadId);
             if (active)
                 active.cancelled = true;
