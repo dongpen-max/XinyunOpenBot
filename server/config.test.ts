@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { instanceConfigs } from "./config.ts";
 
-const DEFAULT_IDS = ["grok", "kimi", "claude", "codex", "antigravity", "computer"];
+const DEFAULT_IDS = ["grok", "opencode", "kimi", "claude", "codex", "antigravity", "computer"];
 
 describe("instanceConfigs", () => {
   it("returns the whole default fleet when no instances are configured", () => {
@@ -45,6 +45,15 @@ describe("instanceConfigs", () => {
     const second = instanceConfigs({});
     expect(first.claude?.environment?.XAI_API_KEY).toBe("xai-first");
     expect(second.claude?.environment?.XAI_API_KEY).toBeUndefined();
+  });
+
+  it("keeps Xinyun provider credentials out of OpenCode's environment", () => {
+    const map = instanceConfigs({
+      xai: { key: "xai-secret", url: "https://xai.example" },
+      anthropic: { key: "anthropic-secret", url: "https://anthropic.example" },
+      openai: { key: "openai-secret", url: "https://openai.example" },
+    });
+    expect(map.opencode?.environment).toEqual({});
   });
 
   it("adds configured domestic OpenAI-compatible providers without changing the default fleet", () => {

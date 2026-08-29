@@ -11,20 +11,45 @@
 //                     peer, and reply with what the peer said — the comms e2e)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
+//   FAKE_ACP_RPC_DUMP path to write the inbound JSON-RPC method sequence
+//   FAKE_ACP_TOOL_NAME name used for the scripted tool call/permission
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
+const toolName = process.env.FAKE_ACP_TOOL_NAME;
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) {
   console.log("fake-acp 1.0.0");
   process.exit(0);
 }
+if (argv[0] === "models") {
+  if (mode === "model-discovery-failure") {
+    process.stderr.write("fake-acp: simulated model discovery failure\n");
+    process.exit(7);
+  }
+  console.log("opencode/big-pickle");
+  console.log("local/custom-model");
+  console.log("provider/model/with-slash");
+  process.exit(0);
+}
+if ((argv[0] === "auth" && argv[1] === "list") || (argv[0] === "--pure" && argv[1] === "auth" && argv[2] === "list")) {
+  console.log(process.env.FAKE_ACP_AUTH_STATUS === "none" ? "0 credentials" : "1 credentials");
+  process.exit(0);
+}
 if (process.env.FAKE_ACP_DUMP) {
   writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: process.env }, null, 2));
 }
+
+const rpcDump = process.env.FAKE_ACP_RPC_DUMP;
+const rpcMessages: Array<{ method?: string; params?: unknown }> = [];
+const recordRpc = (msg: any) => {
+  if (!rpcDump || !msg.method) return;
+  rpcMessages.push({ method: msg.method, params: msg.params });
+  writeFileSync(rpcDump, JSON.stringify(rpcMessages, null, 2));
+};
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: res });
@@ -89,7 +114,18 @@ function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: str
 
 function playTurn() {
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "hello from fake acp" } } } });
-  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "run" } } });
+  out({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        title: toolName ?? "run",
+        ...(toolName ? { rawInput: { command: "mcp-argument-not-tool-name" } } : {}),
+      },
+    },
+  });
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed" } } });
 }
 
@@ -112,6 +148,7 @@ process.stdin.on("data", (c) => {
 });
 
 function handle(msg: any) {
+  recordRpc(msg);
   // client's response to our permission request
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
     pendingPermissionId = null;
@@ -126,8 +163,14 @@ function handle(msg: any) {
         process.stderr.write("fake-acp: simulated crash before result\n");
         process.exit(3);
       }
-      const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      const authMethods = mode === "no-auth" ? [] : [{ id: process.env.FAKE_ACP_AUTH_METHOD ?? "cached_token" }];
+      result(msg.id, {
+        protocolVersion: 1,
+        authMethods,
+        ...(process.env.FAKE_ACP_AUTH_METHOD === "opencode-login"
+          ? {}
+          : { _meta: { modelState: { currentModelId: "fake-acp-model" } } }),
+      });
       break;
     }
     case "authenticate":
@@ -142,6 +185,15 @@ function handle(msg: any) {
     case "session/load":
       result(msg.id, {});
       break;
+    case "session/set_config_option":
+      if (mode === "model-failure") {
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "model rejected" } });
+        break;
+      }
+      result(msg.id, {
+        configOptions: [{ id: "model", currentValue: msg.params?.value }],
+      });
+      break;
     case "session/prompt": {
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
@@ -149,7 +201,12 @@ function handle(msg: any) {
         return;
       }
       const complete = () =>
-        result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } });
+        result(
+          msg.id,
+          process.env.FAKE_ACP_AUTH_METHOD === "opencode-login"
+            ? { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+            : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
+        );
       if (mode === "ask-peer" && agentsMcp) {
         // the comms e2e: reach a peer bot through the injected agents proxy
         // and reply with whatever it said (the peer's fake runs plain happy
@@ -181,7 +238,9 @@ function handle(msg: any) {
           id: pendingPermissionId,
           method: "session/request_permission",
           params: {
-            toolCall: { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
+            toolCall: toolName
+              ? { kind: "other", rawInput: {}, title: toolName }
+              : { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
             options: [
               { optionId: "allow-once", kind: "allow_once" },
               { optionId: "reject", kind: "reject_once" },

@@ -10,6 +10,7 @@ export type InstanceId = string;
 export type ThreadId = string;
 export type TurnId = string;
 export type ReasoningEffort = "low" | "medium" | "high";
+export type McpToolResolution = "resolved" | "ambiguous";
 
 // ── model selection ────────────────────────────────────────────────────
 // "Which model" is a data value carried on the request, never a service
@@ -63,7 +64,7 @@ export type RuntimeEvent = RuntimeEventBase &
         cost?: number | null;
         denials?: string[];
       }
-    | { type: "item.started"; itemType: "tool" | "reasoning"; title?: string }
+    | { type: "item.started"; itemType: "tool" | "reasoning"; title?: string; mcpToolResolution?: McpToolResolution }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | { type: "item.completed"; itemType: "tool"; ok: boolean }
     | { type: "item.completed"; itemType: "assistant_text"; text: string }
@@ -74,6 +75,7 @@ export type RuntimeEvent = RuntimeEventBase &
         tool: string;
         summary: string;
         choices?: string[];
+        mcpToolResolution?: McpToolResolution;
       }
     | { type: "request.resolved"; behavior: string; source: string }
     | { type: "thread.token-usage.updated"; input: number; output: number }

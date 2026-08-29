@@ -89,6 +89,14 @@ export function MoonshotMark({ size = 16, className }: IconProps) {
   );
 }
 
+export function OpenCodeMark({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-none stroke-current text-ink", className)} aria-hidden="true">
+      <path d="m8 4-6 8 6 8M16 4l6 8-6 8M14 5l-4 14" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function ComputerMark({ size = 16, className }: IconProps) {
   return <Monitor size={size} className={cn("text-ink-secondary", className)} />;
 }
@@ -116,6 +124,8 @@ export function ProviderMark({ vendor, size, className, ...hint }: ProviderMarkP
       return <QwenMark size={size} className={className} />;
     case "moonshot":
       return <MoonshotMark size={size} className={className} />;
+    case "opencode":
+      return <OpenCodeMark size={size} className={className} />;
     case "computer":
       return <ComputerMark size={size} className={className} />;
     default:

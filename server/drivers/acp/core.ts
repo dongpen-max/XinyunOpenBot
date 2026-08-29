@@ -23,6 +23,8 @@ import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../proc
 import type {
   DriverCreateInput,
   EngineInstall,
+  ModelCatalog,
+  McpToolResolution,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -32,7 +34,7 @@ import type {
 } from "../../contracts.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
-import { mcpStdioConfigs } from "../../mcp.ts";
+import { mcpStdioConfigs, type McpIntegration } from "../../mcp.ts";
 
 // the computer proxy entry: .ts in dev (node type stripping), .js in the
 // compiled dist-server the packaged app ships
@@ -49,11 +51,18 @@ export interface AcpConfig {
   workspace?: string;
 }
 
+export type AcpRequest = (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>;
+
+export interface AcpMcpToolNormalization {
+  name: string;
+  resolution?: McpToolResolution;
+}
+
 /** Per-harness specifics — everything that differs between Grok, Gemini, … */
 export interface AcpSupport {
   driverKind: string;
   displayName: string;
-  models: { default: string; options: Array<{ id: string; label: string }> };
+  models: ModelCatalog;
   /** Default CLI binary name if the instance config doesn't override it. */
   defaultCli: string;
   /** Native-protocol log label, e.g. "grok.acp". */
@@ -63,8 +72,11 @@ export interface AcpSupport {
   install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
-  /** Mutate the child env in place (e.g. strip a key). Optional. */
-  transformEnv?(env: Record<string, string | undefined>): void;
+  /** Mutate the child env in place (e.g. strip inherited credentials). Optional. */
+  transformEnv?(
+    env: Record<string, string | undefined>,
+    explicitEnv?: Record<string, string>,
+  ): void;
   /** Pick the ACP authenticate methodId from initialize's advertised
    * authMethods; return null to skip the authenticate step. */
   pickAuthMethod(authMethods: Array<{ id?: string }>): string | null;
@@ -72,7 +84,18 @@ export interface AcpSupport {
    *  "continue": proceed anyway (CLIs that work off an ambient login). */
   authFailure: "fail" | "continue";
   /** snapshot(): is the CLI signed in? (env already carries the merged config) */
-  isAuthenticated(env: Record<string, string | undefined>): boolean;
+  isAuthenticated(
+    env: Record<string, string | undefined>,
+    cli?: string,
+    cwd?: string,
+  ): boolean | undefined | Promise<boolean | undefined>;
+  /** Discover the models exposed by this CLI installation. A failure is
+   * isolated to this instance; the shared ACP runtime still loads it. */
+  discoverModels?(config: AcpConfig, env: Record<string, string | undefined>, cwd: string): Promise<ModelCatalog | undefined>;
+  /** Apply Xinyun's selected model through a native ACP session mechanism. */
+  configureSessionModel?(request: AcpRequest, sessionId: string, model: string): Promise<void>;
+  /** Restore a provider's MCP tool identifier before policy and audit handling. */
+  normalizeMcpTool?(name: string, integrations: McpIntegration[] | undefined): AcpMcpToolNormalization;
   /** Compose the session/prompt text. Default prepends the persona. */
   buildPromptText?(turn: SendTurnInput): string;
 }
@@ -135,9 +158,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           ...input.environment,
           PATH: augmentedPath(),
         };
-        support.transformEnv?.(env);
+        support.transformEnv?.(env, input.environment);
         return env;
       };
+
+      const defaultCwd = config.workspace ?? homedir();
+      let models = support.models;
+      let modelDiscoveryFailed = false;
+      if (support.discoverModels) {
+        try {
+          models = (await support.discoverModels(config, childEnv(), defaultCwd)) ?? support.models;
+        } catch {
+          modelDiscoveryFailed = true;
+        }
+      }
 
       // ACP session mcpServers: stdio is the baseline every ACP agent
       // supports (mcpCapabilities.http/.sse only add EXTRA transports), so
@@ -188,10 +222,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+        if (modelDiscoveryFailed) throw new Error(`${support.displayName} model discovery failed`);
         const turnId = newId();
-        const cwd = turn.cwd ?? config.workspace ?? homedir();
+        const cwd = turn.cwd ?? defaultCwd;
         const env = childEnv();
         const mcpServers = acpMcpServers(turn);
+        const normalizeMcpTool = (name: string): AcpMcpToolNormalization =>
+          support.normalizeMcpTool?.(name, turn.integrations?.mcp) ?? { name };
 
         const child = spawnCli(config.cli, support.spawnArgs(config, turn), {
           cwd,
@@ -279,7 +316,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
           }
           const kind = String(toolCall.kind ?? "");
-          const tool = kind === "execute" ? "shell" : kind === "edit" ? "edit" : kind || "tool";
+          const tool = kind === "execute"
+            ? "shell"
+            : kind === "edit"
+              ? "edit"
+              : kind === "other"
+                ? String(toolCall.title ?? kind)
+                : kind || String(toolCall.title ?? "tool");
+          const normalized = normalizeMcpTool(tool);
           const summary = String(toolCall.rawInput?.command ?? toolCall.title ?? tool).slice(0, 200);
           const requestId = newId();
           const finish = (behavior: string) => {
@@ -312,8 +356,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             type: "request.opened",
             requestId,
             requestType: "permission",
-            tool,
+            tool: normalized.name,
             summary,
+            ...(normalized.resolution ? { mcpToolResolution: normalized.resolution } : {}),
           });
         };
 
@@ -341,12 +386,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               break;
             }
             case "tool_call": {
+              const rawName = String(
+                support.normalizeMcpTool ? u.title ?? "tool" : u.rawInput?.command ?? u.title ?? "tool",
+              );
+              const normalized = normalizeMcpTool(rawName);
               emit({
                 ...base(threadId, turnId),
                 type: "item.started",
                 itemType: "tool",
                 itemId: u.toolCallId,
-                title: String(u.rawInput?.command ?? u.title ?? "tool").slice(0, 80),
+                title: normalized.resolution ? normalized.name : rawName.slice(0, 80),
+                ...(normalized.resolution ? { mcpToolResolution: normalized.resolution } : {}),
               });
               break;
             }
@@ -460,6 +510,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               sessionId = typeof started?.sessionId === "string" ? started.sessionId : null;
               if (!sessionId) throw new Error("session/new returned no sessionId");
             }
+            if (turn.model && support.configureSessionModel) {
+              await support.configureSessionModel(request, sessionId, turn.model);
+            }
             emit({
               ...base(threadId, turnId),
               type: "session.started",
@@ -476,7 +529,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               sessionId,
               prompt: [{ type: "text", text }],
             });
-            const usage = result?._meta ?? {};
+            const usage = result?.usage ?? result?._meta ?? {};
             if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
               emit({
                 ...base(threadId, turnId),
@@ -509,7 +562,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           );
         });
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-        return { state: "available", version, authenticated: support.isAuthenticated(env) };
+        if (modelDiscoveryFailed) {
+          return { state: "unavailable", reason: `${support.displayName} model discovery failed` };
+        }
+        const authenticated = await support.isAuthenticated(env, config.cli, defaultCwd);
+        return {
+          state: "available",
+          version,
+          ...(authenticated === undefined ? {} : { authenticated }),
+        };
       };
 
       return {
@@ -517,12 +578,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         driverKind: DRIVER_KIND,
         displayName: input.displayName,
         enabled: input.enabled,
-        models: support.models,
+        models,
         snapshot,
         adapter: {
           provider: DRIVER_KIND,
           capabilities: {
-            sessionModelSwitch: "unsupported",
+            sessionModelSwitch: support.configureSessionModel ? "in-session" : "unsupported",
             agentsMcp: true,
             computerMcp: true,
             computerMode: "mcp",
