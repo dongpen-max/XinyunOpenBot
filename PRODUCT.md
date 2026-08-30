@@ -1,5 +1,7 @@
 # Product
 
+> 产品定位、长期目标与阶段性执行规则以 [`docs/PROJECT-DIRECTION.md`](docs/PROJECT-DIRECTION.md) 为准。所有后续开发对话、架构决策和发布检查都必须先参考该文档。
+
 ## Register
 
 product
